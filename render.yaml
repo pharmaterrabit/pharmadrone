@@ -1,0 +1,46 @@
+# Render Blueprint for PharmaDrone (private Streamlit dashboard).
+# Secrets use `sync: false` -> you set them in the Render dashboard, never in git.
+# No single LLM key is mandatory: set only the key for your chosen LLM_PROVIDER.
+services:
+  - type: web
+    name: pharmadrone
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      # --- dashboard password (set in Render → Environment) ---
+      - key: APP_PASSWORD
+        sync: false
+
+      # --- LLM provider selection (defaults to a free OpenRouter model) ---
+      - key: LLM_PROVIDER          # openrouter | groq | openai | gemini
+        value: openrouter
+      - key: LLM_MODEL             # cheap/free default; change per provider
+        value: meta-llama/llama-3.3-70b-instruct:free
+
+      # --- LLM keys: ONLY the one for your LLM_PROVIDER is required ---
+      - key: OPENROUTER_API_KEY    # needed if LLM_PROVIDER=openrouter (default)
+        sync: false
+      - key: GROQ_API_KEY          # needed if LLM_PROVIDER=groq
+        sync: false
+      - key: OPENAI_API_KEY        # needed if LLM_PROVIDER=openai
+        sync: false
+      - key: GEMINI_API_KEY        # OPTIONAL fallback; needed only if LLM_PROVIDER=gemini
+        sync: false
+
+      # --- web search (required) ---
+      - key: TAVILY_API_KEY
+        sync: false
+
+      # --- optional ---
+      - key: CONTACT_EMAIL
+        sync: false
+
+      # --- guardrails (safe to keep here) ---
+      - key: MAX_REPORTS_PER_RUN   # hard cap per click (budget guardrail)
+        value: "5"
+      - key: ALLOW_SCALE_RUNS      # keep false until the 5-report test is approved
+        value: "false"
+      - key: PYTHON_VERSION
+        value: "3.11.9"

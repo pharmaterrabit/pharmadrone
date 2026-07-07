@@ -1,0 +1,262 @@
+"""PharmaDrone local dashboard.  Run:  streamlit run app.py
+Opens at http://localhost:8501 by default.
+"""
+from __future__ import annotations
+import io
+import os
+import zipfile
+import json as _json
+import pandas as pd
+import streamlit as st
+
+from pharmadrone import settings, db, auth
+from pharmadrone.run import generate
+from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
+
+st.set_page_config(page_title="PharmaDrone", layout="wide")
+
+# --- Password gate (server-side; password never reaches the browser) --------
+auth.require_password()
+
+# --- Deploy guardrails (set as env vars on the host) ------------------------
+ALLOW_SCALE = os.getenv("ALLOW_SCALE_RUNS", "").lower() in ("1", "true", "yes")
+MAX_PER_RUN = int(os.getenv("MAX_REPORTS_PER_RUN", "5"))
+
+profile = settings.load_profile()
+
+
+def _zip_reports() -> bytes | None:
+    """Zip the ./reports folder in memory for download (disk is ephemeral on
+    free cloud hosts, so let the user save outputs during the session)."""
+    rdir = settings.REPORTS_DIR
+    files = [f for f in rdir.glob("*") if f.is_file() and f.name != ".gitkeep"]
+    if not files:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            z.write(f, arcname=f.name)
+    return buf.getvalue()
+
+st.title("PharmaDrone — BD Case Study Generator")
+st.caption("Private local dashboard · **global public-source scouting** (not "
+           "complete global regulator coverage) · possible opportunity signals "
+           "only, require human validation.")
+
+llm_st = settings.llm_status()
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("LLM provider", llm_st["provider"])
+c2.metric("Provider key", "set" if llm_st["key_present"] else "MISSING")
+c3.metric("Tavily key", "set" if settings.HAS_TAVILY else "MISSING")
+c4.metric("Budget", f"${profile.get('budget_usd_total', 200)}")
+st.caption(f"Model: `{llm_st['model']}` · change with LLM_PROVIDER / LLM_MODEL env vars.")
+if not llm_st["valid_provider"]:
+    st.error(f"LLM_PROVIDER '{llm_st['provider']}' is not valid — use openrouter, "
+             "groq, openai, or gemini.")
+elif not llm_st["key_present"]:
+    st.error(f"LLM provider is '{llm_st['provider']}' but {llm_st['key_env']} is "
+             "not set. Add it (or switch LLM_PROVIDER) — extract/score/write need it.")
+
+tab_gen, tab_profile, tab_results, tab_conn = st.tabs(
+    ["① Generate", "② Technology Profile", "③ Results & Export", "④ Connectors"])
+
+# ==========================================================================
+# TAB 1 — GENERATE
+# ==========================================================================
+with tab_gen:
+    st.subheader("Milestone 1 — generate 5 real test reports")
+    st.caption("Review these 5 before scaling. The 20 + 80 buttons stay locked "
+               "in your workflow until you approve the test batch.")
+
+    regions = [r["name"] for r in profile["regions"]]
+    active = [r["name"] for r in profile["regions"] if r.get("active")]
+    sel_regions = st.multiselect("Regions", regions, default=active)
+
+    all_sources = list(profile["sources"].keys())
+    sel_sources = st.multiselect("Sources", all_sources,
+                                 default=settings.enabled_sources(profile))
+    sel_signals = st.multiselect("Problem signals", profile["problem_signals"],
+                                 default=profile["problem_signals"][:6])
+    use_llm_q = st.checkbox("Use LLM to craft multilingual queries "
+                            "(sharper; costs a few tokens)", value=True)
+
+    st.divider()
+    st.caption(f"Budget guardrail: each run is capped at **{MAX_PER_RUN} reports** "
+               "(server-side, cannot be exceeded from the UI).")
+    run_mode = None
+    if st.button("Generate 5 Test Reports", type="primary"):
+        run_mode = ("test", 5)
+
+    if ALLOW_SCALE:
+        st.info("Scale runs are unlocked (ALLOW_SCALE_RUNS is on).")
+        b2, b3 = st.columns(2)
+        if b2.button("Generate 20 Flagship Reports"):
+            run_mode = ("flagship", 20)
+        if b3.button("Generate 80 Scouting Memos"):
+            run_mode = ("memo", 80)
+    else:
+        st.caption("🔒 The 20 / 80 / 100 runs are hidden until you approve the "
+                   "5-report test. Unlock later by setting `ALLOW_SCALE_RUNS=true` "
+                   "in the host environment.")
+
+    if run_mode:
+        for r in profile["regions"]:
+            r["active"] = r["name"] in sel_regions
+        for s in profile["sources"]:
+            profile["sources"][s]["enabled"] = s in sel_sources
+        if sel_signals:
+            profile["problem_signals"] = sel_signals
+        settings.save_profile(profile)
+
+        mode, n = run_mode
+        prog = st.progress(0.0)
+        logbox = st.empty()
+        logs = []
+
+        def log(m):
+            logs.append(m)
+            logbox.code("\n".join(logs[-16:]))
+
+        with st.spinner(f"Generating ({mode})…"):
+            accepted, rejected, cost, cov = generate(
+                mode, n, use_llm_queries=use_llm_q,
+                progress=lambda i, t, msg: prog.progress(min(1.0, i / max(t, 1))),
+                log=log)
+
+        st.success(f"Generated {len(accepted)} reports · {len(rejected)} rejected · "
+                   f"est. ${cost.total_usd} (${cost.per_report_usd}/report)")
+
+        st.markdown("### Source coverage summary")
+        st.caption("Global public-source scouting — not complete global regulator "
+                   "coverage.")
+        cov_df = pd.DataFrame([
+            {"Source": s, "Evidence items": d["evidence_items"],
+             "Accepted leads citing": d["accepted_leads_citing"],
+             "Queries": d["queries"], "Failed": d["failed"]}
+            for s, d in cov.items()])
+        st.dataframe(cov_df, use_container_width=True, hide_index=True)
+
+        errors = [e for d in cov.values() for e in d["errors"]]
+        if errors:
+            st.warning(f"{len(errors)} source failure(s) — shown so nothing is "
+                       "hidden:")
+            st.code("\n".join(errors[:30]))
+
+        with st.expander("Cost breakdown"):
+            st.json(cost.summary())
+        st.info("Open the ③ Results & Export tab to read reports and export files.")
+
+# ==========================================================================
+# TAB 2 — TECHNOLOGY PROFILE
+# ==========================================================================
+with tab_profile:
+    st.subheader("Seller / Technology Profile")
+    sp = profile["seller_profile"]
+    sp["name"] = st.text_input("Seller name", sp.get("name", ""))
+    sp["description"] = st.text_area("Description", sp.get("description", ""), height=90)
+    st.markdown("**Problem signals** (one per line)")
+    sigs = st.text_area("signals", "\n".join(profile["problem_signals"]),
+                        label_visibility="collapsed", height=180)
+    st.markdown("**Regions** — tick to activate")
+    cols = st.columns(3)
+    for i, r in enumerate(profile["regions"]):
+        with cols[i % 3]:
+            r["active"] = st.checkbox(f"{r['name']} ({r['lang']})",
+                                      r.get("active"), key=f"reg_{r['code']}")
+    colf, colm = st.columns(2)
+    profile["output"]["flagship_reports"] = colf.number_input(
+        "Flagship reports", 1, 100, profile["output"]["flagship_reports"])
+    profile["output"]["scouting_memos"] = colm.number_input(
+        "Scouting memos", 1, 500, profile["output"]["scouting_memos"])
+    profile["output"]["min_evidence_links"] = st.slider(
+        "Min evidence links to accept a lead", 1, 5,
+        profile["output"].get("min_evidence_links", 2))
+    if st.button("Save profile"):
+        profile["problem_signals"] = [s.strip() for s in sigs.splitlines() if s.strip()]
+        settings.save_profile(profile)
+        st.success("Saved to config/technology_profile.yaml")
+
+# ==========================================================================
+# TAB 3 — RESULTS & EXPORT
+# ==========================================================================
+with tab_results:
+    st.subheader("Generated opportunities")
+    try:
+        conn = db.connect(settings.DB_PATH)
+        opps = db.fetch_all(conn, "opportunities")
+        ev = db.fetch_all(conn, "evidence")
+        rej = db.fetch_all(conn, "rejected")
+        conn.close()
+    except Exception:
+        opps, ev, rej = [], [], []
+
+    if opps:
+        st.dataframe(pd.DataFrame(opps)[
+            ["company", "product", "region", "problem_signal", "grade",
+             "score", "confidence", "evidence_count", "report_type"]],
+            use_container_width=True, hide_index=True)
+        st.caption("Score is the 0–100 Opportunity Score. Grades: A≥70, B 50–69, "
+                   "C 30–49, D<30 (rejected).")
+
+        st.markdown("**Evidence links** (source type + language)")
+        if ev:
+            st.dataframe(pd.DataFrame(ev)[
+                ["opportunity_id", "source_type", "source_name", "language",
+                 "title", "url"]], use_container_width=True, hide_index=True)
+
+        st.markdown("**Read a report**")
+        labels = [f"{o['company']} — {o['product']}" for o in opps]
+        pick = st.selectbox("Opportunity", labels)
+        data = _json.loads(opps[labels.index(pick)]["data_json"])
+        st.markdown(data.get("report_md", "_No report body stored._"))
+    else:
+        st.info("No opportunities yet — run the generator in tab ①.")
+
+    st.divider()
+    st.subheader("Rejected leads")
+    if rej:
+        st.dataframe(pd.DataFrame(rej)[
+            ["company", "product", "reason", "evidence_count"]],
+            use_container_width=True, hide_index=True)
+    else:
+        st.caption("None yet.")
+
+    st.divider()
+    st.subheader("Export / download")
+    st.caption("On free cloud hosts the disk is wiped on restart — download your "
+               "outputs here to keep them.")
+    zbytes = _zip_reports()
+    if zbytes:
+        st.download_button("⬇ Download all outputs (.zip)", zbytes,
+                           file_name="pharmadrone_reports.zip", type="primary")
+        colx, coly, colz = st.columns(3)
+        for col, fname, label in (
+            (colx, "opportunities.csv", "opportunities.csv"),
+            (coly, "evidence.json", "evidence.json"),
+            (colz, "rejected_leads.csv", "rejected_leads.csv")):
+            fpath = settings.REPORTS_DIR / fname
+            if fpath.exists():
+                col.download_button(label, fpath.read_bytes(), file_name=fname)
+    else:
+        st.caption("No exports yet — generate the 5 test reports first.")
+
+# ==========================================================================
+# TAB 4 — CONNECTORS (self-test)
+# ==========================================================================
+with tab_conn:
+    st.subheader("Connector self-test")
+    st.caption("Test each source in isolation. Failures show the exact reason "
+               "(bad key, timeout, endpoint change) — nothing is hidden.")
+    q = st.text_input("Test query", DEFAULT_QUERY)
+    if st.button("Run connector test", type="primary"):
+        with st.spinner("Testing each source…"):
+            results = check_all(q)
+        st.dataframe(pd.DataFrame([
+            {"Source": r["source"], "Status": r["status"], "Records": r["count"],
+             "Needs key": "yes" if r["needs_key"] else "no",
+             "Error / sample": r["error"] or r["sample"]}
+            for r in results]), use_container_width=True, hide_index=True)
+        ok = sum(1 for r in results if r["status"] == "OK")
+        (st.success if ok == len(results) else st.warning)(
+            f"{ok}/{len(results)} sources OK")
+    st.caption("CLI equivalent:  python -m pharmadrone.test_connectors \"your query\"")

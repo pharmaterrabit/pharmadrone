@@ -1,0 +1,218 @@
+# PharmaDrone — Auto Case Study Generator (v1)
+
+A **private, local** pharma BD intelligence generator. It scans public sources,
+extracts company + product opportunities relevant to a formulation / drug-delivery
+/ CDMO seller, scores each one 0–100, rejects weak leads, and writes evidence-backed
+case studies (Markdown + HTML) plus a searchable static site.
+
+Not a chatbot. No accounts, no billing. Runs on your laptop **or** as a private
+password-protected cloud dashboard (see `DEPLOY.md` for Render Free). **Milestone 1
+is just 5 real test reports** — you review those before generating any more.
+
+---
+
+## Run it on your laptop (step by step)
+
+You need **Python 3.10+**. Check with `python --version` (or `python3 --version`).
+
+**1. Open a terminal in the project folder**
+
+```bash
+cd pharmadrone
+```
+
+**2. Create a private environment and install the libraries**
+
+macOS / Linux:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Windows (PowerShell):
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+**3. Add your keys**
+
+Copy the example file to `.env`, then open `.env` in any text editor.
+
+- macOS / Linux: `cp .env.example .env`
+- Windows: `copy .env.example .env`
+
+You choose your LLM provider — **no single provider is required**. The default is
+OpenRouter with a free model, so you typically need just two keys:
+- `OPENROUTER_API_KEY` → https://openrouter.ai/keys  (default provider)
+- `TAVILY_API_KEY` → https://tavily.com  (web search)
+
+To use a different LLM, set `LLM_PROVIDER` to `groq`, `openai`, or `gemini` and
+fill that provider's key instead. Gemini is optional — only needed if you pick it.
+
+**4. (Recommended) Test the data sources first**
+
+```bash
+python -m pharmadrone.test_connectors
+```
+You'll see a check or cross for each source, with the exact error if one fails.
+Fix any failure before generating (usually a missing key or no internet).
+
+**5. Start the dashboard**
+
+```bash
+streamlit run app.py
+```
+Your browser opens at **http://localhost:8501**. Go to tab **1 Generate** and
+click **Generate 5 Test Reports**.
+
+**6. Review the output**
+
+Reports appear in tab **3 Results & Export** and as files in the `./reports`
+folder. Nothing beyond 5 runs unless you choose to.
+
+> Prefer the command line? `python -m pharmadrone.run --mode test`
+
+---
+
+## The keys (what each is for)
+
+Set **`LLM_PROVIDER`** to choose your model source, then set only that provider's key.
+
+| Variable | Required? | Used for |
+|---|---|---|
+| `LLM_PROVIDER` | pick one | `openrouter` (default) / `groq` / `openai` / `gemini` |
+| `LLM_MODEL` | optional | model string; blank = cheap provider default |
+| `OPENROUTER_API_KEY` | if provider=openrouter | extraction / scoring / writing |
+| `GROQ_API_KEY` | if provider=groq | extraction / scoring / writing |
+| `OPENAI_API_KEY` | if provider=openai | extraction / scoring / writing |
+| `GEMINI_API_KEY` | if provider=gemini | **optional fallback** only |
+| `TAVILY_API_KEY` | **Yes** | company / press / pipeline + multilingual web discovery |
+| `APP_PASSWORD` | cloud | dashboard login |
+| `CONTACT_EMAIL` | optional | politer Crossref + OpenAlex |
+
+ClinicalTrials.gov, openFDA, Europe PMC, OpenAlex and Crossref need **no key**.
+
+Cheap/free default models per provider: OpenRouter
+`meta-llama/llama-3.3-70b-instruct:free`, Groq `llama-3.1-8b-instant`, OpenAI
+`gpt-4o-mini`, Gemini `gemini-2.0-flash`. If the app can't reach the LLM it fails
+with a clear message naming the exact key/env var to fix.
+
+---
+
+## Testing each source separately (point 6)
+
+- **Dashboard:** tab **4 Connectors** -> type a query -> *Run connector test*.
+  Each source shows Status / Records / Error, so you see exactly which one works.
+- **Command line:** `python -m pharmadrone.test_connectors "apixaban food effect"`
+
+If a source fails you get a plain-English reason (bad key, timeout, rate limit,
+endpoint changed) — **never a silent empty result** (point 7).
+
+---
+
+## Errors are shown, not hidden (point 7)
+
+Every connector returns a status. During a run, any source failure is:
+1. printed live in the progress log,
+2. counted in the coverage summary ("Failed" column), and
+3. listed verbatim in a warning panel after the run.
+
+A single source failing does **not** crash the run — the other sources continue.
+
+---
+
+## Scoring: a 0–100 Opportunity Score (point 8)
+
+I switched from the skill's /30 rubric to a **100-point Opportunity Score** so it
+matches this project's spec. The spec's dimensions map to points like this:
+
+| Dimension | Max |
+|---|---:|
+| Scientific evidence strength | 20 |
+| Technology (seller) fit | 20 |
+| Commercial trigger / timing | 15 |
+| Evidence quality / diversity | 15 |
+| Company accessibility | 15 |
+| Regional relevance | 10 |
+| Novelty | 5 |
+| **Positive subtotal** | **100** |
+| Red-flag penalty | -15 |
+| Duplication penalty | -10 |
+
+**Grades:** A >= 70 (actionable) · B 50–69 (validate) · C 30–49 (evidence anchor)
+· D < 30 (rejected).
+
+Guardrails carried over from the /30 skill so strong science alone can't inflate a
+lead: class-level-only evidence with no active trigger is capped at 60; poor buyer
+accessibility is capped at 73; a single source type is capped at 60.
+
+---
+
+## Every report includes (point 9)
+
+Evidence links · source type · **source language** · confidence score · red flags
+· "Why This May Be Wrong" · outreach angle — plus the full 12-section structure
+(`templates/report_template.md`). Evidence table columns:
+`Source Type | Source Language | Title | ID | Link | Supports | Does not prove`.
+
+---
+
+## Source coverage summary (point 10)
+
+After every run you get a table (dashboard + `reports/source_coverage.json`)
+showing, per source — ClinicalTrials.gov, openFDA, Europe PMC, OpenAlex, Crossref,
+Web/Tavily — how many evidence items it returned, how many **accepted leads cite
+it**, how many queries ran, and how many failed.
+
+This is **global public-source scouting, not complete global regulator coverage.**
+
+---
+
+## What v1 does NOT do yet
+
+- No 100-report run. Milestone 1 = 5 reports.
+- No national regulators yet. See `ROADMAP.md` — next up is **EMA/EPARs**, then
+  **FDA Orange Book**, then PMDA, then NMPA, then the rest. Global reach today
+  comes from Tavily multilingual queries + region tagging.
+
+---
+
+## Honest limitation
+
+The connectors are coded against each API's documented shape but were **not run
+against the live endpoints in the build environment** (it had no internet). They
+fail soft and report errors clearly, so first run is the real test — that's what
+the connector self-test and the 5-report milestone are for. If a field looks off,
+each connector is ~30 lines and isolated.
+
+---
+
+## Cost
+
+Live estimate shows in the dashboard cost breakdown. Tune
+`pricing_usd_per_million_tokens` in the config to current rates. Cheaper levers:
+`--basic-queries`, fewer active regions/signals, lower `per_source` in
+`retrieve.py`. The 5-report test is designed to cost cents.
+
+---
+
+## File map
+
+```
+app.py                          Streamlit dashboard (Generate / Profile / Results / Connectors)
+config/technology_profile.yaml  Seller profile, signals, regions, sources, budget
+.env.example                    Keys (copy to .env)
+templates/report_template.md    The 12-section report structure
+ROADMAP.md                      Connector priority order
+pharmadrone/
+  settings.py cost.py db.py llm.py
+  test_connectors.py            per-source self-test (CLI + dashboard)
+  connectors/  clinicaltrials openfda europepmc openalex crossref tavily_search  (+ base)
+  pipeline/    queries retrieve extract dedup score report
+  export.py    md/html/csv/json + static site
+  run.py       orchestrator + CLI + coverage summary
+reports/                        generated output (created on first run)
+```

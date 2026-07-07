@@ -1,0 +1,90 @@
+# ============================================================
+# Technology Profile — edit this to steer the whole generator.
+# The dashboard reads and writes this file.
+# ============================================================
+
+seller_profile:
+  # Default seller assumption (from your pharma-bd skill). Override freely.
+  name: "Specialist formulation / drug-product technology"
+  description: >
+    Particle engineering, solubility enhancement, bioavailability enhancement,
+    oral solid-dose formulation development, preformulation, biorelevant
+    dissolution and analytical support.
+  best_fit:
+    - poorly soluble small molecules (BCS II / IV)
+    - dissolution-limited absorption
+    - food-effect mitigation
+    - dose / pill burden reduction
+  avoid:
+    - biologics
+    - vaccines
+    - diagnostics
+    - medical devices
+    - purely academic mechanisms with no company link
+
+molecule_scope:
+  include: ["small molecule"]
+  exclude: ["biologic", "vaccine", "diagnostic", "device"]
+
+# Problem signals the pipeline searches for and scores against.
+problem_signals:
+  - poor solubility
+  - low bioavailability
+  - food effect
+  - dose burden
+  - formulation challenge
+  - topical delivery limitation
+  - paediatric formulation gap
+  - geriatric formulation gap
+  - lifecycle reformulation
+  - patent-cliff reformulation opportunity
+  - delivery limitation
+  - stability issue
+  - adherence burden
+  - BCS class II
+  - BCS class IV
+  - pH-dependent solubility
+
+# Regions. `active: true` are used by default. Add/enable as you expand.
+regions:
+  - {name: "United States",        code: "US", lang: "en", active: true}
+  - {name: "European Union/EEA",   code: "EU", lang: "en", active: true}
+  - {name: "United Kingdom",       code: "UK", lang: "en", active: true}
+  - {name: "Japan",                code: "JP", lang: "ja", active: true}
+  - {name: "China",                code: "CN", lang: "zh", active: true}
+  - {name: "Saudi Arabia/GCC",     code: "SA", lang: "ar", active: true}
+  - {name: "Australia",            code: "AU", lang: "en", active: false}
+  - {name: "Canada",               code: "CA", lang: "en", active: false}
+  - {name: "Brazil",               code: "BR", lang: "pt", active: true}
+  - {name: "India",                code: "IN", lang: "en", active: false}
+  - {name: "South Korea",          code: "KR", lang: "ko", active: false}
+  - {name: "Switzerland",          code: "CH", lang: "de", active: false}
+
+# Which connectors to run. Free ones need no key.
+sources:
+  clinicaltrials: {enabled: true,  needs_key: false}
+  openfda:        {enabled: true,  needs_key: false}
+  europepmc:      {enabled: true,  needs_key: false}
+  openalex:       {enabled: true,  needs_key: false}
+  crossref:       {enabled: true,  needs_key: false}
+  tavily:         {enabled: true,  needs_key: true}   # web/company/press discovery
+
+output:
+  flagship_reports: 20
+  scouting_memos: 80
+  min_evidence_links: 2          # reject leads below this
+  flagship_min_source_types: 3
+
+# Cost model — adjust to current provider pricing (USD per 1M tokens).
+# Used purely for the on-screen estimate; not billing. Free models -> ~0.
+pricing_usd_per_million_tokens:
+  openrouter_input: 0.05
+  openrouter_output: 0.10
+  groq_input: 0.05
+  groq_output: 0.08
+  gemini_input: 0.10
+  gemini_output: 0.40
+  openai_input: 0.15
+  openai_output: 0.60
+  tavily_per_search: 0.005      # approximate; adjust to your plan
+budget_usd_total: 200
