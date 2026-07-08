@@ -6,6 +6,7 @@ language and the mandatory 'Red Flags' and 'Why This May Be Wrong' sections.
 """
 from __future__ import annotations
 from .. import llm
+from . import failure_signal
 
 SECTIONS = [
     "Quick Summary", "Scientific / RWE View", "Business & Commercial View",
@@ -94,4 +95,6 @@ def write_report(opp: dict, cost, report_type: str = "memo") -> str:
               f"Confidence {opp.get('confidence','?')}*\n\n"
               "> Automated public-source scan. Possible opportunity signal only — "
               "requires human validation before commercial decision-making.\n\n")
-    return header + body
+    # Embed the Failure Signal Intelligence section (deterministic, evidence-based).
+    failure_section = failure_signal.render_failure_section(opp)
+    return header + body + failure_section

@@ -6,13 +6,14 @@ the dashboard can show a Source Coverage Summary and any failures loudly.
 """
 from __future__ import annotations
 from collections import defaultdict
-from ..connectors import (clinicaltrials, openfda, europepmc, openalex,
-                          crossref, tavily_search)
+from ..connectors import (clinicaltrials, openfda, openfda_enforcement, europepmc,
+                          openalex, crossref, tavily_search)
 
 # Structured databases are English-indexed; run them on English queries only.
 STRUCTURED = {
     "clinicaltrials": clinicaltrials.search,
     "openfda": openfda.search,
+    "openfda_enforcement": openfda_enforcement.search,
     "europepmc": europepmc.search,
     "openalex": openalex.search,
     "crossref": crossref.search,
@@ -22,6 +23,7 @@ STRUCTURED = {
 SOURCE_LABELS = {
     "clinicaltrials": "ClinicalTrials.gov",
     "openfda": "openFDA (Drug Label)",
+    "openfda_enforcement": "openFDA (Enforcement/Recalls)",
     "europepmc": "Europe PMC",
     "openalex": "OpenAlex",
     "crossref": "Crossref",

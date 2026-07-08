@@ -207,6 +207,7 @@ config/technology_profile.yaml  Seller profile, signals, regions, sources, budge
 .env.example                    Keys (copy to .env)
 templates/report_template.md    The 12-section report structure
 ROADMAP.md                      Connector priority order
+FAILURE_SIGNAL_LAYER.md         Embedded failure/rescue intelligence (see below)
 pharmadrone/
   settings.py cost.py db.py llm.py
   test_connectors.py            per-source self-test (CLI + dashboard)

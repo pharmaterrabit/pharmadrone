@@ -28,7 +28,11 @@ keys and no secrets get pushed**. (Double-check: `git status` should not list `.
 
 ---
 
-## Part 2 — Deploy on Render Free
+## Part 2 — Deploy
+
+Two supported paths. Both read the same code; only where secrets live differs.
+
+### Option A — Render Free (env vars)
 
 1. Go to https://render.com and sign in with GitHub.
 2. Click **New +** → **Blueprint**.
@@ -46,18 +50,40 @@ keys and no secrets get pushed**. (Double-check: `git status` should not list `.
    `PYTHON_VERSION` — are already filled from the blueprint.)
 5. Click **Apply** / **Create**. First build takes a few minutes.
 6. When it's live, Render shows a URL like `https://pharmadrone.onrender.com`.
-   Open it → you'll get the **password screen** → enter your `APP_PASSWORD`.
+   Open it → password screen → enter your `APP_PASSWORD`.
 
-That's your private URL. Only people with the password get in.
+### Option B — Streamlit Community Cloud (st.secrets)
+
+Streamlit Cloud's secrets panel uses TOML and is read via `st.secrets`, not
+plain environment variables. The app already checks `st.secrets` automatically
+as a fallback, so this works with no code changes.
+
+1. Go to https://share.streamlit.io and sign in with GitHub.
+2. **New app** → pick your private `pharmadrone` repo, branch `main`, main file
+   `app.py`.
+3. Before or after first deploy: app **⋮ menu → Settings → Secrets** → paste the
+   contents of `.streamlit/secrets.toml.example` with your real values filled in
+   (at minimum `APP_PASSWORD`, `OPENROUTER_API_KEY`, `TAVILY_API_KEY`). Save.
+4. Streamlit rebuilds automatically. Open the app's `*.streamlit.app` URL →
+   password screen → enter your `APP_PASSWORD`.
+
+`requirements.txt` and `.python-version` are already set up for this — no extra
+config file is needed for Streamlit Cloud itself.
+
+Whichever you pick, the app behaves identically: same password gate, same 5-report
+cap, same hidden scale buttons.
 
 ---
 
 ## Where to add or change keys later
 
-Render dashboard → your **pharmadrone** service → **Environment** tab →
-**Environment Variables**. Edit a value, click **Save Changes** — Render redeploys
-automatically. Keys live only here, on the server; they are never sent to the
-browser or embedded in any JavaScript.
+- **Render:** service → **Environment** tab → edit values → **Save Changes**
+  (auto-redeploys).
+- **Streamlit Community Cloud:** app → **⋮ → Settings → Secrets** → edit the
+  TOML → **Save** (auto-reruns).
+
+Keys live only on the host; they are never sent to the browser or embedded in
+any JavaScript.
 
 | Variable | What it does |
 |---|---|
@@ -92,13 +118,18 @@ Scale runs stay locked until you set `ALLOW_SCALE_RUNS=true`.
 
 ---
 
-## Render Free — things to know
+## Render Free / Streamlit Community Cloud — things to know
 
-- **Sleeps after ~15 min idle.** Next visit cold-starts in ~30–60s. Fine for private use.
-- **512 MB RAM.** v1 fits (no browser automation). If a big run ever gets killed
-  for memory, keep to the 5-report cap or reduce active regions/sources.
-- **Disk is ephemeral.** Files in `./reports` are wiped on restart/redeploy, so
-  **download the .zip during your session**. The dashboard makes this one click.
+Both are free tiers with similar tradeoffs:
+
+- **Sleeps when idle** (Render ~15 min; Streamlit Cloud similar). Cold start on
+  next visit takes ~30–60s. Fine for private use.
+- **Limited RAM** (Render 512 MB; Streamlit Cloud ~1 GB). v1 fits (no browser
+  automation). If a run ever gets killed for memory, keep to the 5-report cap
+  or reduce active regions/sources.
+- **Disk is ephemeral** on both. Files in `./reports` are wiped on
+  restart/redeploy/reboot, so **download the .zip during your session**. The
+  dashboard makes this one click.
 
 ---
 

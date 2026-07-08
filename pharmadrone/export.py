@@ -53,12 +53,13 @@ def write_datasets(opps, rejected, reports_dir: Path) -> None:
         w = csv.writer(f)
         w.writerow(["company", "product", "generic_name", "region", "stage",
                     "problem_signal", "grade", "score", "confidence",
-                    "evidence_count", "report_type"])
+                    "evidence_count", "report_type", "failure_rescue_strength"])
         for o in opps:
             w.writerow([o.get("company"), o.get("product"), o.get("generic_name"),
                         o.get("region"), o.get("stage"), o.get("problem_signal"),
                         o.get("grade"), o.get("score"), o.get("confidence"),
-                        len(o.get("evidence", [])), o.get("report_type")])
+                        len(o.get("evidence", [])), o.get("report_type"),
+                        o.get("failure_rescue_strength", "")])
     # evidence.json
     ev = [{"company": o.get("company"), "product": o.get("product"),
            "evidence": o.get("evidence", [])} for o in opps]

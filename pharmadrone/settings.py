@@ -14,7 +14,21 @@ load_dotenv(ROOT / ".env")
 
 
 def env(key: str, default: str = "") -> str:
-    return os.getenv(key, default) or default
+    """Read a config value from, in order: real environment variables (Render,
+    Railway, your local .env via python-dotenv), then Streamlit Community
+    Cloud's st.secrets (its canonical secrets mechanism — not guaranteed to be
+    mirrored into os.environ on every Streamlit version), then the default.
+    """
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return default
 
 
 def load_profile() -> dict:

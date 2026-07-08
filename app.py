@@ -19,8 +19,8 @@ st.set_page_config(page_title="PharmaDrone", layout="wide")
 auth.require_password()
 
 # --- Deploy guardrails (set as env vars on the host) ------------------------
-ALLOW_SCALE = os.getenv("ALLOW_SCALE_RUNS", "").lower() in ("1", "true", "yes")
-MAX_PER_RUN = int(os.getenv("MAX_REPORTS_PER_RUN", "5"))
+ALLOW_SCALE = settings.env("ALLOW_SCALE_RUNS", "").lower() in ("1", "true", "yes")
+MAX_PER_RUN = int(settings.env("MAX_REPORTS_PER_RUN", "5") or "5")
 
 profile = settings.load_profile()
 

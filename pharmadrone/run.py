@@ -7,11 +7,10 @@
 from __future__ import annotations
 import argparse
 import json
-import os
 from collections import Counter
 from . import settings, db, export
 from .cost import CostTracker
-from .pipeline import queries, retrieve, extract, dedup, score, report
+from .pipeline import queries, retrieve, extract, dedup, score, report, failure_signal
 
 
 def _coverage_summary(coverage: dict, accepted: list[dict]) -> dict:
@@ -40,7 +39,7 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     say = log or (lambda m: None)
 
     # Hard budget guardrail: one click can never exceed MAX_REPORTS_PER_RUN.
-    hard_cap = int(os.getenv("MAX_REPORTS_PER_RUN", "5"))
+    hard_cap = int(settings.env("MAX_REPORTS_PER_RUN", "5") or "5")
     if n > hard_cap:
         say(f"Run cap active: requested {n}, capped to {hard_cap} "
             "(set MAX_REPORTS_PER_RUN to change).")
@@ -63,6 +62,10 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     say(f"Building queries ({'LLM' if use_llm_queries else 'basic'})…")
     qs = (queries.build_llm_queries(profile, cost) if use_llm_queries
           else queries.build_basic_queries(profile))
+    # Failure Signal Intelligence: add failure/rescue-oriented queries.
+    fail_on = profile.get("failure_signal", {}).get("enabled", True)
+    if fail_on:
+        qs = qs + failure_signal.build_failure_queries(profile)
     if mode == "test":
         seen, trimmed = set(), []
         for q in qs:
@@ -75,11 +78,21 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     say(f"Retrieved {len(evidence)} raw evidence items. Extracting…")
 
     candidates = extract.extract(evidence, cost)
+    if fail_on:
+        fsignals = failure_signal.extract_failure_signals(evidence, cost)
+        say(f"Failure Signal layer: {len(fsignals)} raw failure/rescue candidate(s).")
+        candidates = candidates + fsignals
     candidates = dedup.dedup(candidates)
     say(f"{len(candidates)} unique candidates after dedup. Scoring (0-100)…")
 
     min_ev = profile["output"].get("min_evidence_links", 2)
     accepted, rejected = score.score_and_filter(candidates, cost, min_ev)
+    # Apply the new scoring dimension (Failure / Rescue Signal Strength) and re-rank.
+    if fail_on:
+        for opp in accepted:
+            if opp.get("failure"):
+                failure_signal.apply_failure_scoring(opp)
+        accepted.sort(key=lambda x: x.get("score", 0), reverse=True)
     accepted = accepted[:n]
     say(f"{len(accepted)} accepted, {len(rejected)} rejected. Writing reports…")
 

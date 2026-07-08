@@ -64,10 +64,17 @@ regions:
 sources:
   clinicaltrials: {enabled: true,  needs_key: false}
   openfda:        {enabled: true,  needs_key: false}
+  openfda_enforcement: {enabled: true, needs_key: false}   # recalls / regulatory failure
   europepmc:      {enabled: true,  needs_key: false}
   openalex:       {enabled: true,  needs_key: false}
   crossref:       {enabled: true,  needs_key: false}
   tavily:         {enabled: true,  needs_key: true}   # web/company/press discovery
+
+# Failure Signal Intelligence Layer (embedded in the Opportunity Engine).
+failure_signal:
+  enabled: true
+  # Evidence priority: regulatory > company > trial > publication > conference > news.
+  # Rescue strength influences ranking but never overrides evidence quality.
 
 output:
   flagship_reports: 20

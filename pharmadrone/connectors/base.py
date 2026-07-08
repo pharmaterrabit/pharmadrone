@@ -87,9 +87,11 @@ def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
         return r.json()
 
 
-def record(source_type, source_name, record_id, title, url, raw_text, language="en"):
+def record(source_type, source_name, record_id, title, url, raw_text,
+           language="en", source_category=None):
     return {
         "source_type": source_type,
+        "source_category": source_category or _CATEGORY.get(source_type, "news"),
         "source_name": source_name,
         "record_id": record_id or "",
         "title": (title or "").strip(),
@@ -98,3 +100,11 @@ def record(source_type, source_name, record_id, title, url, raw_text, language="
         "raw_text": (raw_text or "").strip()[:4000],
         "date_accessed": today(),
     }
+
+
+# Coarse category mapping (the failure layer refines web hits by domain).
+_CATEGORY = {
+    "recall": "regulatory", "enforcement": "regulatory", "label": "regulatory",
+    "trial": "trial", "paper": "publication", "web": "news",
+    "company": "company", "conference": "conference", "patent": "patent",
+}

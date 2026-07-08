@@ -26,10 +26,12 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
                          ps.get("armsInterventionsModule", {}).get("interventions", [])]
         nct = ident.get("nctId", "")
         phases = ", ".join(design.get("phases", []) or [])
+        why_stopped = status.get("whyStopped", "")
         raw = (f"Title: {ident.get('briefTitle','')}. Sponsor: {sponsor.get('name','')}. "
                f"Status: {status.get('overallStatus','')}. Phase: {phases}. "
                f"Conditions: {', '.join(cond.get('conditions', []))}. "
-               f"Interventions: {', '.join(interventions)}.")
+               f"Interventions: {', '.join(interventions)}."
+               + (f" WhyStopped: {why_stopped}." if why_stopped else ""))
         out.append(record("trial", NAME, nct, ident.get("briefTitle", ""),
                           f"https://clinicaltrials.gov/study/{nct}", raw))
     return ConnectorResult(NAME, term, ok=True, count=len(out), records=out)

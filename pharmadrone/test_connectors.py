@@ -8,8 +8,8 @@ The dashboard's "④ Connectors" tab calls check_all() and shows the same result
 """
 from __future__ import annotations
 import sys
-from .connectors import (clinicaltrials, openfda, europepmc, openalex,
-                        crossref, tavily_search)
+from .connectors import (clinicaltrials, openfda, openfda_enforcement, europepmc,
+                        openalex, crossref, tavily_search)
 from . import settings
 
 DEFAULT_QUERY = "poorly soluble oral small molecule"
@@ -17,6 +17,7 @@ DEFAULT_QUERY = "poorly soluble oral small molecule"
 CHECKS = [
     ("ClinicalTrials.gov", clinicaltrials.search, False),
     ("openFDA (Drug Label)", openfda.search, False),
+    ("openFDA (Enforcement/Recalls)", openfda_enforcement.search, False),
     ("Europe PMC", europepmc.search, False),
     ("OpenAlex", openalex.search, False),
     ("Crossref", crossref.search, False),
@@ -65,3 +66,4 @@ def _cli():
 
 if __name__ == "__main__":
     _cli()
+EOF

@@ -1,23 +1,24 @@
 """Password gate for the dashboard.
 
-The password lives ONLY in the server-side env var APP_PASSWORD. It is compared
-in Python on the server; it is never sent to the browser or embedded in any
+The password lives ONLY in the server-side config value APP_PASSWORD (a real env
+var on Render/Railway, or a Streamlit Community Cloud secret). It is compared in
+Python on the server; it is never sent to the browser or embedded in any
 frontend JavaScript. If APP_PASSWORD is unset, the app runs but warns loudly —
 so a cloud deploy is never accidentally left open.
 """
 from __future__ import annotations
 import hmac
-import os
 import streamlit as st
+from . import settings
 
 
 def require_password() -> None:
-    pw = os.getenv("APP_PASSWORD", "")
+    pw = settings.env("APP_PASSWORD", "")
 
     if not pw:
         st.warning("⚠ No APP_PASSWORD set — this instance is UNPROTECTED. "
-                   "Set APP_PASSWORD in your host's environment variables before "
-                   "sharing the URL.")
+                   "Set APP_PASSWORD as an environment variable (Render/Railway) "
+                   "or a Streamlit secret before sharing the URL.")
         return
 
     if st.session_state.get("auth_ok"):
