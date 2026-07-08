@@ -43,18 +43,27 @@ def _format_snippets(evidence: list[dict], limit: int = 40) -> str:
     return "\n".join(lines)
 
 
-def extract(evidence: list[dict], cost, batch_size: int = 40) -> list[dict]:
-    """Returns opportunity candidates, each carrying its own 'evidence' list."""
+def extract(evidence: list[dict], cost, batch_size: int = 40) -> tuple[list[dict], dict]:
+    """Returns (candidates, debug). debug reports batch outcomes so a fully
+    failing LLM is visible instead of silently producing zero candidates."""
     candidates = []
+    debug = {"batches_total": 0, "batches_ok": 0, "batches_failed": 0, "errors": []}
     for start in range(0, len(evidence), batch_size):
         batch = evidence[start:start + batch_size]
+        debug["batches_total"] += 1
         prompt = EXTRACT_PROMPT.format(snippets=_format_snippets(batch))
         try:
             items = llm.complete_json(prompt, cost)
-        except Exception:
+        except Exception as e:
+            debug["batches_failed"] += 1
+            debug["errors"].append(f"opportunity extraction batch {start}: {e}")
             continue
         if not isinstance(items, list):
+            debug["batches_failed"] += 1
+            debug["errors"].append(
+                f"opportunity extraction batch {start}: LLM returned non-list JSON")
             continue
+        debug["batches_ok"] += 1
         for it in items:
             if not it.get("company") and not it.get("product"):
                 continue
@@ -76,5 +85,6 @@ def extract(evidence: list[dict], cost, batch_size: int = 40) -> list[dict]:
                         "does_not_prove": it.get("what_source_does_not_prove"),
                     })
             it["evidence"] = attached
+            it["discovery_method"] = "llm-extraction"
             candidates.append(it)
-    return candidates
+    return candidates, debug

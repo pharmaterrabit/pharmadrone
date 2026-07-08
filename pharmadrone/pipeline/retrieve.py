@@ -41,12 +41,15 @@ def retrieve(queries, enabled, cost, per_source=6, progress=None, log=None):
     say = log or (lambda m: None)
     total = len(queries)
 
-    def _handle(res):
+    def _handle(res, region=None, query_text=None):
         cov = coverage[res.source]
         cov["queries"] += 1
         if res.ok:
             cov["ok"] += 1
             cov["evidence"] += res.count
+            for rec in res.records:
+                rec["region_hint"] = region
+                rec["query_text"] = query_text
             evidence.extend(res.records)
         else:
             cov["failed"] += 1
@@ -56,13 +59,15 @@ def retrieve(queries, enabled, cost, per_source=6, progress=None, log=None):
 
     for i, q in enumerate(queries):
         term, lang = q["query"], q.get("lang", "en")
+        plain = q.get("plain_query", term)
         if progress:
             progress(i + 1, total, term)
         if lang == "en":
             for name, fn in STRUCTURED.items():
                 if name in enabled:
-                    _handle(fn(term, per_source))
+                    _handle(fn(plain, per_source), region=q.get("region"), query_text=plain)
         if "tavily" in enabled:
-            _handle(tavily_search.search(term, per_source, cost=cost))
+            _handle(tavily_search.search(term, per_source, cost=cost),
+                   region=q.get("region"), query_text=term)
 
     return evidence, coverage

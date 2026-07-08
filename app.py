@@ -84,8 +84,14 @@ with tab_gen:
     st.caption(f"Budget guardrail: each run is capped at **{MAX_PER_RUN} reports** "
                "(server-side, cannot be exceeded from the UI).")
     run_mode = None
-    if st.button("Generate 5 Test Reports", type="primary"):
+    bcol1, bcol2 = st.columns(2)
+    if bcol1.button("Generate 5 Test Reports", type="primary"):
         run_mode = ("test", 5)
+    if bcol2.button("Generate 5 Failure/Rescue Opportunity Reports"):
+        run_mode = ("failure", 5)
+    st.caption("The Failure/Rescue mode biases every query toward recalls, "
+               "terminations, withdrawals, CRLs, CMC/formulation/quality/delivery "
+               "problems — see `FAILURE_SIGNAL_LAYER.md`.")
 
     if ALLOW_SCALE:
         st.info("Scale runs are unlocked (ALLOW_SCALE_RUNS is on).")
@@ -118,13 +124,18 @@ with tab_gen:
             logbox.code("\n".join(logs[-16:]))
 
         with st.spinner(f"Generating ({mode})…"):
-            accepted, rejected, cost, cov = generate(
+            accepted, rejected, cost, cov, dbg = generate(
                 mode, n, use_llm_queries=use_llm_q,
                 progress=lambda i, t, msg: prog.progress(min(1.0, i / max(t, 1))),
                 log=log)
 
         st.success(f"Generated {len(accepted)} reports · {len(rejected)} rejected · "
                    f"est. ${cost.total_usd} (${cost.per_report_usd}/report)")
+
+        if not accepted:
+            st.error("0 reports generated. Open the Debug panel below — it shows "
+                     "exactly where candidates were lost (LLM batch failures, "
+                     "rejection reasons, or too little evidence).")
 
         st.markdown("### Source coverage summary")
         st.caption("Global public-source scouting — not complete global regulator "
@@ -141,6 +152,31 @@ with tab_gen:
             st.warning(f"{len(errors)} source failure(s) — shown so nothing is "
                        "hidden:")
             st.code("\n".join(errors[:30]))
+
+        with st.expander("🔍 Debug: candidate pipeline (raw evidence → reports)",
+                         expanded=not accepted):
+            st.markdown(f"""
+- **Raw evidence items:** {dbg.get('raw_evidence_count', 0)}
+- **Deterministic candidates discovered** (no LLM needed): {dbg.get('discovered_deterministic', 0)}
+- **LLM opportunity extraction:** {dbg.get('llm_extraction', {}).get('batches_ok', 0)}/{dbg.get('llm_extraction', {}).get('batches_total', 0)} batch(es) ok
+- **LLM failure-signal extraction:** {dbg.get('failure_llm_extraction', {}).get('batches_ok', 0)}/{dbg.get('failure_llm_extraction', {}).get('batches_total', 0)} batch(es) ok
+- **Candidates after dedup:** {dbg.get('candidates_after_dedup', 0)}
+- **Fallback provisional candidates generated:** {dbg.get('fallback_generated', 0)}
+- **Accepted:** {dbg.get('accepted_count', 0)} · **Rejected:** {dbg.get('rejected_count', 0)}
+  - rejected (too little evidence): {dbg.get('scoring', {}).get('rejected_low_evidence', 0)}
+  - rejected (grade D): {dbg.get('scoring', {}).get('rejected_grade_d', 0)}
+  - provisional always-included: {dbg.get('scoring', {}).get('provisional_included', 0)}
+""")
+            llm_errs = (dbg.get('llm_extraction', {}).get('errors', [])
+                       + dbg.get('failure_llm_extraction', {}).get('errors', [])
+                       + dbg.get('scoring', {}).get('score_errors', []))
+            if llm_errs:
+                st.markdown("**LLM errors during this run:**")
+                st.code("\n".join(llm_errs[:20]))
+            top10 = dbg.get('top_entities', [])
+            if top10:
+                st.markdown("**Top product/company names extracted before scoring:**")
+                st.dataframe(pd.DataFrame(top10), use_container_width=True, hide_index=True)
 
         with st.expander("Cost breakdown"):
             st.json(cost.summary())
@@ -193,10 +229,13 @@ with tab_results:
     if opps:
         st.dataframe(pd.DataFrame(opps)[
             ["company", "product", "region", "problem_signal", "grade",
-             "score", "confidence", "evidence_count", "report_type"]],
+             "score", "confidence", "evidence_count", "report_type",
+             "signal_status", "provisional"]],
             use_container_width=True, hide_index=True)
         st.caption("Score is the 0–100 Opportunity Score. Grades: A≥70, B 50–69, "
-                   "C 30–49, D<30 (rejected).")
+                   "C 30–49, D<30 (rejected). `provisional`=1 means the candidate "
+                   "came from deterministic clustering/fallback, not full LLM "
+                   "synthesis — verify before outreach.")
 
         st.markdown("**Evidence links** (source type + language)")
         if ev:

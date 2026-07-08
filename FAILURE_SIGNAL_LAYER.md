@@ -8,6 +8,43 @@ that show a formulation / CMC / physical-form / packaging / delivery / quality /
 manufacturing weakness, then explains the evidence, the technical issue, the
 rescue angle, and the BD action.
 
+## Fix: candidates no longer depend solely on the LLM succeeding
+
+A live run retrieved 84 evidence items but produced 0 reports — the LLM
+extraction step was silently swallowing every failure (`except Exception:
+continue`, no logging), which is fatal with a free/flaky OpenRouter model. This
+is now fixed at the architecture level, not patched at the symptom:
+
+1. **Candidate discovery (`pipeline/discover.py`) always runs first**, using
+   the structured `entities` connectors already extract (trial sponsor, recall
+   firm, label brand/generic, `whyStopped`) — **no LLM call required**.
+2. **LLM extraction runs as an enrichment layer on top.** Its batch failures
+   are now captured and surfaced (dashboard Debug panel + CLI log), never
+   silently dropped.
+3. **Guaranteed fallback**: if, after both steps, the combined candidate count
+   is still below 3 and raw evidence ≥ 20, `discover.build_fallback_candidates()`
+   forces 3-5 provisional candidates from the strongest evidence clusters —
+   including a last-resort tier that groups evidence by source+region when no
+   entity or title can be identified at all. Every provisional candidate is
+   deterministically scored and its report body is written **without calling
+   the LLM**, so the guarantee holds even if the model is completely down.
+4. **Targeted failure queries** replace the old generic phrasing — e.g.
+   `"terminated trial" "poor solubility"`, `"complete response letter" "CMC
+   deficiencies"`, `"recall" "dissolution" tablet` — routed as quoted phrases to
+   Tavily and as plain terms to structured APIs.
+5. A new **"Generate 5 Failure/Rescue Opportunity Reports"** mode biases every
+   query toward recalls, terminations, withdrawals, and CMC/formulation/quality
+   signals, and ranks results by Failure/Rescue Signal Strength first.
+6. A **Debug panel** (dashboard tab ① after a run, or `reports/debug_report.json`)
+   shows: raw evidence count, deterministic vs LLM-extracted candidate counts,
+   candidates after dedup, fallback-generated count, rejection reasons broken
+   down (low evidence / grade D), any LLM batch errors verbatim, and the top 10
+   product/company names seen before scoring.
+
+Net effect: **a healthy evidence haul (≥20 items) can no longer silently end in
+zero reports.** If evidence is genuinely weak, you now get weak/provisional
+reports with a loud banner and `needs_verification` labelling — never silence.
+
 ## Where it plugs in
 
 | Integration point | Implementation |

@@ -88,7 +88,12 @@ def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
 
 
 def record(source_type, source_name, record_id, title, url, raw_text,
-           language="en", source_category=None):
+           language="en", source_category=None, entities=None):
+    """entities: optional dict of deterministic fields the API already gave us
+    (company, product, trial_id, dosage_form, event_type) — used by the
+    candidate-discovery step so opportunity candidates don't depend solely on
+    the LLM successfully parsing free text.
+    """
     return {
         "source_type": source_type,
         "source_category": source_category or _CATEGORY.get(source_type, "news"),
@@ -99,6 +104,7 @@ def record(source_type, source_name, record_id, title, url, raw_text,
         "language": language,
         "raw_text": (raw_text or "").strip()[:4000],
         "date_accessed": today(),
+        "entities": entities or {},
     }
 
 

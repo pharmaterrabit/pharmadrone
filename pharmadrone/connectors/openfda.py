@@ -38,5 +38,12 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
         title = brand or generic or "FDA label"
         url = (f"https://nctr-crs.fda.gov/fdalabel/services/spl/set-ids/{set_id}/spl-doc"
                if set_id else "https://open.fda.gov/apis/drug/label/")
-        out.append(record("label", NAME, app_no or set_id, title, url, raw))
+        out.append(record("label", NAME, app_no or set_id, title, url, raw,
+                          entities={
+                              "company": None,
+                              "product": brand or generic or None,
+                              "trial_id": None,
+                              "dosage_form": route or None,
+                              "event_type": None,
+                          }))
     return ConnectorResult(NAME, term, ok=True, count=len(out), records=out)

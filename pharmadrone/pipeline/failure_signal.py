@@ -77,17 +77,37 @@ def priority_rank(category: str) -> int:
 
 
 # --- Failure/rescue query templates ----------------------------------------
+# Targeted phrases (not generic "poor solubility small molecule oral") so
+# openFDA Enforcement, ClinicalTrials.gov, and web discovery actually surface
+# failure/rescue signals instead of generic literature.
+FAILURE_QUERY_PHRASES = [
+    ('"terminated trial" "poor solubility"', "terminated trial poor solubility"),
+    ('"withdrawn" "formulation issue" pharmaceutical', "withdrawn formulation issue pharmaceutical"),
+    ('"discontinued" "bioavailability" drug company', "discontinued bioavailability drug"),
+    ('"complete response letter" "CMC deficiencies"', "complete response letter CMC deficiencies"),
+    ('"recall" "dissolution" tablet', "recall dissolution tablet"),
+    ('"recall" "stability" drug product', "recall stability drug product"),
+    ('"manufacturing issue" "drug supply" clinical trial', "manufacturing issue drug supply clinical trial"),
+    ('"formulation change" "bioavailability" clinical trial', "formulation change bioavailability clinical trial"),
+    ('"suspended trial" "drug supply issue"', "suspended trial drug supply issue"),
+    ('"failed bioequivalence" tablet', "failed bioequivalence tablet"),
+    ('"dissolution failure" FDA recall', "dissolution failure FDA recall"),
+    ('"impurity" "recall" "tablet"', "impurity recall tablet"),
+    ('"container closure" "recall" drug', "container closure recall drug"),
+    ('"sterility" "recall" injectable', "sterility recall injectable"),
+]
+
+
 def build_failure_queries(profile: dict, max_per_region: int = 4) -> list[dict]:
-    """Regulatory / trial / company / news failure-oriented queries per region."""
+    """Regulatory / trial / company / news failure-oriented queries per region.
+    Tavily gets the quoted phrase (real web search supports it); structured
+    connectors (ClinicalTrials.gov, openFDA) get the plain unquoted terms."""
     out = []
     regions = [r for r in profile.get("regions", []) if r.get("active")]
-    core = ["drug discontinued formulation", "Complete Response Letter CMC",
-            "drug recall manufacturing defect", "withdrawn marketing authorisation",
-            "terminated trial formulation bioavailability",
-            "reformulation stability issue"]
     for region in regions:
-        for term in core[:max_per_region]:
-            out.append({"query": f"{term} {region['name']}",
+        for tavily_q, plain_q in FAILURE_QUERY_PHRASES[:max_per_region]:
+            out.append({"query": f"{tavily_q} {region['name']}",
+                        "plain_query": plain_q,
                         "region": region["name"], "lang": "en", "intent": "failure"})
     # de-dup identical query strings
     seen, uniq = set(), []
@@ -147,20 +167,29 @@ def _format_snippets(evidence: list[dict], limit: int = 40) -> str:
     return "\n".join(lines)
 
 
-def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40) -> list[dict]:
-    """Return failure-signal candidates in the same shape as normal opportunity
-    candidates (company/product + evidence), plus the failure schema fields and
-    a `failure` flag so the report writer knows to render the section."""
+def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40) -> tuple[list[dict], dict]:
+    """Return (failure-signal candidates, debug). Candidates carry the same
+    company/product + evidence shape as normal opportunity candidates, plus the
+    failure schema fields and a `failure` flag so the report writer knows to
+    render the section."""
     signals = []
+    debug = {"batches_total": 0, "batches_ok": 0, "batches_failed": 0, "errors": []}
     for start in range(0, len(evidence), batch_size):
         batch = evidence[start:start + batch_size]
+        debug["batches_total"] += 1
         try:
             items = llm.complete_json(EXTRACT_PROMPT.format(
                 snippets=_format_snippets(batch)), cost)
-        except Exception:
+        except Exception as e:
+            debug["batches_failed"] += 1
+            debug["errors"].append(f"failure-signal extraction batch {start}: {e}")
             continue
         if not isinstance(items, list):
+            debug["batches_failed"] += 1
+            debug["errors"].append(
+                f"failure-signal extraction batch {start}: LLM returned non-list JSON")
             continue
+        debug["batches_ok"] += 1
         for it in items:
             if not it.get("company") and not it.get("product") and not it.get("molecule"):
                 continue
@@ -184,9 +213,10 @@ def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40) ->
                     })
             it["evidence"] = attached
             it["failure"] = True
+            it["discovery_method"] = "llm-extraction"
             it.setdefault("product", it.get("molecule"))
             signals.append(it)
-    return signals
+    return signals, debug
 
 
 # --- Failure / Rescue Signal Strength (new scoring dimension) ---------------

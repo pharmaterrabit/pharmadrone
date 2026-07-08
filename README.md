@@ -66,7 +66,12 @@ Fix any failure before generating (usually a missing key or no internet).
 streamlit run app.py
 ```
 Your browser opens at **http://localhost:8501**. Go to tab **1 Generate** and
-click **Generate 5 Test Reports**.
+click **Generate 5 Test Reports** (or **Generate 5 Failure/Rescue Opportunity
+Reports** to bias toward recalls/terminations/CMC signals — see
+`FAILURE_SIGNAL_LAYER.md`). If a run produces fewer reports than expected, open
+the **🔍 Debug** panel that appears after the run — it shows exactly where
+candidates were lost (LLM errors, rejection reasons, low evidence) rather than
+failing silently.
 
 **6. Review the output**
 

@@ -31,5 +31,12 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
         url = ("https://www.accessdata.fda.gov/scripts/ires/index.cfm"
                if rid else "https://open.fda.gov/apis/drug/enforcement/")
         out.append(record("recall", NAME, rid, title, url, raw,
-                          source_category="regulatory"))
+                          source_category="regulatory",
+                          entities={
+                              "company": firm or None,
+                              "product": r.get("product_description", "")[:80] or None,
+                              "trial_id": None,
+                              "dosage_form": None,
+                              "event_type": "recall",
+                          }))
     return ConnectorResult(NAME, term, ok=True, count=len(out), records=out)

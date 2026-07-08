@@ -33,5 +33,13 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
                f"Interventions: {', '.join(interventions)}."
                + (f" WhyStopped: {why_stopped}." if why_stopped else ""))
         out.append(record("trial", NAME, nct, ident.get("briefTitle", ""),
-                          f"https://clinicaltrials.gov/study/{nct}", raw))
+                          f"https://clinicaltrials.gov/study/{nct}", raw,
+                          entities={
+                              "company": sponsor.get("name") or None,
+                              "product": (interventions[0] if interventions else None),
+                              "trial_id": nct,
+                              "dosage_form": None,
+                              "event_type": ("terminated/withdrawn" if why_stopped
+                                            else status.get("overallStatus")),
+                          }))
     return ConnectorResult(NAME, term, ok=True, count=len(out), records=out)

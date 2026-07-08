@@ -75,6 +75,36 @@ def _grade(total: int) -> str:
     return "D"
 
 
+def deterministic_score(opp: dict) -> dict:
+    """Rule-based score for provisional/fallback candidates — no LLM call, so it
+    always works even when the configured model is completely unavailable.
+    Deliberately capped low (max 60) since it reflects clustering, not full
+    evidence synthesis; still shown (never silently dropped)."""
+    ev = opp.get("evidence", [])
+    cats = {e.get("source_category") for e in ev}
+    base = 10
+    if "regulatory" in cats:
+        base += 20
+    if "company" in cats:
+        base += 12
+    if "trial" in cats:
+        base += 10
+    if "publication" in cats:
+        base += 5
+    base += min(10, 3 * len(ev))
+    if opp.get("problem_category") or opp.get("problem_signal"):
+        base += 8
+    total = max(5, min(60, base))
+    opp["score"] = total
+    opp["grade"] = _grade(total)
+    opp.setdefault("confidence", "low")
+    opp.setdefault("red_flags", [])
+    opp["why_this_may_be_wrong"] = (
+        "This is a deterministic/provisional candidate (clustered from evidence, "
+        "not fully LLM-synthesised) — validate every field before outreach.")
+    return opp
+
+
 def score_one(opp: dict, cost) -> dict:
     ev = opp.get("evidence", [])
     n_types = len({e.get("source_type") for e in ev}) or 0
@@ -108,27 +138,48 @@ def score_one(opp: dict, cost) -> dict:
         opp["confidence"] = res.get("confidence", "low")
         opp["red_flags"] = res.get("red_flags", []) or []
         opp["why_this_may_be_wrong"] = res.get("why_this_may_be_wrong", "")
+        opp["score_error"] = None
     except Exception as e:
         opp.update(score=0, grade="D", confidence="low",
                    red_flags=[f"scoring failed: {e}"],
-                   why_this_may_be_wrong="Automated scoring could not run.")
+                   why_this_may_be_wrong="Automated scoring could not run.",
+                   score_error=str(e))
     return opp
 
 
 def score_and_filter(candidates, cost, min_evidence: int = 2):
-    """Returns (accepted, rejected). Rejects < min_evidence links or grade D."""
+    """Returns (accepted, rejected, debug).
+
+    Provisional candidates (opp['provisional'] is True) are scored
+    deterministically (no LLM dependency) and ALWAYS included in `accepted` —
+    they exist precisely to guarantee visible, clearly-labelled output when the
+    LLM path is degraded. Non-provisional candidates keep the full LLM-scored,
+    evidence-gated path unchanged.
+    """
     accepted, rejected = [], []
+    debug = {"rejected_low_evidence": 0, "rejected_grade_d": 0,
+             "score_errors": [], "provisional_included": 0}
     for c in candidates:
+        if c.get("provisional"):
+            scored = deterministic_score(c)
+            accepted.append(scored)
+            debug["provisional_included"] += 1
+            continue
         n_ev = len(c.get("evidence", []))
         if n_ev < min_evidence:
             c["reject_reason"] = f"only {n_ev} evidence link(s); need {min_evidence}"
             rejected.append(c)
+            debug["rejected_low_evidence"] += 1
             continue
         scored = score_one(c, cost)
+        if scored.get("score_error"):
+            debug["score_errors"].append(
+                f"{scored.get('company') or scored.get('product')}: {scored['score_error']}")
         if scored["grade"] == "D":
             scored["reject_reason"] = f"grade D (score {scored['score']}/100)"
             rejected.append(scored)
+            debug["rejected_grade_d"] += 1
         else:
             accepted.append(scored)
     accepted.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return accepted, rejected
+    return accepted, rejected, debug

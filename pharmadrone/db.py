@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     region TEXT, stage TEXT, problem_signal TEXT,
     score INTEGER, grade TEXT, report_type TEXT,
     confidence TEXT, evidence_count INTEGER,
+    signal_status TEXT, provisional INTEGER, discovery_method TEXT,
     data_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS evidence (
@@ -50,15 +51,18 @@ def save_opportunity(conn, opp: dict, evidence: list[dict]) -> None:
         """INSERT OR REPLACE INTO opportunities
         (id, company, parent_company, product, generic_name, brand_name, dev_code,
          indication, therapeutic_area, region, stage, problem_signal,
-         score, grade, report_type, confidence, evidence_count, data_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         score, grade, report_type, confidence, evidence_count,
+         signal_status, provisional, discovery_method, data_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             opp["id"], opp.get("company"), opp.get("parent_company"),
             opp.get("product"), opp.get("generic_name"), opp.get("brand_name"),
             opp.get("dev_code"), opp.get("indication"), opp.get("therapeutic_area"),
             opp.get("region"), opp.get("stage"), opp.get("problem_signal"),
             opp.get("score"), opp.get("grade"), opp.get("report_type"),
-            opp.get("confidence"), len(evidence), json.dumps(opp, ensure_ascii=False),
+            opp.get("confidence"), len(evidence),
+            opp.get("signal_status"), int(bool(opp.get("provisional"))),
+            opp.get("discovery_method"), json.dumps(opp, ensure_ascii=False),
         ),
     )
     for e in evidence:
