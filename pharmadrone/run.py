@@ -24,7 +24,8 @@ import json
 from collections import Counter
 from . import settings, db, export
 from .cost import CostTracker
-from .pipeline import queries, retrieve, extract, dedup, score, report, failure_signal, discover
+from .pipeline import (queries, retrieve, extract, dedup, score, report,
+                       failure_signal, discover, event_discovery)
 
 FALLBACK_MIN_TOTAL = 3
 FALLBACK_MAX_TOTAL = 5
@@ -83,13 +84,9 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     # --- Build queries -------------------------------------------------
     if mode == "failure":
         # Bias entirely toward failure/rescue signals, as requested.
-        say("Failure/Rescue mode: using only failure-oriented queries.")
-        qs = failure_signal.build_failure_queries(profile)
-        seen, trimmed = set(), []
-        for q in qs:
-            if q["region"] not in seen:
-                seen.add(q["region"]); trimmed.append(q)
-        qs = trimmed[:6]
+        say("Failure/Rescue mode: EVENT-FIRST discovery (recalls, stopped trials, "
+            "targeted regulator/company web) — academic literature only as support.")
+        qs = []  # event-first mode does not use generic query phrases
     else:
         say(f"Building queries ({'LLM' if use_llm_queries else 'basic'})…")
         qs = (queries.build_llm_queries(profile, cost) if use_llm_queries
@@ -102,11 +99,35 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
                 if q["region"] not in seen:
                     seen.add(q["region"]); trimmed.append(q)
             qs = trimmed[:5]
-    say(f"{len(qs)} queries. Sources enabled: {', '.join(enabled)}")
+    say(f"{len(qs)} generic queries. Sources enabled: {', '.join(enabled)}")
 
     # --- Retrieve --------------------------------------------------------
-    evidence, coverage = retrieve.retrieve(qs, enabled, cost, progress=progress, log=say)
-    say(f"Retrieved {len(evidence)} raw evidence items.")
+    # Event-first discovery runs in failure mode (exclusively) and in test mode
+    # (in addition to the generic queries), so structured event records lead.
+    evidence, coverage = [], {}
+    if mode in ("failure", "test") and fail_on:
+        ev_events, cov_events = event_discovery.discover_events(
+            profile, cost, per_source=8 if mode == "failure" else 4, log=say)
+        say(f"Event-first discovery: {len(ev_events)} event record(s) "
+            "(recalls / stopped trials / targeted web).")
+        evidence.extend(ev_events)
+        coverage.update(cov_events)
+        debug["event_first_count"] = len(ev_events)
+        debug["has_event_source"] = event_discovery.has_event_source(ev_events)
+
+    if qs:
+        ev_generic, cov_generic = retrieve.retrieve(
+            qs, enabled, cost, progress=progress, log=say)
+        evidence.extend(ev_generic)
+        # merge coverage (event-first + generic) per source
+        for src, c in cov_generic.items():
+            if src in coverage:
+                for k in ("queries", "ok", "failed", "evidence"):
+                    coverage[src][k] += c[k]
+                coverage[src]["errors"].extend(c["errors"])
+            else:
+                coverage[src] = c
+    say(f"Retrieved {len(evidence)} raw evidence items total.")
     debug["raw_evidence_count"] = len(evidence)
     debug["top_entities"] = discover.top_entities(evidence, n=10)
 
@@ -141,6 +162,19 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     debug["candidates_after_dedup"] = len(candidates)
     say(f"{len(candidates)} unique candidates after dedup.")
 
+    # Minimum event-source requirement (req 7) for failure mode: at least one
+    # candidate must rest on a regulatory recall, a stopped trial, or a
+    # company/news event source — not academic literature.
+    if mode == "failure":
+        event_backed = [c for c in candidates
+                        if event_discovery.has_event_source(c.get("evidence", []))]
+        debug["event_backed_candidates"] = len(event_backed)
+        if not event_backed:
+            say("⚠ Failure/Rescue mode: no candidate is backed by a regulatory "
+                "recall, stopped trial, or company/news event source. Not "
+                "generating literature-only reports. Broaden regions or check "
+                "that openFDA Enforcement / ClinicalTrials.gov returned records.")
+
     # --- Step 3: conservative fallback (valid targets only) ---------------
     fallback, fb_info = discover.build_fallback_candidates(
         evidence, existing_count=len(candidates),
@@ -161,19 +195,39 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     accepted, rejected, score_debug = score.score_and_filter(candidates, cost, min_ev)
     debug["scoring"] = score_debug
 
+    # Source-priority rule (req 5): regulatory recall/enforcement > trial
+    # status/whyStopped > company/investor > pharma news > academic.
+    def _source_priority(o: dict) -> int:
+        cats = {e.get("source_category") for e in o.get("evidence", [])}
+        stypes = {e.get("source_type") for e in o.get("evidence", [])}
+        if "recall" in stypes:
+            return 5
+        if "trial" in stypes and o.get("failure_event_confirmed"):
+            return 4
+        if "regulatory" in cats:
+            return 4
+        if "company" in cats:
+            return 3
+        if "news" in cats:
+            return 2
+        return 1  # academic/other
+
     # Apply the Failure / Rescue Signal Strength dimension and re-rank.
     if fail_on:
         for opp in accepted:
             if opp.get("failure"):
                 failure_signal.apply_failure_scoring(opp)
         if mode == "failure":
-            # Bias ranking toward rescue strength in this mode.
+            # Bias ranking toward source priority, then rescue strength, then score.
             rank = {"High": 3, "Medium": 2, "Low": 1, "Reject/flag": 0}
             accepted.sort(key=lambda x: (
-                rank.get(x.get("failure_rescue_strength"), 0), x.get("score", 0)),
+                _source_priority(x),
+                rank.get(x.get("failure_rescue_strength"), 0),
+                x.get("score", 0)),
                 reverse=True)
         else:
-            accepted.sort(key=lambda x: x.get("score", 0), reverse=True)
+            accepted.sort(key=lambda x: (_source_priority(x), x.get("score", 0)),
+                          reverse=True)
     accepted = accepted[:n]
     # FINAL QUALITY GATE: every report must name a real product/company/trial
     # target. Drop anything that still lacks one (belt-and-braces against any

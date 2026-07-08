@@ -278,6 +278,7 @@ def _to_evidence_entry(e: dict) -> dict:
         "language": e.get("language", "en"),
         "english_summary": (e.get("raw_text") or "")[:400],
         "date_accessed": e.get("date_accessed"),
+        "entities": e.get("entities") or {},
         "supports": None,
         "does_not_prove": None,
     }

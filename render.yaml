@@ -18,6 +18,8 @@ services:
         value: openrouter
       - key: LLM_MODEL             # cheap/free default; change per provider
         value: meta-llama/llama-3.3-70b-instruct:free
+      - key: LLM_FALLBACK_MODEL    # optional: tried once if main model 429s/fails
+        sync: false
 
       # --- LLM keys: ONLY the one for your LLM_PROVIDER is required ---
       - key: OPENROUTER_API_KEY    # needed if LLM_PROVIDER=openrouter (default)

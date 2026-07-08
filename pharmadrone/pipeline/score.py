@@ -183,11 +183,25 @@ def score_and_filter(candidates, cost, min_evidence: int = 2):
         # or a trial with a confirmed stopped-status) is sufficient on its own —
         # one FDA recall outweighs two vague web snippets. Weaker sources still
         # need >= min_evidence links.
-        authoritative = any(
-            e.get("source_type") == "recall"
-            or e.get("source_category") == "regulatory"
-            or (e.get("source_type") == "trial" and c.get("failure_event_confirmed"))
-            for e in ev)
+        event_confirmed = bool(c.get("failure_event_confirmed"))
+
+        def _is_authoritative(e):
+            ent = e.get("entities") or {}
+            if e.get("source_type") == "recall":
+                return True
+            if e.get("source_category") == "regulatory":
+                return True
+            # company/trial single sources qualify only when a concrete event
+            # (discontinuation / stopped trial) is attached — either on the
+            # evidence item or confirmed at the candidate level.
+            if e.get("source_category") == "company" and (
+                    ent.get("event_type") or event_confirmed):
+                return True
+            if e.get("source_type") == "trial" and (
+                    event_confirmed or ent.get("event_type")):
+                return True
+            return False
+        authoritative = any(_is_authoritative(e) for e in ev)
         min_needed = 1 if authoritative else min_evidence
         if n_ev < min_needed:
             c["reject_reason"] = (f"only {n_ev} evidence link(s); need {min_needed}"

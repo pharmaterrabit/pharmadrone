@@ -45,6 +45,52 @@ Net effect: **a healthy evidence haul (≥20 items) can no longer silently end i
 zero reports.** If evidence is genuinely weak, you now get weak/provisional
 reports with a loud banner and `needs_verification` labelling — never silence.
 
+## Event-first discovery (finds real targets, not generic literature)
+
+Earlier, failure discovery fed generic phrases ("terminated trial poor
+solubility …") into every connector — which returned **0** records from
+openFDA/ClinicalTrials.gov (recalls and trials don't contain those phrases), so
+only literature APIs produced evidence and everything was correctly rejected as
+generic → 0 reports. Fixed by querying the structured event sources the way they
+are actually indexed, BEFORE any literature:
+
+- **openFDA Enforcement** — `discover_events()` searches the recall **reason**
+  field for concrete quality terms: dissolution failure, stability, impurity,
+  degradation, sterility, particulate matter, contamination, failed
+  specifications, subpotent/superpotent, packaging defect, labeling mix-up,
+  container closure, leakage, crystallization, precipitation, failed release
+  testing, cGMP, manufacturing defect.
+- **ClinicalTrials.gov** — `discover_stopped()` filters by
+  `overallStatus = TERMINATED | WITHDRAWN | SUSPENDED | NO_LONGER_AVAILABLE`,
+  then parses `whyStopped`, sponsor, intervention, condition, phase, and drug
+  name. A candidate is created only when a specific trial/drug/sponsor exists.
+- **Tavily** — source-targeted queries (`site:fda.gov recall dissolution tablet`,
+  `site:ema.europa.eu withdrawn application quality CMC`, `site:tga.gov.au recall
+  medicine stability`, `discontinued development bioavailability company press
+  release`, `complete response letter CMC deficiencies drug`, …), region-gated
+  to the active regulators. No generic literature searches.
+
+**Source priority** (regulatory recall/enforcement > trial status/whyStopped >
+company/investor > pharma news > academic) is applied to ranking. Academic papers
+are gathered only by the normal path and are used for mechanism context after a
+target exists — they can never dominate Failure/Rescue mode.
+
+**Minimum event-source requirement:** in Failure/Rescue mode at least one
+candidate must rest on a regulatory recall, a stopped trial, or a company/news
+event source; otherwise the run says so instead of emitting literature-only
+reports.
+
+**429 handling:** the LLM client uses 429-aware exponential backoff, an optional
+`LLM_FALLBACK_MODEL` tried once on persistent failure, and — critically — the
+whole event-first + scoring path is deterministic, so a fully rate-limited LLM
+still yields correct reports from the structured event records (verified in the
+benchmark with every LLM call forced to 429).
+
+**Benchmark:** `python -m pharmadrone.benchmark --offline` (fixtures, no network)
+or `python -m pharmadrone.benchmark` (live) checks all five classes — a recall /
+quality issue, a terminated/withdrawn trial, a regulatory rejection/withdrawal, a
+company-discontinued programme, and a formulation/CMC signal.
+
 ## Quality gates (no fabricated targets or events)
 
 Deterministic discovery is now strictly gated so it can never emit a

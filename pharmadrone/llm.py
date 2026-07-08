@@ -66,7 +66,9 @@ def check_config() -> tuple[bool, str]:
 
 
 # --------------------------------------------------------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=20), reraise=True)
+# 429-aware retry: wait longer on rate limits (free OpenRouter tiers 429 often).
+@retry(stop=stop_after_attempt(4),
+       wait=wait_exponential(multiplier=2, min=4, max=40), reraise=True)
 def _openai_compatible(url, key, model, prompt, cost, provider, temperature) -> str:
     headers = {"Authorization": f"Bearer {key}"}
     if provider == "openrouter":
@@ -109,7 +111,13 @@ def _gemini(url_tpl, key, model, prompt, cost, temperature) -> str:
 
 
 def complete(prompt: str, cost=None, temperature: float = 0.2) -> str:
-    """Send a prompt to the configured provider. Raises LLMError if misconfigured."""
+    """Send a prompt to the configured provider. Raises LLMError if misconfigured.
+
+    On a persistent failure (e.g. OpenRouter 429 after retries) with an
+    OpenAI-compatible provider, tries LLM_FALLBACK_MODEL once before giving up.
+    Everything downstream is designed to work deterministically if this still
+    fails, so a rate-limited LLM degrades gracefully rather than zeroing output.
+    """
     ok, msg = check_config()
     if not ok:
         raise LLMError(msg)
@@ -117,9 +125,16 @@ def complete(prompt: str, cost=None, temperature: float = 0.2) -> str:
     url, key_name, _default, oai = PROVIDERS[provider]
     key = settings.env(key_name)
     model = active_model(provider)
-    if oai:
+    if not oai:
+        return _gemini(url, key, model, prompt, cost, temperature)
+    try:
         return _openai_compatible(url, key, model, prompt, cost, provider, temperature)
-    return _gemini(url, key, model, prompt, cost, temperature)
+    except Exception:
+        fallback = settings.env("LLM_FALLBACK_MODEL")
+        if fallback and fallback != model:
+            return _openai_compatible(url, key, fallback, prompt, cost, provider,
+                                      temperature)
+        raise
 
 
 def complete_json(prompt: str, cost=None):

@@ -14,21 +14,32 @@ from . import settings
 
 DEFAULT_QUERY = "poorly soluble oral small molecule"
 
+# (label, callable, needs_key, event_query_override)
+# event_query_override runs the EVENT-FIRST function with a concrete term so the
+# self-test verifies recall/stopped-trial discovery, not just generic keyword search.
 CHECKS = [
-    ("ClinicalTrials.gov", clinicaltrials.search, False),
-    ("openFDA (Drug Label)", openfda.search, False),
-    ("openFDA (Enforcement/Recalls)", openfda_enforcement.search, False),
-    ("Europe PMC", europepmc.search, False),
-    ("OpenAlex", openalex.search, False),
-    ("Crossref", crossref.search, False),
-    ("Web (Tavily)", tavily_search.search, True),
+    ("ClinicalTrials.gov", clinicaltrials.search, False, None),
+    ("ClinicalTrials.gov (stopped-trial discovery)",
+     lambda q, n: clinicaltrials.discover_stopped("bioavailability", n), False, ""),
+    ("openFDA (Drug Label)", openfda.search, False, None),
+    ("openFDA (Enforcement/Recalls)", openfda_enforcement.search, False, None),
+    ("openFDA (Recall reason: dissolution failure)",
+     lambda q, n: openfda_enforcement.discover_events("dissolution failure", n),
+     False, ""),
+    ("Europe PMC", europepmc.search, False, None),
+    ("OpenAlex", openalex.search, False, None),
+    ("Crossref", crossref.search, False, None),
+    ("Web (Tavily)", tavily_search.search, True, None),
+    ("Web (Tavily) site:fda.gov recall",
+     lambda q, n: tavily_search.search("site:fda.gov recall dissolution tablet", n),
+     True, ""),
 ]
 
 
 def check_all(query: str = DEFAULT_QUERY, per_source: int = 3) -> list[dict]:
     """Run every connector once. Returns a list of result dicts (no raw records)."""
     out = []
-    for label, fn, needs_key in CHECKS:
+    for label, fn, needs_key, _override in CHECKS:
         res = fn(query, per_source)
         sample = ""
         if res.records:

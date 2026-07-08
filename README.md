@@ -79,6 +79,9 @@ Reports appear in tab **3 Results & Export** and as files in the `./reports`
 folder. Nothing beyond 5 runs unless you choose to.
 
 > Prefer the command line? `python -m pharmadrone.run --mode test`
+> Failure/Rescue (event-first) mode: `python -m pharmadrone.run --mode failure`
+> Verify discovery finds real cases: `python -m pharmadrone.benchmark` (live) or
+> `python -m pharmadrone.benchmark --offline` (fixtures, no network).
 
 ---
 
