@@ -45,7 +45,49 @@ Net effect: **a healthy evidence haul (≥20 items) can no longer silently end i
 zero reports.** If evidence is genuinely weak, you now get weak/provisional
 reports with a loud banner and `needs_verification` labelling — never silence.
 
-## Where it plugs in
+## Quality gates (no fabricated targets or events)
+
+Deterministic discovery is now strictly gated so it can never emit a
+"None — prodrug / terminated" style report:
+
+- **Valid-target gate.** A candidate is only created when the evidence contains
+  a real target: a specific product/molecule name, a company/sponsor/
+  manufacturer, a trial ID, or a recall/enforcement product. Generic scientific
+  terms are blacklisted (prodrug, treatment, review, narrative review,
+  therapeutic targets, pharmacological mechanisms, emerging approaches,
+  off-label, patient, disease, formulation, bioavailability, …) and never count
+  as a target on their own.
+- **Cluster classes.** Every cluster is classified `valid_bd_opportunity`,
+  `weak_academic_cluster`, or `rejected_generic_literature`. **Only
+  `valid_bd_opportunity` becomes a report.** The other two are counted in the
+  debug panel and discarded. If nothing is valid, the run says *"Generic
+  literature cluster found, no BD opportunity generated"* — an honest zero, not
+  a fabricated report.
+- **Confirmed-event-only failure labelling.** A signal is labelled terminated/
+  withdrawn/recalled/discontinued ONLY when a source structurally proves it: a
+  recall/enforcement record, a trial's stopped-status/`whyStopped`, or a
+  regulatory/company source stating the event. An academic paper that merely
+  *mentions* the word "terminated" never triggers a failure label.
+- **Failure-section evidence gate.** The Failure Signal Intelligence section
+  requires a confirmed event AND at least one BD-grade source (regulatory /
+  company / trial / recall). With academic literature only, it renders
+  *"No confirmed failure event found — mechanistic/academic relevance only, not
+  a confirmed rescue opportunity"* and shows the papers as technical background.
+- **Evidence dedup.** Evidence is de-duplicated by URL, DOI/PMID/PMCID/record ID,
+  and normalised title, so the same paper can't appear multiple times in one
+  Evidence Table.
+- **Conservative fallback.** On LLM failure (e.g. OpenRouter 429), the fallback
+  produces provisional candidates ONLY from valid-target clusters. If none
+  exist, it produces nothing — it never invents a target to hit a quota. A single
+  authoritative source (one FDA recall, or a trial with a confirmed stopped
+  status) satisfies the evidence floor and is scored deterministically, so a 429
+  during scoring can't silently discard a legitimate regulatory candidate.
+- **Debug transparency.** For every accepted candidate the debug panel shows its
+  valid-target type, whether the event is confirmed, source diversity, whether
+  it has regulatory/company/trial evidence, and why it isn't a generic academic
+  cluster; plus a table of discarded clusters with the rejection reason.
+
+
 
 | Integration point | Implementation |
 |---|---|

@@ -111,9 +111,12 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     debug["top_entities"] = discover.top_entities(evidence, n=10)
 
     # --- Step 1: deterministic candidate discovery (always runs, no LLM) --
-    discovered = discover.discover_candidates(evidence)
-    say(f"Candidate discovery (deterministic): {len(discovered)} candidate(s) "
-        f"from structured entities.")
+    discovered, disc_breakdown = discover.discover_candidates(evidence)
+    debug["discovery_breakdown"] = disc_breakdown
+    say(f"Candidate discovery (deterministic): {len(discovered)} valid BD "
+        f"candidate(s); {disc_breakdown['weak_academic_cluster']} weak-academic "
+        f"and {disc_breakdown['rejected_generic_literature']} generic-literature "
+        "cluster(s) discarded (no valid target).")
     debug["discovered_deterministic"] = len(discovered)
 
     # --- Step 2: LLM-based extraction (best-effort enrichment) ------------
@@ -138,17 +141,19 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     debug["candidates_after_dedup"] = len(candidates)
     say(f"{len(candidates)} unique candidates after dedup.")
 
-    # --- Step 3: guaranteed fallback if still short ------------------------
-    fallback = discover.build_fallback_candidates(
+    # --- Step 3: conservative fallback (valid targets only) ---------------
+    fallback, fb_info = discover.build_fallback_candidates(
         evidence, existing_count=len(candidates),
         min_total=FALLBACK_MIN_TOTAL, max_total=FALLBACK_MAX_TOTAL,
         min_raw_evidence=FALLBACK_MIN_RAW_EVIDENCE)
+    debug["fallback_info"] = fb_info
     if fallback:
-        say(f"⚠ Only {len(candidates)} candidate(s) after normal extraction with "
-            f"{len(evidence)} evidence items — generating {len(fallback)} "
-            "provisional candidate(s) from the strongest evidence clusters "
-            "(clearly labelled; verify before outreach).")
+        say(f"Fallback: {len(fallback)} provisional candidate(s) from valid-target "
+            "clusters only (clearly labelled; verify before outreach).")
         candidates = dedup.dedup(candidates + fallback)
+    elif fb_info["triggered"]:
+        say(f"⚠ Fallback found no valid product/company/trial/recall target — "
+            f"{fb_info['reason']}. No misleading reports generated.")
     debug["fallback_generated"] = len(fallback)
 
     say("Scoring (0-100)…")
@@ -170,14 +175,46 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         else:
             accepted.sort(key=lambda x: x.get("score", 0), reverse=True)
     accepted = accepted[:n]
+    # FINAL QUALITY GATE: every report must name a real product/company/trial
+    # target. Drop anything that still lacks one (belt-and-braces against any
+    # path that slipped a generic/blacklisted entity through) so we never emit a
+    # "None — prodrug" / "Unknown company" report.
+    def _has_valid_target(o: dict) -> bool:
+        company = None if discover.is_blacklisted_target(o.get("company")) else o.get("company")
+        product = None if discover.is_blacklisted_target(o.get("product")) else o.get("product")
+        has_trial = any(e.get("source_type") == "trial" or (e.get("record_id") or "").upper().startswith("NCT")
+                        for e in o.get("evidence", []))
+        return bool(company or product or o.get("dev_code") or has_trial)
+
+    kept, dropped = [], []
+    for o in accepted:
+        (kept if _has_valid_target(o) else dropped).append(o)
+    if dropped:
+        say(f"⚠ Dropped {len(dropped)} candidate(s) at final gate: no valid "
+            "product/company/trial target (generic literature — not suitable for "
+            "a BD report).")
+    accepted = kept
+    debug["final_gate_dropped"] = len(dropped)
+    # Deduplicate evidence within every accepted candidate (no repeated papers).
+    for opp in accepted:
+        opp["evidence"] = discover.dedup_evidence(opp.get("evidence", []))
     debug["accepted_count"] = len(accepted)
     debug["rejected_count"] = len(rejected)
     say(f"{len(accepted)} accepted, {len(rejected)} rejected. Writing reports…")
 
     if not accepted:
-        say("✗ 0 reports generated. See the Debug panel: check LLM errors above "
-            "and confirm at least one source (esp. openFDA/ClinicalTrials.gov) "
-            "returned evidence with recognisable company/product names.")
+        db_ = debug.get("discovery_breakdown", {})
+        if (db_.get("valid_bd_opportunity", 0) == 0
+                and (db_.get("weak_academic_cluster", 0)
+                     or db_.get("rejected_generic_literature", 0))):
+            say("Generic literature cluster(s) found, no BD opportunity generated. "
+                "No valid product/company/asset/trial/recall target was present in "
+                "the retrieved evidence — this is the correct, honest result, not "
+                "a hidden failure. Try the Failure/Rescue mode or broaden regions.")
+        else:
+            say("✗ 0 reports generated. See the Debug panel: check LLM errors above "
+                "and confirm at least one source (esp. openFDA/ClinicalTrials.gov) "
+                "returned evidence with recognisable company/product names.")
 
     n_flag = profile["output"].get("flagship_reports", 20) if mode not in ("memo",) else 0
     for i, opp in enumerate(accepted):

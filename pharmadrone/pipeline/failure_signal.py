@@ -18,6 +18,7 @@ free of network deps so scoring/reporting import cleanly).
 """
 from __future__ import annotations
 from .. import llm
+from . import discover
 
 # --- Failure / rescue vocabulary -------------------------------------------
 FAILURE_TERMS = [
@@ -191,8 +192,19 @@ def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40) ->
             continue
         debug["batches_ok"] += 1
         for it in items:
-            if not it.get("company") and not it.get("product") and not it.get("molecule"):
+            # Quality gate: a valid target (product/company/molecule/trial) that
+            # is NOT a generic/blacklisted scientific term. Otherwise discard.
+            company = it.get("company")
+            product = it.get("product") or it.get("molecule")
+            if discover.is_blacklisted_target(company):
+                company = None
+            if discover.is_blacklisted_target(product):
+                product = None
+            if not company and not product:
+                debug.setdefault("rejected_generic", 0)
+                debug["rejected_generic"] += 1
                 continue
+            it["company"], it["product"] = company, product
             attached = []
             for i in it.get("evidence_ids") or []:
                 if isinstance(i, int) and 0 <= i < len(batch):
@@ -211,12 +223,31 @@ def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40) ->
                         "supports": it.get("confirmed_fact"),
                         "does_not_prove": it.get("red_flags"),
                     })
-            it["evidence"] = attached
+            it["evidence"] = discover.dedup_evidence(attached)
             it["failure"] = True
             it["discovery_method"] = "llm-extraction"
-            it.setdefault("product", it.get("molecule"))
+            # Strict: the failure section will only assert an event if the
+            # evidence structurally confirms it (see render_failure_section).
+            # Do NOT trust a bare LLM-provided event_type as confirmation.
+            it["failure_event_confirmed"] = bool(_event_from_evidence(it["evidence"]))
             signals.append(it)
     return signals, debug
+
+
+def _event_from_evidence(evidence: list[dict]) -> str | None:
+    """Lightweight structural check used at extraction time (mirrors the strict
+    render-time gate): only recall records or BD-grade sources whose text states
+    an event count. Academic papers never count."""
+    words = ("terminat", "withdraw", "recall", "discontinu", "suspend",
+             "complete response letter", "clinical hold", "refused")
+    for e in evidence:
+        if e.get("source_type") == "recall":
+            return "recall"
+        cat = e.get("source_category")
+        text = (str(e.get("english_summary", "")) + " " + str(e.get("title", ""))).lower()
+        if cat in ("regulatory", "company", "trial") and any(w in text for w in words):
+            return next((w for w in words if w in text), "event")
+    return None
 
 
 # --- Failure / Rescue Signal Strength (new scoring dimension) ---------------
@@ -270,11 +301,60 @@ def apply_failure_scoring(opp: dict) -> dict:
 
 
 # --- Report section (deterministic; rendered from stored fields) -----------
+def has_bd_grade_evidence(opp: dict) -> bool:
+    """True if at least one evidence item is regulatory, company, trial, or a
+    recall/enforcement record — the minimum quality gate for a real failure
+    signal. Academic-only evidence does NOT qualify."""
+    for e in opp.get("evidence", []):
+        cat = e.get("source_category") or source_category(
+            e.get("source_type", ""), e.get("url", ""))
+        if cat in ("regulatory", "company", "trial"):
+            return True
+        if e.get("source_type") in ("recall", "trial", "label"):
+            return True
+    return False
+
+
+def _event_structurally_confirmed(opp: dict) -> str | None:
+    """Return a failure event string ONLY when the evidence structurally proves
+    it — a recall/enforcement record, or a trial/regulatory/company evidence item
+    whose own text/entities state the event. A bare `event_type` field (which the
+    LLM path may set speculatively) is NOT sufficient and is ignored here.
+    Academic papers can never confirm an event on their own.
+    """
+    event_words = ("terminat", "withdraw", "recall", "discontinu", "suspend",
+                   "complete response letter", "clinical hold", "refused")
+    for e in opp.get("evidence", []):
+        stype = e.get("source_type")
+        cat = e.get("source_category") or source_category(stype or "", e.get("url", ""))
+        if stype == "recall":
+            return "recall"
+        text = (str(e.get("english_summary", "")) + " " + str(e.get("title", ""))).lower()
+        # Trial-status confirmation: a trial source whose text states a stop.
+        if stype == "trial" and any(w in text for w in event_words):
+            return next((w for w in ("terminated", "withdrawn", "suspended")
+                        if w in text), "trial stopped")
+        # Regulatory/company source that explicitly states the event.
+        if cat in ("regulatory", "company") and any(w in text for w in event_words):
+            return next((w for w in ("recall", "withdrawn", "discontinued",
+                                     "terminated", "complete response letter",
+                                     "refused") if w in text), "event stated")
+    return None
+
+
 def render_failure_section(opp: dict) -> str:
     """Render the 'Failure Signal Intelligence' section from extracted fields.
-    Deterministic (no fresh LLM) so it faithfully reflects the evidence."""
+    Deterministic (no fresh LLM) so it faithfully reflects the evidence.
+
+    Quality gate: a real failure signal requires BOTH a STRUCTURALLY CONFIRMED
+    failure event (from the evidence itself, not a speculative field) AND at
+    least one BD-grade source (regulatory/company/trial/recall). If only academic
+    literature exists, we render a 'No confirmed failure event' notice (technical
+    background), never an invented failure.
+    """
     if not opp.get("failure"):
         return ""
+
     ev_lines = []
     for e in sorted(opp.get("evidence", []),
                     key=lambda x: priority_rank(x.get("source_category")
@@ -284,18 +364,60 @@ def render_failure_section(opp: dict) -> str:
         ev_lines.append(f"- **[{cat}]** {e.get('title','')} "
                         f"({e.get('language','en')}) — [{e.get('url','')}]"
                         f"({e.get('url','')})")
+    ev_block = "\n".join(ev_lines) if ev_lines else "- (no evidence attached)"
+
+    # Strict: confirm the event from the evidence, ignoring any speculative
+    # event_type field. This closes the loophole where an LLM-guessed
+    # event_type on academic-only evidence rendered a fake "terminated" signal.
+    confirmed_event = _event_structurally_confirmed(opp)
+    bd_grade = has_bd_grade_evidence(opp)
+    event_confirmed = bool(confirmed_event)
+
+    # No confirmed event OR no BD-grade source -> NOT a failure signal.
+    if not (event_confirmed and bd_grade):
+        reason = ("only academic/mechanistic literature is available"
+                  if not bd_grade else
+                  "no explicit failure event (terminated/withdrawn/recalled/"
+                  "discontinued) is stated in the evidence")
+        return f"""
+
+## Failure Signal Intelligence
+
+**No confirmed failure event found.** {reason.capitalize()}.
+
+**Assessment:** Mechanistic / academic relevance only — **not a confirmed rescue
+opportunity.** The sources below are shown as technical background; they do not
+establish that any specific product or programme was terminated, withdrawn,
+recalled, or discontinued.
+
+**Background evidence:**
+{ev_block}
+
+**Problem classification (from literature only):** {opp.get('problem_category') or 'not established'}
+
+**What must be verified before this becomes a BD signal:** a regulatory record
+(recall/CRL/withdrawal), a clinical-trial stopped-status with reason, a company/
+investor disclosure, or reputable pharma news confirming a specific failure event
+for a named product or company.
+
+> Signal status: **needs verification**. This is technical background, not a
+failure/rescue signal.
+"""
+
+    # Confirmed event + BD-grade source -> real failure signal.
     partners = ", ".join(opp.get("potential_partners", []) or []) or "—"
     return f"""
 
 ## Failure Signal Intelligence
 
-**Signal summary:** {opp.get('failure_reason') or 'Possible failure/rescue signal — see below.'}
+**Signal summary:** Confirmed {confirmed_event} event affecting \
+{opp.get('product') or opp.get('company') or 'the identified asset'}.
 
-**What happened?** {opp.get('event_type','—')} · {opp.get('product','—')} · \
+**What happened?** {confirmed_event} · {opp.get('product','—')} · \
 {opp.get('company','—')} · {opp.get('region','—')} · {opp.get('event_date','date not stated')}
 
 **Evidence:**
-{chr(10).join(ev_lines) if ev_lines else '- (no evidence attached)'}
+{ev_block}
 
 **Problem classification:** {opp.get('problem_category') or 'not established (needs verification)'}
 

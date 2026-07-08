@@ -6,6 +6,7 @@ does not prove'.
 from __future__ import annotations
 import json
 from .. import llm
+from . import discover
 
 EXTRACT_PROMPT = """You are a pharma BD intelligence analyst. From the evidence
 snippets below, extract distinct COMPANY + PRODUCT/ASSET opportunities that may
@@ -65,8 +66,19 @@ def extract(evidence: list[dict], cost, batch_size: int = 40) -> tuple[list[dict
             continue
         debug["batches_ok"] += 1
         for it in items:
-            if not it.get("company") and not it.get("product"):
+            # Quality gate: reject candidates whose only "entity" is a generic /
+            # blacklisted scientific term (prodrug, treatment, review, etc.).
+            company = it.get("company")
+            product = it.get("product")
+            if discover.is_blacklisted_target(company):
+                company = None
+            if discover.is_blacklisted_target(product):
+                product = None
+            if not company and not product and not it.get("dev_code"):
+                debug.setdefault("rejected_generic", 0)
+                debug["rejected_generic"] += 1
                 continue
+            it["company"], it["product"] = company, product
             ev_ids = it.get("evidence_ids") or []
             attached = []
             for i in ev_ids:
@@ -74,6 +86,7 @@ def extract(evidence: list[dict], cost, batch_size: int = 40) -> tuple[list[dict
                     src = batch[i]
                     attached.append({
                         "source_type": src["source_type"],
+                        "source_category": src.get("source_category"),
                         "source_name": src["source_name"],
                         "record_id": src["record_id"],
                         "title": src["title"],
@@ -84,7 +97,7 @@ def extract(evidence: list[dict], cost, batch_size: int = 40) -> tuple[list[dict
                         "supports": it.get("confirmed_fact"),
                         "does_not_prove": it.get("what_source_does_not_prove"),
                     })
-            it["evidence"] = attached
+            it["evidence"] = discover.dedup_evidence(attached)
             it["discovery_method"] = "llm-extraction"
             candidates.append(it)
     return candidates, debug

@@ -155,18 +155,52 @@ with tab_gen:
 
         with st.expander("🔍 Debug: candidate pipeline (raw evidence → reports)",
                          expanded=not accepted):
+            disc = dbg.get('discovery_breakdown', {})
+            fbinfo = dbg.get('fallback_info', {})
             st.markdown(f"""
 - **Raw evidence items:** {dbg.get('raw_evidence_count', 0)}
-- **Deterministic candidates discovered** (no LLM needed): {dbg.get('discovered_deterministic', 0)}
-- **LLM opportunity extraction:** {dbg.get('llm_extraction', {}).get('batches_ok', 0)}/{dbg.get('llm_extraction', {}).get('batches_total', 0)} batch(es) ok
-- **LLM failure-signal extraction:** {dbg.get('failure_llm_extraction', {}).get('batches_ok', 0)}/{dbg.get('failure_llm_extraction', {}).get('batches_total', 0)} batch(es) ok
+- **Deterministic cluster classification:**
+  - valid BD opportunity: **{disc.get('valid_bd_opportunity', 0)}**
+  - weak academic cluster (discarded): {disc.get('weak_academic_cluster', 0)}
+  - rejected generic literature (discarded): {disc.get('rejected_generic_literature', 0)}
+- **LLM opportunity extraction:** {dbg.get('llm_extraction', {}).get('batches_ok', 0)}/{dbg.get('llm_extraction', {}).get('batches_total', 0)} batch(es) ok · {dbg.get('llm_extraction', {}).get('rejected_generic', 0)} generic entity(ies) rejected
+- **LLM failure-signal extraction:** {dbg.get('failure_llm_extraction', {}).get('batches_ok', 0)}/{dbg.get('failure_llm_extraction', {}).get('batches_total', 0)} batch(es) ok · {dbg.get('failure_llm_extraction', {}).get('rejected_generic', 0)} generic entity(ies) rejected
 - **Candidates after dedup:** {dbg.get('candidates_after_dedup', 0)}
-- **Fallback provisional candidates generated:** {dbg.get('fallback_generated', 0)}
+- **Fallback:** generated {fbinfo.get('generated', 0)} · valid targets available {fbinfo.get('valid_available', 0)} · _{fbinfo.get('reason','n/a')}_
+- **Final valid-target gate dropped:** {dbg.get('final_gate_dropped', 0)} (no real product/company/trial)
 - **Accepted:** {dbg.get('accepted_count', 0)} · **Rejected:** {dbg.get('rejected_count', 0)}
   - rejected (too little evidence): {dbg.get('scoring', {}).get('rejected_low_evidence', 0)}
   - rejected (grade D): {dbg.get('scoring', {}).get('rejected_grade_d', 0)}
-  - provisional always-included: {dbg.get('scoring', {}).get('provisional_included', 0)}
 """)
+            examples = disc.get('discarded_examples', [])
+            if examples:
+                st.markdown("**Discarded clusters (why they are NOT reports):**")
+                st.dataframe(pd.DataFrame(examples), use_container_width=True,
+                             hide_index=True)
+
+            if accepted:
+                rows = []
+                for o in accepted:
+                    cats = sorted({e.get("source_category") for e in o.get("evidence", [])
+                                  if e.get("source_category")})
+                    rows.append({
+                        "target": o.get("company") or o.get("product"),
+                        "valid_target_type": o.get("valid_target_type", "—"),
+                        "event_confirmed": bool(o.get("failure_event_confirmed")),
+                        "event": o.get("event_type") or "—",
+                        "source_categories": ", ".join(cats) or "—",
+                        "has_reg/company/trial": any(c in cats for c in
+                            ("regulatory", "company", "trial")),
+                        "why_accepted": o.get("discovery_reason")
+                            or ("LLM-extracted opportunity"
+                                if o.get("discovery_method") == "llm-extraction"
+                                else "scored opportunity"),
+                    })
+                st.markdown("**Accepted candidates — why each is a valid target "
+                            "(not a generic cluster):**")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                             hide_index=True)
+
             llm_errs = (dbg.get('llm_extraction', {}).get('errors', [])
                        + dbg.get('failure_llm_extraction', {}).get('errors', [])
                        + dbg.get('scoring', {}).get('score_errors', []))
@@ -175,7 +209,7 @@ with tab_gen:
                 st.code("\n".join(llm_errs[:20]))
             top10 = dbg.get('top_entities', [])
             if top10:
-                st.markdown("**Top product/company names extracted before scoring:**")
+                st.markdown("**Top valid product/company names extracted before scoring:**")
                 st.dataframe(pd.DataFrame(top10), use_container_width=True, hide_index=True)
 
         with st.expander("Cost breakdown"):

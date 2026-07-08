@@ -140,10 +140,22 @@ def score_one(opp: dict, cost) -> dict:
         opp["why_this_may_be_wrong"] = res.get("why_this_may_be_wrong", "")
         opp["score_error"] = None
     except Exception as e:
-        opp.update(score=0, grade="D", confidence="low",
-                   red_flags=[f"scoring failed: {e}"],
-                   why_this_may_be_wrong="Automated scoring could not run.",
-                   score_error=str(e))
+        # LLM scoring failed (e.g. 429 / bad JSON). Don't silently kill a
+        # legitimate candidate: if it has a valid target or authoritative
+        # evidence, score it deterministically instead of assigning grade D.
+        ev = opp.get("evidence", [])
+        authoritative = any(
+            x.get("source_type") == "recall"
+            or x.get("source_category") in ("regulatory", "company", "trial")
+            for x in ev)
+        if opp.get("valid_target_type") or opp.get("failure_event_confirmed") or authoritative:
+            deterministic_score(opp)
+            opp["score_error"] = f"LLM scoring failed ({e}); used deterministic score"
+        else:
+            opp.update(score=0, grade="D", confidence="low",
+                       red_flags=[f"scoring failed: {e}"],
+                       why_this_may_be_wrong="Automated scoring could not run.",
+                       score_error=str(e))
     return opp
 
 
@@ -165,9 +177,21 @@ def score_and_filter(candidates, cost, min_evidence: int = 2):
             accepted.append(scored)
             debug["provisional_included"] += 1
             continue
-        n_ev = len(c.get("evidence", []))
-        if n_ev < min_evidence:
-            c["reject_reason"] = f"only {n_ev} evidence link(s); need {min_evidence}"
+        ev = c.get("evidence", [])
+        n_ev = len(ev)
+        # A single HIGH-AUTHORITY source (regulatory record, recall/enforcement,
+        # or a trial with a confirmed stopped-status) is sufficient on its own —
+        # one FDA recall outweighs two vague web snippets. Weaker sources still
+        # need >= min_evidence links.
+        authoritative = any(
+            e.get("source_type") == "recall"
+            or e.get("source_category") == "regulatory"
+            or (e.get("source_type") == "trial" and c.get("failure_event_confirmed"))
+            for e in ev)
+        min_needed = 1 if authoritative else min_evidence
+        if n_ev < min_needed:
+            c["reject_reason"] = (f"only {n_ev} evidence link(s); need {min_needed}"
+                                  + (" (authoritative source path)" if authoritative else ""))
             rejected.append(c)
             debug["rejected_low_evidence"] += 1
             continue
