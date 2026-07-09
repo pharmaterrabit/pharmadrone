@@ -201,6 +201,11 @@ Important discipline:
 
 - The matcher only uses stored opportunities/evidence from previous Generate runs.
 - It does not call new sources, LLMs, or live worldwide search.
+- Results are labelled as **Direct match**, **Related match**, or **Weak/background match**.
+- Default display shows Direct and Related matches only; weak/background matches
+  require the explicit “include weak/background matches” checkbox.
+- For dissolution searches, generic words such as release, OOS, specification, QC,
+  batch release, or press release are not enough to create a default match.
 - Technology matches use language such as “may fit”, “potential relevance”, and
   “requires validation”.
 - It must not be read as proof that a company needs a specific technology.

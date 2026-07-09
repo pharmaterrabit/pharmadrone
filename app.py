@@ -266,10 +266,21 @@ with tab_matcher:
         )
         query = st.text_input("Search term", value=default_query)
         max_matches = st.slider("Maximum matches to show", 3, 20, 10)
+        include_weak = st.checkbox(
+            "Include weak/background matches",
+            value=False,
+            help=(
+                "Default shows Direct and Related matches only. Weak/background matches "
+                "are usually generic terms such as release, OOS, specification, QC, "
+                "batch release, or press release."
+            ),
+        )
 
         if st.button("Run Opportunity Match", type="primary"):
             if mode == "Problem → Solution Match":
-                result = match_problem_to_solutions(query, matcher_opps, matcher_ev, limit=max_matches)
+                result = match_problem_to_solutions(
+                    query, matcher_opps, matcher_ev, limit=max_matches, include_weak=include_weak
+                )
                 if result.get("status") == "ok":
                     st.markdown(f"**{MATCH_SCOPE_LABEL}**")
                     st.markdown(f"**Searched problem:** {result.get('searched_problem', query)}")
@@ -283,6 +294,8 @@ with tab_matcher:
                         rows.append({
                             "Lead": m.get("matching_product_problem_lead"),
                             "Evidence source": m.get("evidence_source"),
+                            "Match strength": m.get("match_strength"),
+                            "Match reason": m.get("match_reason"),
                             "Confidence": m.get("confidence"),
                             "Lead status": m.get("lead_status"),
                             "Evidence count": m.get("evidence_count"),
@@ -290,10 +303,14 @@ with tab_matcher:
                             "Opportunity score": m.get("opportunity_score"),
                         })
                     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if result.get("hidden_weak_count"):
+                        st.caption(f"{result.get('hidden_weak_count')} weak/background match(es) hidden. Tick 'include weak/background matches' to review them.")
 
                     for i, m in enumerate(result.get("matches", []), start=1):
                         with st.expander(f"{i}. {m.get('matching_product_problem_lead')}"):
                             st.markdown(f"**Match scope:** {m.get('match_scope')}")
+                            st.markdown(f"**Match strength:** {m.get('match_strength')}")
+                            st.markdown(f"**Match reason:** {m.get('match_reason')}")
                             st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact')}")
                             st.markdown(f"**Interpretation / hypothesis:** {m.get('interpretation_hypothesis')}")
                             st.markdown("**Likely solution types:** " + "; ".join(m.get("likely_solution_types", [])))
@@ -304,9 +321,13 @@ with tab_matcher:
                     st.warning(result.get("message"))
                     if result.get("likely_solution_types"):
                         st.markdown("**Relevant solution types for this problem category:** " + "; ".join(result.get("likely_solution_types", [])))
+                    if result.get("hidden_weak_count"):
+                        st.caption(f"{result.get('hidden_weak_count')} weak/background match(es) hidden. Tick 'include weak/background matches' to review them.")
 
             else:
-                result = match_technology_to_targets(query, matcher_opps, matcher_ev, limit=max_matches)
+                result = match_technology_to_targets(
+                    query, matcher_opps, matcher_ev, limit=max_matches, include_weak=include_weak
+                )
                 st.caption(TECH_CERTAINTY_NOTE)
                 if result.get("status") == "ok":
                     st.markdown(f"**{MATCH_SCOPE_LABEL}**")
@@ -320,6 +341,8 @@ with tab_matcher:
                         rows.append({
                             "Lead": m.get("matching_product_company_lead"),
                             "Evidence source": m.get("evidence_source"),
+                            "Match strength": m.get("match_strength"),
+                            "Match reason": m.get("match_reason"),
                             "Evidence strength": m.get("evidence_strength"),
                             "Confidence": m.get("confidence"),
                             "Lead status": m.get("lead_status"),
@@ -327,10 +350,14 @@ with tab_matcher:
                             "Grade": m.get("grade"),
                         })
                     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if result.get("hidden_weak_count"):
+                        st.caption(f"{result.get('hidden_weak_count')} weak/background target match(es) hidden. Tick 'include weak/background matches' to review them.")
 
                     for i, m in enumerate(result.get("matches", []), start=1):
                         with st.expander(f"{i}. {m.get('matching_product_company_lead')}"):
                             st.markdown(f"**Match scope:** {m.get('match_scope')}")
+                            st.markdown(f"**Match strength:** {m.get('match_strength')}")
+                            st.markdown(f"**Match reason:** {m.get('match_reason')}")
                             st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact')}")
                             st.markdown(f"**Why this technology may fit:** {m.get('why_this_technology_may_fit')}")
                             st.markdown("**Matched problem categories:** " + "; ".join(m.get("matched_problem_categories", [])))
@@ -342,6 +369,8 @@ with tab_matcher:
                         st.markdown(f"**Technology category:** {result.get('technology_category')}")
                         st.markdown("**Relevant problem categories:** " + "; ".join(result.get("relevant_problem_categories", [])))
                         st.caption(TECH_CERTAINTY_NOTE)
+                    if result.get("hidden_weak_count"):
+                        st.caption(f"{result.get('hidden_weak_count')} weak/background target match(es) hidden. Tick 'include weak/background matches' to review them.")
 
 # ==========================================================================
 # TAB 3 — TECHNOLOGY PROFILE

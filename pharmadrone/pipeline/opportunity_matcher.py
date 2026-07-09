@@ -3,6 +3,11 @@
 This module is intentionally small and read-only. It does not call the web,
 LLMs, or databases. It only matches a user query against opportunities already
 created by the existing evidence pipeline.
+
+Patch v1.1 tightens the matcher so structured problem fields and recall reasons
+are prioritised over broad report/evidence text. Generic terms such as
+"release", "OOS", "specification", or "QC" are not enough to create a default
+Problem → Solution or Technology → Target match.
 """
 from __future__ import annotations
 
@@ -23,24 +28,44 @@ TECH_CERTAINTY_NOTE = (
     "Requires validation before outreach."
 )
 
+MATCH_DIRECT = "Direct match"
+MATCH_RELATED = "Related match"
+MATCH_WEAK = "Weak/background match"
+_STRENGTH_SCORE = {MATCH_DIRECT: 3, MATCH_RELATED: 2, MATCH_WEAK: 1}
+
 
 def _norm(text: Any) -> str:
-    """Lower-case, punctuation-light text for simple deterministic matching."""
+    """Lower-case, punctuation-light text for deterministic phrase matching."""
     if text is None:
         return ""
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+/.-]+", " ", str(text).lower())).strip()
 
 
-def _contains_any(text: str, terms: list[str]) -> bool:
-    return any(_norm(term) in text for term in terms if term)
+def _contains_any(text: str, terms: list[str] | tuple[str, ...]) -> bool:
+    t = _norm(text)
+    return any(_norm(term) in t for term in terms if term)
 
 
+def _first_hit(text: str, terms: list[str] | tuple[str, ...]) -> str | None:
+    t = _norm(text)
+    # Prefer the most specific phrase when several terms match the same text.
+    for term in sorted((x for x in terms if x), key=lambda x: len(_norm(x)), reverse=True):
+        nt = _norm(term)
+        if nt and nt in t:
+            return term
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Rule maps shown to the user. Matching strictness is implemented below in
+# CATEGORY_MATCH_PROFILES so these user-facing lists can remain business useful.
+# ---------------------------------------------------------------------------
 PROBLEM_RULES: dict[str, dict[str, Any]] = {
     "dissolution": {
         "label": "Dissolution / release performance",
         "terms": [
-            "dissolution", "release", "drug release", "failed release", "out of specification",
-            "oos", "subpotent", "tablet performance", "capsule performance",
+            "dissolution", "failed dissolution", "dissolution specification",
+            "drug release", "release performance", "dissolution testing",
         ],
         "solution_types": [
             "dissolution testing",
@@ -58,7 +83,7 @@ PROBLEM_RULES: dict[str, dict[str, Any]] = {
             "CMC troubleshooting consultant",
         ],
         "safe_bd_action": (
-            "Validate whether the evidence indicates a product-specific dissolution or release signal; "
+            "Validate whether the evidence indicates a product-specific dissolution or release-performance signal; "
             "if yes, frame outreach around diagnostic support and formulation troubleshooting, not a claimed fix."
         ),
     },
@@ -116,7 +141,7 @@ PROBLEM_RULES: dict[str, dict[str, Any]] = {
         "label": "Impurity / degradation product / specification issue",
         "terms": [
             "impurity", "impurities", "nitrosamine", "degradation product", "related substance",
-            "failed specification", "specification", "assay", "content uniformity", "contaminant",
+            "failed specification", "failed specifications", "assay", "content uniformity", "contaminant",
         ],
         "solution_types": [
             "analytical testing",
@@ -137,7 +162,6 @@ PROBLEM_RULES: dict[str, dict[str, Any]] = {
             "analytical confirmation and root-cause investigation."
         ),
     },
-
     "solid_state": {
         "label": "Solid-state / polymorph / particle attributes",
         "terms": [
@@ -161,7 +185,7 @@ PROBLEM_RULES: dict[str, dict[str, Any]] = {
         ],
         "safe_bd_action": (
             "Use the evidence as a solid-state or particle-attribute signal only. Validate the direct record before "
-            "linking it to dissolution, stability, or manufacturability. "
+            "linking it to dissolution, stability, or manufacturability."
         ),
     },
     "bioavailability": {
@@ -241,7 +265,6 @@ PROBLEM_RULES: dict[str, dict[str, Any]] = {
     },
 }
 
-
 TECH_RULES: dict[str, dict[str, Any]] = {
     "particle_engineering": {
         "label": "Particle engineering technology",
@@ -249,10 +272,13 @@ TECH_RULES: dict[str, dict[str, Any]] = {
             "particle engineering", "particle", "particle size", "micronization", "micronisation",
             "nanoparticle", "spray drying", "supercritical", "sas", "msas", "crystal engineering",
         ],
-        "problem_categories": ["dissolution", "bioavailability", "solid_state", "stability", "manufacturing_variability"],
+        # Keep this strict: do not include broad stability/manufacturing unless a
+        # particle-size, solid-state, dissolution, bioavailability, or oral-solid
+        # signal is directly present.
+        "problem_categories": ["dissolution", "bioavailability", "solid_state"],
         "why_fit": (
-            "Particle engineering may have potential relevance where evidence-backed signals mention dissolution, "
-            "bioavailability, solid-state behaviour, particle-size sensitivity, or oral solid dose performance."
+            "Particle engineering may have potential relevance where evidence-backed problem signals mention dissolution, "
+            "bioavailability, particle-size sensitivity, solid-state behaviour, polymorph issues, or oral solid-dose performance."
         ),
         "safe_outreach_angle": (
             "Use a diagnostic angle: ask whether particle-size, solid-state, or dissolution performance has been evaluated. "
@@ -280,7 +306,7 @@ TECH_RULES: dict[str, dict[str, Any]] = {
             "solid-state", "solid state", "polymorph", "crystal", "crystallinity", "amorphous",
             "xrpd", "dsc", "tga", "ftir", "raman", "salt form", "cocrystal",
         ],
-        "problem_categories": ["dissolution", "solid_state", "stability", "manufacturing_variability"],
+        "problem_categories": ["dissolution", "solid_state", "stability"],
         "why_fit": (
             "Solid-state characterisation may be relevant where signals involve polymorph control, crystallinity changes, "
             "amorphous conversion, dissolution variability, or stability concerns."
@@ -310,7 +336,7 @@ TECH_RULES: dict[str, dict[str, Any]] = {
             "formulation cdmo", "cdmo", "formulation development", "reformulation",
             "drug delivery", "dosage form", "oral solid", "topical", "injectable formulation",
         ],
-        "problem_categories": ["dissolution", "stability", "bioavailability", "manufacturing_variability"],
+        "problem_categories": ["dissolution", "stability", "bioavailability"],
         "why_fit": (
             "A formulation CDMO may have potential relevance where existing evidence indicates formulation optimisation, "
             "dissolution, stability, bioavailability, or lifecycle reformulation needs."
@@ -318,6 +344,76 @@ TECH_RULES: dict[str, dict[str, Any]] = {
         "safe_outreach_angle": (
             "Frame as a feasibility and troubleshooting conversation, not as proof that outsourcing or reformulation is required."
         ),
+    },
+}
+
+_DISSOLUTION_DIRECT_TERMS = (
+    "failed dissolution specifications", "failed dissolution specification",
+    "dissolution", "failed dissolution", "fails dissolution", "dissolution failure",
+    "dissolution specification", "dissolution specifications", "dissolution test",
+    "dissolution testing", "dissolution rate", "drug release above", "drug release below",
+    "drug release specification", "drug release specifications", "failed drug release",
+    "release performance", "drug-release performance", "release rate",
+)
+_DISSOLUTION_RELATED_TERMS = (
+    "oral solid-dose release performance", "oral solid dose release performance",
+    "oral solid-dose performance", "oral solid dose performance", "tablet dissolution",
+    "capsule dissolution", "tablet release", "capsule release", "modified release",
+    "extended release", "immediate release", "release profile", "dissolution profile",
+)
+_DISSOLUTION_WEAK_TERMS = (
+    "release", "oos", "out of specification", "specification", "specifications", "qc",
+    "batch release", "press release", "failed specifications", "failed specification",
+)
+_INJECTABLE_TERMS = (
+    "injection", "injectable", "injectables", "vial", "syringe", "infusion", "iv ",
+    "intravenous", "parenteral", "ampule", "ampoule", "prefilled syringe",
+)
+_ORAL_SOLID_TERMS = (
+    "tablet", "tablets", "capsule", "capsules", "caplet", "caplets", "oral solid",
+    "solid dose", "solid dosage", "immediate release", "extended release", "modified release",
+)
+
+CATEGORY_MATCH_PROFILES: dict[str, dict[str, tuple[str, ...]]] = {
+    "dissolution": {
+        "direct": _DISSOLUTION_DIRECT_TERMS,
+        "related": _DISSOLUTION_RELATED_TERMS,
+        "weak": _DISSOLUTION_WEAK_TERMS,
+    },
+    "stability": {
+        "direct": ("stability", "unstable", "degradation", "degradation product", "shelf life", "shelf-life", "expiry", "storage condition"),
+        "related": ("temperature excursion", "humidity", "photostability", "accelerated stability", "storage"),
+        "weak": ("expired", "date", "storage"),
+    },
+    "sterility": {
+        "direct": ("sterility", "sterile", "aseptic", "microbial contamination", "contamination", "endotoxin"),
+        "related": ("microbiology", "environmental monitoring", "particulate matter", "bacteria", "fungal"),
+        "weak": ("clean", "quality"),
+    },
+    "impurity": {
+        "direct": ("impurity", "impurities", "nitrosamine", "degradation product", "related substance", "contaminant", "assay failure", "failed assay", "content uniformity"),
+        "related": ("failed specification", "failed specifications", "out of specification", "oos", "supplier qualification", "process impurity"),
+        "weak": ("specification", "specifications", "qc"),
+    },
+    "solid_state": {
+        "direct": ("solid-state", "solid state", "polymorph", "crystallinity", "amorphous", "crystal form", "particle size", "particle-size", "solid form", "form conversion"),
+        "related": ("salt form", "cocrystal", "xrpd", "dsc", "tga", "particle-size distribution"),
+        "weak": ("particles", "solid"),
+    },
+    "bioavailability": {
+        "direct": ("bioavailability", "low bioavailability", "poor bioavailability", "poor solubility", "low solubility", "bcs ii", "bcs iv"),
+        "related": ("absorption", "oral exposure", "low exposure", "pharmacokinetic", "auc", "cmax", "oral performance"),
+        "weak": ("pk", "exposure"),
+    },
+    "packaging_container_closure": {
+        "direct": ("packaging", "container closure", "container-closure", "closure", "seal", "leak", "extractables", "leachables"),
+        "related": ("moisture", "oxygen", "blister", "vial", "syringe", "container"),
+        "weak": ("label", "package"),
+    },
+    "manufacturing_variability": {
+        "direct": ("manufacturing", "process validation", "batch variability", "failed batch", "scale-up", "scale up", "cgmp", "cGMP"),
+        "related": ("deviation", "quality system", "production", "cmc", "process optimisation", "process optimization"),
+        "weak": ("batch", "process", "gmp"),
     },
 }
 
@@ -360,8 +456,7 @@ def _parse_opp(row: dict[str, Any]) -> dict[str, Any]:
             data = json.loads(raw)
         except Exception:
             data = {}
-    merged = {**row, **data}
-    return merged
+    return {**row, **data}
 
 
 def prepare_existing_opportunities(
@@ -387,53 +482,203 @@ def prepare_existing_opportunities(
     return records
 
 
-def _evidence_text(evidence: list[dict[str, Any]]) -> str:
-    bits: list[str] = []
-    fields = (
-        "title", "english_summary", "raw_text", "supports", "does_not_prove", "source_type",
-        "source_name", "source_category", "record_id", "url",
-    )
-    for e in evidence:
-        if isinstance(e, dict):
-            bits.extend(str(e.get(f, "")) for f in fields if e.get(f))
-            entities = e.get("entities")
-            if isinstance(entities, dict):
-                bits.extend(str(v) for v in entities.values() if v)
-    return _norm(" ".join(bits))
+def _stringify(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(_stringify(v) for v in value.values())
+    if isinstance(value, list):
+        return " ".join(_stringify(v) for v in value)
+    return str(value)
 
 
-def _opp_text(opp: dict[str, Any]) -> str:
-    fields = (
-        "company", "parent_company", "product", "generic_name", "brand_name", "dev_code",
-        "indication", "therapeutic_area", "region", "stage", "problem_signal",
-        "report_type", "signal_status", "discovery_method", "discovery_reason", "event_type",
-        "event_reason", "failure_signal", "root_cause", "confirmed_fact", "interpretation",
-        "root_cause_summary", "solution_fit", "report_md",
-    )
-    return _norm(" ".join(str(opp.get(f, "")) for f in fields if opp.get(f)))
+def _labelled_opp_fields(opp: dict[str, Any]) -> list[tuple[str, str]]:
+    """Structured fields that should drive direct matches.
+
+    This deliberately excludes broad report_md text so a generic generated report
+    section cannot create a Direct or Related match by itself.
+    """
+    labels = {
+        "problem_signal": "stored problem_signal",
+        "problem_category": "stored problem_category",
+        "failure_signal": "failure-signal problem classification",
+        "failure_reason": "failure-signal stated reason",
+        "event_reason": "confirmed stated reason",
+        "failure_event_summary": "confirmed event summary",
+        "confirmed_fact": "confirmed fact",
+        "root_cause": "root-cause section category",
+        "root_cause_summary": "root-cause section summary",
+        "solution_fit": "solution-fit section",
+    }
+    out: list[tuple[str, str]] = []
+    for key, label in labels.items():
+        text = _stringify(opp.get(key))
+        if text:
+            out.append((label, text))
+    return out
 
 
-def _match_category_score(opp: dict[str, Any], category_key: str) -> tuple[int, list[str]]:
-    rule = PROBLEM_RULES[category_key]
-    opp_text = _opp_text(opp)
-    ev_text = _evidence_text(opp.get("evidence", []))
-    terms = rule["terms"]
-    hits: list[str] = []
-    score = 0
-    for term in terms:
-        t = _norm(term)
-        if not t:
+def _labelled_recall_reason_fields(opp: dict[str, Any]) -> list[tuple[str, str]]:
+    """Structured recall/event reasons from evidence.
+
+    openFDA recall reason is the strongest field for a regulatory product problem
+    signal. DB evidence rows may not include nested entities, but data_json does.
+    """
+    out: list[tuple[str, str]] = []
+    for e in opp.get("evidence", []) or []:
+        if not isinstance(e, dict):
             continue
-        in_opp = t in opp_text
-        in_ev = t in ev_text
-        if in_ev:
-            score += 3
-            hits.append(term)
-        elif in_opp:
-            score += 1
-            hits.append(term)
-    # Evidence text is weighted higher because the UI promises existing evidence matches.
-    return score, sorted(set(hits))
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        if rf.get("reason_for_recall"):
+            out.append(("FDA recall reason", str(rf["reason_for_recall"])))
+        if ent.get("event_reason"):
+            out.append(("evidence event reason", str(ent["event_reason"])))
+        # For DB-only evidence, supports often carries the recall reason.
+        if e.get("source_type") == "recall" and e.get("supports"):
+            out.append(("recall evidence supports", str(e["supports"])))
+    return out
+
+
+def _labelled_evidence_fields(opp: dict[str, Any]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for e in opp.get("evidence", []) or []:
+        if not isinstance(e, dict):
+            continue
+        for key, label in (
+            ("title", "evidence title"),
+            ("english_summary", "evidence summary"),
+            ("supports", "evidence supports"),
+            ("raw_text", "evidence raw text"),
+        ):
+            if e.get(key):
+                out.append((label, str(e[key])))
+    return out
+
+
+def _broad_background_text(opp: dict[str, Any]) -> str:
+    """Text allowed only for weak/background matches."""
+    fields = (
+        "company", "parent_company", "product", "generic_name", "brand_name",
+        "indication", "therapeutic_area", "region", "stage", "discovery_reason",
+        "interpretation", "report_md",
+    )
+    return " ".join(str(opp.get(f, "")) for f in fields if opp.get(f))
+
+
+def _product_dosage_text(opp: dict[str, Any]) -> str:
+    bits = [
+        opp.get("product"), opp.get("brand_name"), opp.get("generic_name"),
+        opp.get("dosage_form"),
+    ]
+    for e in opp.get("evidence", []) or []:
+        if not isinstance(e, dict):
+            continue
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        bits.extend([
+            ent.get("product"), ent.get("product_short"), ent.get("dosage_form"),
+            rf.get("product_description"),
+        ])
+    return _norm(" ".join(str(x) for x in bits if x))
+
+
+def _looks_injectable(opp: dict[str, Any]) -> bool:
+    text = _product_dosage_text(opp)
+    return _contains_any(text, _INJECTABLE_TERMS)
+
+
+def _looks_oral_solid(opp: dict[str, Any]) -> bool:
+    text = _product_dosage_text(opp)
+    return _contains_any(text, _ORAL_SOLID_TERMS)
+
+
+def _category_profile(category_key: str) -> dict[str, tuple[str, ...]]:
+    return CATEGORY_MATCH_PROFILES.get(category_key, {
+        "direct": tuple(PROBLEM_RULES[category_key]["terms"]),
+        "related": tuple(PROBLEM_RULES[category_key]["terms"]),
+        "weak": tuple(),
+    })
+
+
+def _make_reason(strength: str, field_label: str, hit: str, field_text: str) -> str:
+    # Keep the reason short and auditable. For exact problem_signal, show the value.
+    clean_text = " ".join(str(field_text).split())
+    if len(clean_text) > 120:
+        clean_text = clean_text[:117].rsplit(" ", 1)[0] + "…"
+    if field_label == "stored problem_signal":
+        return f"{strength}: stored problem_signal = {clean_text}"
+    if field_label == "stored problem_category":
+        return f"{strength}: stored problem_category = {clean_text}"
+    return f"{strength}: {field_label} contains {hit}"
+
+
+def _match_problem_category(opp: dict[str, Any], category_key: str) -> dict[str, Any] | None:
+    """Return one Direct/Related/Weak match for an opportunity/category.
+
+    Priority order:
+      1) structured problem fields and recall reasons
+      2) specific evidence snippets
+      3) broad report/background text as weak only
+    """
+    profile = _category_profile(category_key)
+    structured = _labelled_opp_fields(opp)
+    recall_reasons = _labelled_recall_reason_fields(opp)
+    evidence = _labelled_evidence_fields(opp)
+
+    direct_terms = profile["direct"]
+    related_terms = profile["related"]
+    weak_terms = profile.get("weak", tuple())
+
+    # Direct: structured fields first, including recall reasons.
+    for field_label, text in structured + recall_reasons:
+        hit = _first_hit(text, direct_terms)
+        if hit:
+            return {
+                "strength": MATCH_DIRECT,
+                "score": 100,
+                "terms": sorted({hit}),
+                "reason": _make_reason(MATCH_DIRECT, field_label, hit, text),
+                "source_field": field_label,
+            }
+
+    # Related: specific evidence and structured text only. For dissolution, avoid
+    # plain "release" and require dissolution/drug-release/oral-solid context.
+    for field_label, text in structured + recall_reasons + evidence:
+        hit = _first_hit(text, related_terms)
+        if hit:
+            if category_key == "dissolution" and _looks_injectable(opp):
+                # Do not let generic modified-release/injection wording create a target.
+                if not _first_hit(text, _DISSOLUTION_DIRECT_TERMS):
+                    continue
+            return {
+                "strength": MATCH_RELATED,
+                "score": 60,
+                "terms": sorted({hit}),
+                "reason": _make_reason(MATCH_RELATED, field_label, hit, text),
+                "source_field": field_label,
+            }
+
+    # Dissolution/injectable guardrail: injectables should not appear for a
+    # dissolution-failure search unless a structured/evidence field above stated
+    # dissolution or drug-release performance. Generic release/OOS text is not
+    # enough, even when weak matches are explicitly included.
+    if category_key == "dissolution" and _looks_injectable(opp):
+        return None
+
+    # Weak/background: hidden by default. Generic words live here only.
+    broad = _broad_background_text(opp)
+    for field_label, text in evidence + [("broad generated report/background text", broad)]:
+        hit = _first_hit(text, weak_terms)
+        if hit:
+            return {
+                "strength": MATCH_WEAK,
+                "score": 15,
+                "terms": sorted({hit}),
+                "reason": _make_reason(MATCH_WEAK, field_label, hit, text),
+                "source_field": field_label,
+            }
+    return None
 
 
 def _source_summary(evidence: list[dict[str, Any]]) -> str:
@@ -452,8 +697,10 @@ def _confirmed_fact(opp: dict[str, Any]) -> str:
         val = opp.get(key)
         if val:
             return str(val)
-    evidence = opp.get("evidence", [])
-    for e in evidence:
+    for _label, reason in _labelled_recall_reason_fields(opp):
+        if reason:
+            return str(reason)
+    for e in opp.get("evidence", []) or []:
         if isinstance(e, dict):
             for key in ("supports", "english_summary", "title"):
                 val = e.get(key)
@@ -468,27 +715,25 @@ def _target_label(opp: dict[str, Any]) -> str:
     return f"{company} — {product}"
 
 
-def _lead_status(opp: dict[str, Any], match_score: int) -> str:
+def _lead_status(opp: dict[str, Any], strength: str) -> str:
     grade = str(opp.get("grade") or "").upper()
     confidence = _norm(opp.get("confidence") or "")
     ev_count = int(opp.get("evidence_count") or len(opp.get("evidence", [])) or 0)
     score = int(opp.get("score") or 0)
-    if match_score >= 6 and ev_count >= 2 and grade in {"A", "B"} and confidence != "low":
+    if strength == MATCH_DIRECT and ev_count >= 2 and grade in {"A", "B"} and confidence != "low":
         return "outreach-ready"
-    if match_score >= 3 and ev_count >= 1 and (grade in {"A", "B", "C"} or score >= 30):
+    if strength in {MATCH_DIRECT, MATCH_RELATED} and ev_count >= 1 and (grade in {"A", "B", "C"} or score >= 30):
         return "needs validation"
-    if match_score >= 1 and ev_count >= 1:
+    if strength == MATCH_WEAK and ev_count >= 1:
         return "monitor only"
     return "low priority / archive"
 
 
-def _confidence(opp: dict[str, Any], match_score: int) -> str:
+def _confidence(opp: dict[str, Any], strength: str) -> str:
     existing = _norm(opp.get("confidence") or "")
-    if match_score >= 6 and existing in {"high", "medium-high", "medium"}:
-        return existing or "medium"
-    if match_score >= 6:
-        return "medium"
-    if match_score >= 3:
+    if strength == MATCH_DIRECT:
+        return existing if existing in {"high", "medium-high", "medium"} else "medium"
+    if strength == MATCH_RELATED:
         return "low-medium"
     return "low"
 
@@ -498,12 +743,14 @@ def _problem_match_row(
     category_key: str,
     rule: dict[str, Any],
     opp: dict[str, Any],
-    match_score: int,
-    hits: list[str],
+    match: dict[str, Any],
 ) -> dict[str, Any]:
     target = _target_label(opp)
+    strength = match["strength"]
     return {
         "match_scope": MATCH_SCOPE_LABEL,
+        "match_strength": strength,
+        "match_reason": match["reason"],
         "searched_problem": query,
         "matched_problem_category": rule["label"],
         "matching_product_problem_lead": target,
@@ -512,16 +759,16 @@ def _problem_match_row(
         "evidence_source": _source_summary(opp.get("evidence", [])),
         "confirmed_fact": _confirmed_fact(opp),
         "interpretation_hypothesis": (
-            f"The stored evidence contains terms consistent with {rule['label']} "
-            f"({', '.join(hits[:5])}). This is an opportunity hypothesis, not a confirmed root cause."
+            f"{strength}: the current stored evidence has a {rule['label']} signal. "
+            "This is an opportunity hypothesis, not a confirmed root cause or proof that a specific technology is needed."
         ),
         "likely_solution_types": rule["solution_types"],
         "possible_partner_categories": rule["partner_categories"],
-        "confidence": _confidence(opp, match_score),
-        "lead_status": _lead_status(opp, match_score),
+        "confidence": _confidence(opp, strength),
+        "lead_status": _lead_status(opp, strength),
         "safe_bd_action": rule["safe_bd_action"],
-        "match_terms": hits,
-        "match_score": match_score,
+        "match_terms": match.get("terms", []),
+        "match_score": match.get("score", 0),
         "grade": opp.get("grade") or "",
         "opportunity_score": opp.get("score") or "",
         "evidence_count": opp.get("evidence_count") or len(opp.get("evidence", [])) or 0,
@@ -533,6 +780,7 @@ def match_problem_to_solutions(
     opportunity_rows: list[dict[str, Any]] | None,
     evidence_rows: list[dict[str, Any]] | None = None,
     limit: int = 10,
+    include_weak: bool = False,
 ) -> dict[str, Any]:
     records = prepare_existing_opportunities(opportunity_rows, evidence_rows)
     if not records:
@@ -547,12 +795,24 @@ def match_problem_to_solutions(
         }
 
     matches: list[dict[str, Any]] = []
+    hidden_weak_count = 0
     for opp in records:
-        score, hits = _match_category_score(opp, category_key)
-        if score >= 3:  # require at least one evidence-level hit or several weaker stored-field hits
-            matches.append(_problem_match_row(query, category_key, rule, opp, score, hits))
+        match = _match_problem_category(opp, category_key)
+        if not match:
+            continue
+        if match["strength"] == MATCH_WEAK and not include_weak:
+            hidden_weak_count += 1
+            continue
+        matches.append(_problem_match_row(query, category_key, rule, opp, match))
 
-    matches.sort(key=lambda m: (m["match_score"], int(m.get("evidence_count") or 0), int(m.get("opportunity_score") or 0)), reverse=True)
+    matches.sort(
+        key=lambda m: (
+            _STRENGTH_SCORE.get(m["match_strength"], 0),
+            int(m.get("evidence_count") or 0),
+            int(m.get("opportunity_score") or 0),
+        ),
+        reverse=True,
+    )
     if not matches:
         return {
             "status": "no_matches",
@@ -562,6 +822,7 @@ def match_problem_to_solutions(
             "likely_solution_types": rule["solution_types"],
             "possible_partner_categories": rule["partner_categories"],
             "safe_bd_action": rule["safe_bd_action"],
+            "hidden_weak_count": hidden_weak_count,
             "matches": [],
         }
     return {
@@ -572,6 +833,7 @@ def match_problem_to_solutions(
         "likely_solution_types": rule["solution_types"],
         "possible_partner_categories": rule["partner_categories"],
         "safe_bd_action": rule["safe_bd_action"],
+        "hidden_weak_count": hidden_weak_count,
         "matches": matches[:limit],
     }
 
@@ -581,13 +843,16 @@ def _tech_match_row(
     tech_key: str,
     tech_rule: dict[str, Any],
     opp: dict[str, Any],
-    category_hits: list[str],
-    match_score: int,
-    term_hits: list[str],
+    category_matches: list[tuple[str, dict[str, Any]]],
 ) -> dict[str, Any]:
     relevant_labels = [PROBLEM_RULES[k]["label"] for k in tech_rule["problem_categories"]]
+    best_strength = max((m["strength"] for _k, m in category_matches), key=lambda s: _STRENGTH_SCORE.get(s, 0))
+    term_hits = sorted({term for _k, m in category_matches for term in m.get("terms", [])})
+    reasons = [f"{PROBLEM_RULES[k]['label']}: {m['reason']}" for k, m in category_matches]
     return {
         "match_scope": MATCH_SCOPE_LABEL,
+        "match_strength": best_strength,
+        "match_reason": "; ".join(reasons[:3]),
         "searched_technology": query,
         "technology_category": tech_rule["label"],
         "relevant_problem_categories": relevant_labels,
@@ -595,18 +860,18 @@ def _tech_match_row(
         "company": opp.get("company") or "",
         "product": opp.get("product") or opp.get("brand_name") or opp.get("generic_name") or "",
         "why_this_technology_may_fit": (
-            f"{tech_rule['why_fit']} The stored evidence matched: {', '.join(term_hits[:6]) or ', '.join(category_hits)}. "
-            f"{TECH_CERTAINTY_NOTE}"
+            f"{tech_rule['why_fit']} Current match strength: {best_strength}. "
+            f"Matched from existing evidence via: {'; '.join(reasons[:2])}. {TECH_CERTAINTY_NOTE}"
         ),
-        "evidence_strength": _confidence(opp, match_score),
-        "confidence": _confidence(opp, match_score),
-        "lead_status": _lead_status(opp, match_score),
+        "evidence_strength": _confidence(opp, best_strength),
+        "confidence": _confidence(opp, best_strength),
+        "lead_status": _lead_status(opp, best_strength),
         "safe_outreach_angle": tech_rule["safe_outreach_angle"] + " " + TECH_CERTAINTY_NOTE,
         "confirmed_fact": _confirmed_fact(opp),
         "evidence_source": _source_summary(opp.get("evidence", [])),
-        "matched_problem_categories": [PROBLEM_RULES[k]["label"] for k in category_hits],
+        "matched_problem_categories": [PROBLEM_RULES[k]["label"] for k, _m in category_matches],
         "match_terms": term_hits,
-        "match_score": match_score,
+        "match_score": max(m.get("score", 0) for _k, m in category_matches),
         "grade": opp.get("grade") or "",
         "opportunity_score": opp.get("score") or "",
         "evidence_count": opp.get("evidence_count") or len(opp.get("evidence", [])) or 0,
@@ -618,6 +883,7 @@ def match_technology_to_targets(
     opportunity_rows: list[dict[str, Any]] | None,
     evidence_rows: list[dict[str, Any]] | None = None,
     limit: int = 10,
+    include_weak: bool = False,
 ) -> dict[str, Any]:
     records = prepare_existing_opportunities(opportunity_rows, evidence_rows)
     if not records:
@@ -632,20 +898,28 @@ def match_technology_to_targets(
         }
 
     matches: list[dict[str, Any]] = []
+    hidden_weak_count = 0
     for opp in records:
-        total = 0
-        category_hits: list[str] = []
-        term_hits: list[str] = []
+        category_matches: list[tuple[str, dict[str, Any]]] = []
         for category_key in tech_rule["problem_categories"]:
-            score, hits = _match_category_score(opp, category_key)
-            if score >= 3:
-                total += score
-                category_hits.append(category_key)
-                term_hits.extend(hits)
-        if total >= 3:
-            matches.append(_tech_match_row(query, tech_key, tech_rule, opp, category_hits, total, sorted(set(term_hits))))
+            match = _match_problem_category(opp, category_key)
+            if not match:
+                continue
+            if match["strength"] == MATCH_WEAK and not include_weak:
+                hidden_weak_count += 1
+                continue
+            category_matches.append((category_key, match))
+        if category_matches:
+            matches.append(_tech_match_row(query, tech_key, tech_rule, opp, category_matches))
 
-    matches.sort(key=lambda m: (m["match_score"], int(m.get("evidence_count") or 0), int(m.get("opportunity_score") or 0)), reverse=True)
+    matches.sort(
+        key=lambda m: (
+            _STRENGTH_SCORE.get(m["match_strength"], 0),
+            int(m.get("evidence_count") or 0),
+            int(m.get("opportunity_score") or 0),
+        ),
+        reverse=True,
+    )
     relevant_labels = [PROBLEM_RULES[k]["label"] for k in tech_rule["problem_categories"]]
     if not matches:
         return {
@@ -655,6 +929,7 @@ def match_technology_to_targets(
             "technology_category": tech_rule["label"],
             "relevant_problem_categories": relevant_labels,
             "why_this_technology_may_fit": tech_rule["why_fit"] + " " + TECH_CERTAINTY_NOTE,
+            "hidden_weak_count": hidden_weak_count,
             "matches": [],
         }
     return {
@@ -664,5 +939,6 @@ def match_technology_to_targets(
         "technology_category": tech_rule["label"],
         "relevant_problem_categories": relevant_labels,
         "why_this_technology_may_fit": tech_rule["why_fit"] + " " + TECH_CERTAINTY_NOTE,
+        "hidden_weak_count": hidden_weak_count,
         "matches": matches[:limit],
     }
