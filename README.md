@@ -1,9 +1,14 @@
-# PharmaDrone — Auto Case Study Generator (v1)
+# PharmaTune / PharmaDrone — Global Pharma Opportunity Engine (v1)
 
-A **private, local** pharma BD intelligence generator. It scans public sources,
-extracts company + product opportunities relevant to a formulation / drug-delivery
-/ CDMO seller, scores each one 0–100, rejects weak leads, and writes evidence-backed
-case studies (Markdown + HTML) plus a searchable static site.
+A **private, local** pharma BD intelligence engine. It scans configured public sources,
+extracts company + product opportunities relevant to formulation, drug-delivery,
+CMC, quality, and CDMO/service-provider use cases, scores each one 0–100, rejects
+weak leads, and writes evidence-backed case studies (Markdown + HTML) plus exports.
+
+Phase 1 also includes a small **Opportunity Matcher** that reuses already generated
+evidence to match product/problem signals to solution types, partner categories, and
+technology-target hypotheses. It is **matched from existing evidence only** — not a
+live worldwide search and not proof that a company needs a specific technology.
 
 Not a chatbot. No accounts, no billing. Runs on your laptop **or** as a private
 password-protected cloud dashboard (see `DEPLOY.md` for Render Free). **Milestone 1
@@ -75,7 +80,7 @@ failing silently.
 
 **6. Review the output**
 
-Reports appear in tab **3 Results & Export** and as files in the `./reports`
+Reports appear in tab **4 Results & Export** and as files in the `./reports`
 folder. Nothing beyond 5 runs unless you choose to.
 
 > Prefer the command line? `python -m pharmadrone.run --mode test`
@@ -112,7 +117,7 @@ with a clear message naming the exact key/env var to fix.
 
 ## Testing each source separately (point 6)
 
-- **Dashboard:** tab **4 Connectors** -> type a query -> *Run connector test*.
+- **Dashboard:** tab **5 Connectors** -> type a query -> *Run connector test*.
   Each source shows Status / Records / Error, so you see exactly which one works.
 - **Command line:** `python -m pharmadrone.test_connectors "apixaban food effect"`
 
@@ -179,6 +184,27 @@ This is **global public-source scouting, not complete global regulator coverage.
 
 ---
 
+
+---
+
+## Phase 1 Opportunity Matcher
+
+Tab **2 Opportunity Matcher** adds two deterministic modes:
+
+- **Problem → Solution Match**: e.g. `dissolution failure` → evidence-backed
+  product/problem leads, likely solution types, possible partner categories,
+  confidence, lead status, and a safe BD action.
+- **Technology → Target Match**: e.g. `particle engineering technology` → stored
+  product/company leads where the current evidence suggests potential relevance.
+
+Important discipline:
+
+- The matcher only uses stored opportunities/evidence from previous Generate runs.
+- It does not call new sources, LLMs, or live worldwide search.
+- Technology matches use language such as “may fit”, “potential relevance”, and
+  “requires validation”.
+- It must not be read as proof that a company needs a specific technology.
+
 ## What v1 does NOT do yet
 
 - No 100-report run. Milestone 1 = 5 reports.
@@ -210,7 +236,7 @@ Live estimate shows in the dashboard cost breakdown. Tune
 ## File map
 
 ```
-app.py                          Streamlit dashboard (Generate / Profile / Results / Connectors)
+app.py                          Streamlit dashboard (Generate / Opportunity Matcher / Profile / Results / Connectors)
 config/technology_profile.yaml  Seller profile, signals, regions, sources, budget
 .env.example                    Keys (copy to .env)
 templates/report_template.md    The 12-section report structure
@@ -220,7 +246,7 @@ pharmadrone/
   settings.py cost.py db.py llm.py
   test_connectors.py            per-source self-test (CLI + dashboard)
   connectors/  clinicaltrials openfda europepmc openalex crossref tavily_search  (+ base)
-  pipeline/    queries retrieve extract dedup score report
+  pipeline/    queries retrieve extract dedup score report opportunity_matcher
   export.py    md/html/csv/json + static site
   run.py       orchestrator + CLI + coverage summary
 reports/                        generated output (created on first run)

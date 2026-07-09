@@ -12,6 +12,12 @@ import streamlit as st
 from pharmadrone import settings, db, auth
 from pharmadrone.run import generate
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
+from pharmadrone.pipeline.opportunity_matcher import (
+    MATCH_SCOPE_LABEL,
+    TECH_CERTAINTY_NOTE,
+    match_problem_to_solutions,
+    match_technology_to_targets,
+)
 
 st.set_page_config(page_title="PharmaDrone", layout="wide")
 
@@ -38,10 +44,11 @@ def _zip_reports() -> bytes | None:
             z.write(f, arcname=f.name)
     return buf.getvalue()
 
-st.title("PharmaDrone — BD Case Study Generator")
-st.caption("Private local dashboard · **global public-source scouting** (not "
-           "complete global regulator coverage) · possible opportunity signals "
-           "only, require human validation.")
+st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
+st.caption("Find evidence-backed pharma product problems, solution technologies, "
+           "service provider categories, research innovation signals, and BD "
+           "opportunities. Private dashboard · global public-source scouting "
+           "where configured · opportunity signals only, require human validation.")
 
 llm_st = settings.llm_status()
 c1, c2, c3, c4 = st.columns(4)
@@ -57,8 +64,8 @@ elif not llm_st["key_present"]:
     st.error(f"LLM provider is '{llm_st['provider']}' but {llm_st['key_env']} is "
              "not set. Add it (or switch LLM_PROVIDER) — extract/score/write need it.")
 
-tab_gen, tab_profile, tab_results, tab_conn = st.tabs(
-    ["① Generate", "② Technology Profile", "③ Results & Export", "④ Connectors"])
+tab_gen, tab_matcher, tab_profile, tab_results, tab_conn = st.tabs(
+    ["① Generate", "② Opportunity Matcher", "③ Technology Profile", "④ Results & Export", "⑤ Connectors"])
 
 # ==========================================================================
 # TAB 1 — GENERATE
@@ -216,10 +223,128 @@ with tab_gen:
 
         with st.expander("Cost breakdown"):
             st.json(cost.summary())
-        st.info("Open the ③ Results & Export tab to read reports and export files.")
+        st.info("Open the ④ Results & Export tab to read reports and export files.")
+
+
+# ===========================================================================
+# TAB 2 — OPPORTUNITY MATCHER
+# ===========================================================================
+with tab_matcher:
+    st.subheader("Phase 1 — Opportunity Matcher")
+    st.caption(
+        "Matched from existing evidence only — this is not a live worldwide search. "
+        "Run Generate first, then use this tab to match stored product/problem signals "
+        "to solution types, partner categories, or technology-target hypotheses."
+    )
+
+    try:
+        conn = db.connect(settings.DB_PATH)
+        matcher_opps = db.fetch_all(conn, "opportunities")
+        matcher_ev = db.fetch_all(conn, "evidence")
+        conn.close()
+    except Exception:
+        matcher_opps, matcher_ev = [], []
+
+    if not matcher_opps:
+        st.info("Run Generate first to create evidence-backed opportunities, then use the matcher.")
+        st.caption(
+            "The matcher is intentionally read-only. It will not invent leads or pretend "
+            "to search the whole world when no stored evidence exists."
+        )
+    else:
+        st.success(f"{MATCH_SCOPE_LABEL}: {len(matcher_opps)} stored opportunity record(s) available.")
+        mode = st.radio(
+            "Matcher mode",
+            ["Problem → Solution Match", "Technology → Target Match"],
+            horizontal=True,
+        )
+
+        default_query = (
+            "dissolution failure"
+            if mode == "Problem → Solution Match"
+            else "particle engineering technology"
+        )
+        query = st.text_input("Search term", value=default_query)
+        max_matches = st.slider("Maximum matches to show", 3, 20, 10)
+
+        if st.button("Run Opportunity Match", type="primary"):
+            if mode == "Problem → Solution Match":
+                result = match_problem_to_solutions(query, matcher_opps, matcher_ev, limit=max_matches)
+                if result.get("status") == "ok":
+                    st.markdown(f"**{MATCH_SCOPE_LABEL}**")
+                    st.markdown(f"**Searched problem:** {result.get('searched_problem', query)}")
+                    st.markdown(f"**Matched problem category:** {result.get('matched_problem_category', '—')}")
+                    st.markdown("**Likely solution types:** " + "; ".join(result.get("likely_solution_types", [])))
+                    st.markdown("**Possible partner categories:** " + "; ".join(result.get("possible_partner_categories", [])))
+                    st.info(result.get("safe_bd_action", "Validate the evidence before outreach."))
+
+                    rows = []
+                    for m in result.get("matches", []):
+                        rows.append({
+                            "Lead": m.get("matching_product_problem_lead"),
+                            "Evidence source": m.get("evidence_source"),
+                            "Confidence": m.get("confidence"),
+                            "Lead status": m.get("lead_status"),
+                            "Evidence count": m.get("evidence_count"),
+                            "Grade": m.get("grade"),
+                            "Opportunity score": m.get("opportunity_score"),
+                        })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                    for i, m in enumerate(result.get("matches", []), start=1):
+                        with st.expander(f"{i}. {m.get('matching_product_problem_lead')}"):
+                            st.markdown(f"**Match scope:** {m.get('match_scope')}")
+                            st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact')}")
+                            st.markdown(f"**Interpretation / hypothesis:** {m.get('interpretation_hypothesis')}")
+                            st.markdown("**Likely solution types:** " + "; ".join(m.get("likely_solution_types", [])))
+                            st.markdown("**Possible partner categories:** " + "; ".join(m.get("possible_partner_categories", [])))
+                            st.markdown(f"**Safe BD action:** {m.get('safe_bd_action')}")
+                            st.caption("Matched terms: " + ", ".join(m.get("match_terms", [])))
+                else:
+                    st.warning(result.get("message"))
+                    if result.get("likely_solution_types"):
+                        st.markdown("**Relevant solution types for this problem category:** " + "; ".join(result.get("likely_solution_types", [])))
+
+            else:
+                result = match_technology_to_targets(query, matcher_opps, matcher_ev, limit=max_matches)
+                st.caption(TECH_CERTAINTY_NOTE)
+                if result.get("status") == "ok":
+                    st.markdown(f"**{MATCH_SCOPE_LABEL}**")
+                    st.markdown(f"**Searched technology:** {result.get('searched_technology', query)}")
+                    st.markdown(f"**Technology category:** {result.get('technology_category', '—')}")
+                    st.markdown("**Relevant problem categories:** " + "; ".join(result.get("relevant_problem_categories", [])))
+                    st.info(result.get("why_this_technology_may_fit", "Potential relevance only; requires validation."))
+
+                    rows = []
+                    for m in result.get("matches", []):
+                        rows.append({
+                            "Lead": m.get("matching_product_company_lead"),
+                            "Evidence source": m.get("evidence_source"),
+                            "Evidence strength": m.get("evidence_strength"),
+                            "Confidence": m.get("confidence"),
+                            "Lead status": m.get("lead_status"),
+                            "Evidence count": m.get("evidence_count"),
+                            "Grade": m.get("grade"),
+                        })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                    for i, m in enumerate(result.get("matches", []), start=1):
+                        with st.expander(f"{i}. {m.get('matching_product_company_lead')}"):
+                            st.markdown(f"**Match scope:** {m.get('match_scope')}")
+                            st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact')}")
+                            st.markdown(f"**Why this technology may fit:** {m.get('why_this_technology_may_fit')}")
+                            st.markdown("**Matched problem categories:** " + "; ".join(m.get("matched_problem_categories", [])))
+                            st.markdown(f"**Safe outreach angle:** {m.get('safe_outreach_angle')}")
+                            st.caption("Matched terms: " + ", ".join(m.get("match_terms", [])))
+                else:
+                    st.warning(result.get("message"))
+                    if result.get("technology_category"):
+                        st.markdown(f"**Technology category:** {result.get('technology_category')}")
+                        st.markdown("**Relevant problem categories:** " + "; ".join(result.get("relevant_problem_categories", [])))
+                        st.caption(TECH_CERTAINTY_NOTE)
 
 # ==========================================================================
-# TAB 2 — TECHNOLOGY PROFILE
+# TAB 3 — TECHNOLOGY PROFILE
 # ==========================================================================
 with tab_profile:
     st.subheader("Seller / Technology Profile")
@@ -249,7 +374,7 @@ with tab_profile:
         st.success("Saved to config/technology_profile.yaml")
 
 # ==========================================================================
-# TAB 3 — RESULTS & EXPORT
+# TAB 4 — RESULTS & EXPORT
 # ==========================================================================
 with tab_results:
     st.subheader("Generated opportunities")
@@ -316,7 +441,7 @@ with tab_results:
         st.caption("No exports yet — generate the 5 test reports first.")
 
 # ==========================================================================
-# TAB 4 — CONNECTORS (self-test)
+# TAB 5 — CONNECTORS (self-test)
 # ==========================================================================
 with tab_conn:
     st.subheader("Connector self-test")
