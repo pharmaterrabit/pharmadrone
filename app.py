@@ -44,6 +44,106 @@ def _zip_reports() -> bytes | None:
             z.write(f, arcname=f.name)
     return buf.getvalue()
 
+
+
+def _as_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return "; ".join(str(x) for x in value if x)
+    return str(value)
+
+
+def _matcher_export_csv(result: dict, mode: str, search_term: str) -> bytes:
+    """CSV export for the currently displayed matcher results only."""
+    rows = []
+    for m in result.get("matches", []) or []:
+        problem_category = (
+            m.get("matched_problem_category")
+            or _as_text(m.get("matched_problem_categories"))
+            or _as_text(m.get("relevant_problem_categories"))
+            or m.get("technology_category")
+            or ""
+        )
+        rows.append({
+            "company": m.get("company") or "",
+            "short product": m.get("short_product") or m.get("product") or "",
+            "match mode": mode,
+            "search term": search_term,
+            "match strength": m.get("match_strength") or "",
+            "match reason": m.get("match_reason") or "",
+            "problem category": problem_category,
+            "score": m.get("opportunity_score") or "",
+            "grade": m.get("grade") or "",
+            "lead status": m.get("lead_status") or "",
+            "source type": m.get("source_type") or m.get("evidence_source") or "",
+            "safe BD action": m.get("safe_bd_action") or m.get("safe_outreach_angle") or "",
+        })
+    return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
+
+
+def _matcher_table_rows(result: dict) -> list[dict]:
+    rows = []
+    for m in result.get("matches", []) or []:
+        rows.append({
+            "Lead": m.get("display_title") or m.get("matching_product_problem_lead") or m.get("matching_product_company_lead"),
+            "Match strength": m.get("match_strength"),
+            "Problem category": m.get("matched_problem_category") or _as_text(m.get("matched_problem_categories")),
+            "Score": m.get("opportunity_score"),
+            "Grade": m.get("grade"),
+            "Lead status": m.get("lead_status"),
+            "Source type": m.get("source_type") or m.get("evidence_source"),
+            "Last generated": m.get("last_generated_date") or "—",
+            "Match reason": m.get("match_reason"),
+        })
+    return rows
+
+
+def _render_match_cards(result: dict, mode: str) -> None:
+    for i, m in enumerate(result.get("matches", []) or [], start=1):
+        title = m.get("display_title") or m.get("matching_product_problem_lead") or m.get("matching_product_company_lead")
+        st.markdown(f"#### {i}. {title}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Match strength", m.get("match_strength") or "—")
+        c2.metric("Score", str(m.get("opportunity_score") or "—"))
+        c3.metric("Grade", str(m.get("grade") or "—"))
+        c4.metric("Lead status", m.get("lead_status") or "—")
+
+        meta1, meta2, meta3 = st.columns(3)
+        meta1.markdown(f"**Problem category:** {_as_text(m.get('matched_problem_category') or m.get('matched_problem_categories') or m.get('relevant_problem_categories')) or '—'}")
+        meta2.markdown(f"**Source type:** {m.get('source_type') or m.get('evidence_source') or '—'}")
+        meta3.markdown(f"**Last generated:** {m.get('last_generated_date') or '—'}")
+
+        st.markdown(f"**Match reason:** {m.get('match_reason') or '—'}")
+        if mode == "Problem → Solution Match":
+            st.markdown(f"**Safe BD action:** {m.get('safe_bd_action') or 'Validate before outreach.'}")
+        else:
+            st.markdown(f"**Safe outreach angle:** {m.get('safe_outreach_angle') or 'Potential relevance only; requires validation.'}")
+            st.caption(TECH_CERTAINTY_NOTE)
+
+        with st.expander("Product / evidence details"):
+            st.markdown("**Long stored product / recall description:**")
+            st.write(m.get("long_product_description") or "No long product description stored.")
+            st.markdown(f"**Evidence source:** {m.get('evidence_source') or '—'}")
+            st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact') or '—'}")
+            if mode == "Problem → Solution Match":
+                st.markdown(f"**Interpretation / hypothesis:** {m.get('interpretation_hypothesis') or '—'}")
+                st.markdown("**Likely solution types:** " + _as_text(m.get("likely_solution_types")))
+                st.markdown("**Possible partner categories:** " + _as_text(m.get("possible_partner_categories")))
+            else:
+                st.markdown(f"**Why this technology may fit:** {m.get('why_this_technology_may_fit') or '—'}")
+                st.markdown("**Matched problem categories:** " + _as_text(m.get("matched_problem_categories")))
+            if m.get("match_terms"):
+                st.caption("Matched terms: " + _as_text(m.get("match_terms")))
+
+        with st.expander("Open full stored report"):
+            report_md = m.get("stored_report_md") or ""
+            if report_md.strip():
+                st.markdown(report_md)
+            else:
+                st.caption("No stored report body was found for this opportunity. Use the Results & Export tab if the report exists there.")
+        st.divider()
+
 st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
 st.caption("Find evidence-backed pharma product problems, solution technologies, "
            "service provider categories, research innovation signals, and BD "
@@ -236,6 +336,7 @@ with tab_matcher:
         "Run Generate first, then use this tab to match stored product/problem signals "
         "to solution types, partner categories, or technology-target hypotheses."
     )
+    st.caption("Potential relevance only · Requires validation · Not proof that the company needs this technology.")
 
     try:
         conn = db.connect(settings.DB_PATH)
@@ -265,12 +366,34 @@ with tab_matcher:
             else "particle engineering technology"
         )
         query = st.text_input("Search term", value=default_query)
+
+        with st.expander("Search examples"):
+            colp, colt = st.columns(2)
+            with colp:
+                st.markdown("**Problem searches**")
+                st.markdown(
+                    "- dissolution failure\n"
+                    "- stability issue\n"
+                    "- impurity issue\n"
+                    "- sterility issue\n"
+                    "- bioavailability issue"
+                )
+            with colt:
+                st.markdown("**Technology searches**")
+                st.markdown(
+                    "- particle engineering technology\n"
+                    "- solubility enhancement technology\n"
+                    "- analytical/QC service\n"
+                    "- formulation CDMO\n"
+                    "- solid-state characterisation"
+                )
+
         max_matches = st.slider("Maximum matches to show", 3, 20, 10)
         include_weak = st.checkbox(
             "Include related/weak matches",
             value=False,
             help=(
-                "Default shows Direct and Strong related matches only. Descriptor-only "
+                "Default shows high-specificity matches only. Descriptor-only "
                 "phrases such as extended release or immediate release are treated as "
                 "background, not evidence of dissolution failure."
             ),
@@ -281,96 +404,69 @@ with tab_matcher:
                 result = match_problem_to_solutions(
                     query, matcher_opps, matcher_ev, limit=max_matches, include_weak=include_weak
                 )
-                if result.get("status") == "ok":
-                    st.markdown(f"**{MATCH_SCOPE_LABEL}**")
-                    st.markdown(f"**Searched problem:** {result.get('searched_problem', query)}")
-                    st.markdown(f"**Matched problem category:** {result.get('matched_problem_category', '—')}")
-                    st.markdown("**Likely solution types:** " + "; ".join(result.get("likely_solution_types", [])))
-                    st.markdown("**Possible partner categories:** " + "; ".join(result.get("possible_partner_categories", [])))
-                    st.info(result.get("safe_bd_action", "Validate the evidence before outreach."))
-
-                    rows = []
-                    for m in result.get("matches", []):
-                        rows.append({
-                            "Lead": m.get("matching_product_problem_lead"),
-                            "Evidence source": m.get("evidence_source"),
-                            "Match strength": m.get("match_strength"),
-                            "Match reason": m.get("match_reason"),
-                            "Confidence": m.get("confidence"),
-                            "Lead status": m.get("lead_status"),
-                            "Evidence count": m.get("evidence_count"),
-                            "Grade": m.get("grade"),
-                            "Opportunity score": m.get("opportunity_score"),
-                        })
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                    if result.get("hidden_weak_count"):
-                        st.caption(f"{result.get('hidden_weak_count')} related/weak/background match(es) hidden. Tick 'Include related/weak matches' to review them.")
-
-                    for i, m in enumerate(result.get("matches", []), start=1):
-                        with st.expander(f"{i}. {m.get('matching_product_problem_lead')}"):
-                            st.markdown(f"**Match scope:** {m.get('match_scope')}")
-                            st.markdown(f"**Match strength:** {m.get('match_strength')}")
-                            st.markdown(f"**Match reason:** {m.get('match_reason')}")
-                            st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact')}")
-                            st.markdown(f"**Interpretation / hypothesis:** {m.get('interpretation_hypothesis')}")
-                            st.markdown("**Likely solution types:** " + "; ".join(m.get("likely_solution_types", [])))
-                            st.markdown("**Possible partner categories:** " + "; ".join(m.get("possible_partner_categories", [])))
-                            st.markdown(f"**Safe BD action:** {m.get('safe_bd_action')}")
-                            st.caption("Matched terms: " + ", ".join(m.get("match_terms", [])))
-                else:
-                    st.warning(result.get("message"))
-                    if result.get("likely_solution_types"):
-                        st.markdown("**Relevant solution types for this problem category:** " + "; ".join(result.get("likely_solution_types", [])))
-                    if result.get("hidden_weak_count"):
-                        st.caption(f"{result.get('hidden_weak_count')} related/weak/background match(es) hidden. Tick 'Include related/weak matches' to review them.")
-
             else:
                 result = match_technology_to_targets(
                     query, matcher_opps, matcher_ev, limit=max_matches, include_weak=include_weak
                 )
-                st.caption(TECH_CERTAINTY_NOTE)
-                if result.get("status") == "ok":
-                    st.markdown(f"**{MATCH_SCOPE_LABEL}**")
-                    st.markdown(f"**Searched technology:** {result.get('searched_technology', query)}")
-                    st.markdown(f"**Technology category:** {result.get('technology_category', '—')}")
-                    st.markdown("**Relevant problem categories:** " + "; ".join(result.get("relevant_problem_categories", [])))
-                    st.info(result.get("why_this_technology_may_fit", "Potential relevance only; requires validation."))
+            st.session_state["opportunity_matcher_result"] = {
+                "result": result,
+                "mode": mode,
+                "query": query,
+                "include_weak": include_weak,
+            }
 
-                    rows = []
-                    for m in result.get("matches", []):
-                        rows.append({
-                            "Lead": m.get("matching_product_company_lead"),
-                            "Evidence source": m.get("evidence_source"),
-                            "Match strength": m.get("match_strength"),
-                            "Match reason": m.get("match_reason"),
-                            "Evidence strength": m.get("evidence_strength"),
-                            "Confidence": m.get("confidence"),
-                            "Lead status": m.get("lead_status"),
-                            "Evidence count": m.get("evidence_count"),
-                            "Grade": m.get("grade"),
-                        })
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                    if result.get("hidden_weak_count"):
-                        st.caption(f"{result.get('hidden_weak_count')} related/weak/background target match(es) hidden. Tick 'Include related/weak matches' to review them.")
+        cached = st.session_state.get("opportunity_matcher_result")
+        if cached:
+            result = cached["result"]
+            result_mode = cached["mode"]
+            result_query = cached["query"]
 
-                    for i, m in enumerate(result.get("matches", []), start=1):
-                        with st.expander(f"{i}. {m.get('matching_product_company_lead')}"):
-                            st.markdown(f"**Match scope:** {m.get('match_scope')}")
-                            st.markdown(f"**Match strength:** {m.get('match_strength')}")
-                            st.markdown(f"**Match reason:** {m.get('match_reason')}")
-                            st.markdown(f"**Confirmed fact:** {m.get('confirmed_fact')}")
-                            st.markdown(f"**Why this technology may fit:** {m.get('why_this_technology_may_fit')}")
-                            st.markdown("**Matched problem categories:** " + "; ".join(m.get("matched_problem_categories", [])))
-                            st.markdown(f"**Safe outreach angle:** {m.get('safe_outreach_angle')}")
-                            st.caption("Matched terms: " + ", ".join(m.get("match_terms", [])))
+            if result.get("status") == "ok":
+                st.markdown(f"**{MATCH_SCOPE_LABEL}**")
+                if result_mode == "Problem → Solution Match":
+                    st.markdown(f"**Searched problem:** {result.get('searched_problem', result_query)}")
+                    st.markdown(f"**Matched problem category:** {result.get('matched_problem_category', '—')}")
+                    st.markdown("**Likely solution types:** " + _as_text(result.get("likely_solution_types", [])))
+                    st.markdown("**Possible partner categories:** " + _as_text(result.get("possible_partner_categories", [])))
+                    st.info(result.get("safe_bd_action", "Validate the evidence before outreach."))
                 else:
-                    st.warning(result.get("message"))
+                    st.markdown(f"**Searched technology:** {result.get('searched_technology', result_query)}")
+                    st.markdown(f"**Technology category:** {result.get('technology_category', '—')}")
+                    st.markdown("**Relevant problem categories:** " + _as_text(result.get("relevant_problem_categories", [])))
+                    st.info(result.get("why_this_technology_may_fit", "Potential relevance only; requires validation."))
+                    st.caption(TECH_CERTAINTY_NOTE)
+
+                table_rows = _matcher_table_rows(result)
+                if table_rows:
+                    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "⬇ Download current matcher results (.csv)",
+                        _matcher_export_csv(result, result_mode, result_query),
+                        file_name="pharmatune_opportunity_matcher_results.csv",
+                        mime="text/csv",
+                    )
+                if result.get("hidden_weak_count"):
+                    st.caption(
+                        f"{result.get('hidden_weak_count')} related/weak/background match(es) hidden. "
+                        "Tick 'Include related/weak matches' to review them."
+                    )
+                _render_match_cards(result, result_mode)
+
+            else:
+                st.warning(result.get("message"))
+                if result_mode == "Problem → Solution Match":
+                    if result.get("likely_solution_types"):
+                        st.markdown("**Relevant solution types for this problem category:** " + _as_text(result.get("likely_solution_types", [])))
+                else:
                     if result.get("technology_category"):
                         st.markdown(f"**Technology category:** {result.get('technology_category')}")
-                        st.markdown("**Relevant problem categories:** " + "; ".join(result.get("relevant_problem_categories", [])))
+                        st.markdown("**Relevant problem categories:** " + _as_text(result.get("relevant_problem_categories", [])))
                         st.caption(TECH_CERTAINTY_NOTE)
-                    if result.get("hidden_weak_count"):
-                        st.caption(f"{result.get('hidden_weak_count')} related/weak/background target match(es) hidden. Tick 'Include related/weak matches' to review them.")
+                if result.get("hidden_weak_count"):
+                    st.caption(
+                        f"{result.get('hidden_weak_count')} related/weak/background match(es) hidden. "
+                        "Tick 'Include related/weak matches' to review them."
+                    )
 
 # ==========================================================================
 # TAB 3 — TECHNOLOGY PROFILE

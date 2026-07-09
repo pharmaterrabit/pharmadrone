@@ -739,6 +739,113 @@ def _source_summary(evidence: list[dict[str, Any]]) -> str:
     return ", ".join(seen[:4]) or "Stored opportunity evidence"
 
 
+def _source_type_label(evidence: list[dict[str, Any]]) -> str:
+    """Short user-facing source type summary for BD lead cards."""
+    labels = {
+        "recall": "FDA recall",
+        "trial": "ClinicalTrials.gov trial",
+        "web": "web",
+        "company": "company/web",
+        "paper": "scientific paper",
+        "patent": "patent",
+        "label": "drug label",
+    }
+    seen: list[str] = []
+    for e in evidence or []:
+        if not isinstance(e, dict):
+            continue
+        stype = _norm(e.get("source_type") or "")
+        label = labels.get(stype, stype or _norm(e.get("source_category") or ""))
+        if label and label not in seen:
+            seen.append(label)
+    return ", ".join(seen[:3]) or "stored evidence"
+
+
+def _clean_product_text(text: Any) -> str:
+    t = " ".join(str(text or "").replace("\n", " ").split())
+    if not t:
+        return ""
+    t = re.sub(r"\bNDC(?:s)?\s*[:#]?\s*[0-9-]+(?:\s*(?:,|and)\s*[0-9-]+)*", "", t, flags=re.I)
+    t = re.sub(r"\bUPC\s*[:#]?\s*[0-9-]+", "", t, flags=re.I)
+    t = re.sub(r"\bLot(?:s)?\s*[:#]?\s*[A-Za-z0-9, -]+", "", t, flags=re.I)
+    t = re.split(
+        r"\b(?:packaged in|packaged as|bottle[s]? of|unit dose|carton[s]? of|blister[s]? of|case[s]? of|recall number|quantity|lot number|expiration)\b",
+        t,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    t = re.split(r"[;|]", t, maxsplit=1)[0]
+    t = re.sub(r"\s*,\s*", ", ", t).strip(" ,.-")
+    return t
+
+
+def _short_product_name(opp: dict[str, Any]) -> str:
+    """Readable product label without NDC/package clutter.
+
+    Recall product names often include package size, NDC, lot, quantity, and
+    strength. For the matcher card, keep the drug/product and dosage-form phrase
+    where possible and push the long description to details.
+    """
+    candidates = [
+        opp.get("product"),
+        opp.get("brand_name"),
+        opp.get("generic_name"),
+    ]
+    for e in opp.get("evidence", []) or []:
+        if not isinstance(e, dict):
+            continue
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        candidates.extend([ent.get("product_short"), ent.get("product"), rf.get("product_description")])
+
+    product = next((_clean_product_text(x) for x in candidates if _clean_product_text(x)), "Unknown product")
+
+    # Prefer a name ending at the dosage-form word. This turns long FDA package
+    # descriptions into labels such as "Nitrofurantoin Capsules".
+    form_capture = re.search(
+        r"^(.{2,95}?\b(?:capsules?|tablets?|caplets?|injections?|solution|suspension|cream|ointment|gel|patches|vials?|syringes?)\b)",
+        product,
+        flags=re.I,
+    )
+    if form_capture:
+        product = form_capture.group(1)
+
+    # Remove trailing strength/pack descriptors after the main name when the
+    # dosage form was not captured cleanly.
+    product = re.sub(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|kg|ml|mL|%)\b.*$", "", product, flags=re.I).strip(" ,.-")
+    product = re.sub(r"\bUSP\b", "", product, flags=re.I).strip(" ,.-")
+    product = re.sub(r"\s{2,}", " ", product)
+    if len(product) > 80:
+        product = product[:77].rsplit(" ", 1)[0] + "…"
+    return product or "Unknown product"
+
+
+def _long_product_description(opp: dict[str, Any]) -> str:
+    details: list[str] = []
+    for key in ("product", "brand_name", "generic_name", "dev_code"):
+        val = opp.get(key)
+        if val and str(val) not in details:
+            details.append(str(val))
+    for e in opp.get("evidence", []) or []:
+        if not isinstance(e, dict):
+            continue
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        for val in (rf.get("product_description"), e.get("title"), e.get("supports")):
+            if val and str(val) not in details:
+                details.append(str(val))
+    return "\n\n".join(details[:6]) or "No additional product description stored."
+
+
+def _display_title(opp: dict[str, Any]) -> str:
+    company = opp.get("company") or "Unknown company"
+    return f"{company} — {_short_product_name(opp)}"
+
+
+def _last_generated_date(opp: dict[str, Any]) -> str:
+    return str(opp.get("created_at") or opp.get("date_generated") or opp.get("generated_at") or "")
+
+
 def _confirmed_fact(opp: dict[str, Any]) -> str:
     for key in ("confirmed_fact", "failure_event_summary", "event_reason", "problem_signal"):
         val = opp.get(key)
@@ -757,9 +864,20 @@ def _confirmed_fact(opp: dict[str, Any]) -> str:
 
 
 def _target_label(opp: dict[str, Any]) -> str:
-    company = opp.get("company") or "Unknown company"
-    product = opp.get("product") or opp.get("brand_name") or opp.get("generic_name") or "Unknown product"
-    return f"{company} — {product}"
+    return _display_title(opp)
+
+
+def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
+    evidence = opp.get("evidence", []) or []
+    return {
+        "opportunity_id": opp.get("id") or "",
+        "short_product": _short_product_name(opp),
+        "display_title": _display_title(opp),
+        "long_product_description": _long_product_description(opp),
+        "source_type": _source_type_label(evidence),
+        "last_generated_date": _last_generated_date(opp),
+        "stored_report_md": opp.get("report_md") or "",
+    }
 
 
 def _lead_status(opp: dict[str, Any], strength: str) -> str:
@@ -795,6 +913,7 @@ def _problem_match_row(
     target = _target_label(opp)
     strength = match["strength"]
     return {
+        **_common_match_metadata(opp),
         "match_scope": MATCH_SCOPE_LABEL,
         "match_strength": strength,
         "match_reason": match["reason"],
@@ -897,6 +1016,7 @@ def _tech_match_row(
     term_hits = sorted({term for _k, m in category_matches for term in m.get("terms", [])})
     reasons = [f"{PROBLEM_RULES[k]['label']}: {m['reason']}" for k, m in category_matches]
     return {
+        **_common_match_metadata(opp),
         "match_scope": MATCH_SCOPE_LABEL,
         "match_strength": best_strength,
         "match_reason": "; ".join(reasons[:3]),

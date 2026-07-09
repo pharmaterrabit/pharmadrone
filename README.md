@@ -197,6 +197,16 @@ Tab **2 Opportunity Matcher** adds two deterministic modes:
 - **Technology → Target Match**: e.g. `particle engineering technology` → stored
   product/company leads where the current evidence suggests potential relevance.
 
+BD workflow helpers in the matcher tab:
+
+- Short lead titles use `Company — Short product name`; long NDC/package/recall
+  descriptions stay inside expandable details.
+- Each matched lead shows match strength, problem category, score, grade, lead
+  status, source type, last generated date, and the reason for the match.
+- Each matched lead can open the already stored full report; reports are not
+  regenerated from the matcher.
+- Current matcher results can be downloaded as a CSV lead list.
+
 Important discipline:
 
 - The matcher only uses stored opportunities/evidence from previous Generate runs.
