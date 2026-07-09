@@ -101,6 +101,45 @@ or `python -m pharmadrone.benchmark` (live) checks all five classes — a recall
 quality issue, a terminated/withdrawn trial, a regulatory rejection/withdrawal, a
 company-discontinued programme, and a formulation/CMC signal.
 
+## Root-Cause & Solution-Fit Intelligence (embedded, deterministic)
+
+When a confirmed failure signal is found, an embedded layer (`pipeline/root_cause.py`)
+investigates it more deeply and adds a section to the report — deterministic, so
+it works even when the LLM is rate-limited. It produces:
+
+- **Confirmed event / confirmed stated reason / confirmed root cause.** Root cause
+  is shown as *not publicly confirmed* unless an authoritative source (warning
+  letter, company statement) explicitly states it — never fabricated.
+- **Root-Cause Evidence Matrix** — ranked hypotheses (not equal), each with
+  evidence supporting, evidence against/missing, a bounded confidence label
+  (Confirmed / Strongly supported / Moderate / Plausible / Weak / Unknown), and
+  BD relevance. With only the recall reason, most stay *Plausible*; confidence
+  rises only when corroborating evidence is actually found.
+- **Deeper corroboration search** (`event_discovery.corroborate_candidates`) runs
+  on the capped lead set only (≤12), reliable sources only (FDA warning letters,
+  accessdata recall pages, company statements, molecule/dosage-form literature),
+  and attaches hits as extra evidence that feeds the matrix. Bounded, network-
+  guarded, and skipped cleanly if Tavily has no key.
+- **Molecule / dosage-form scientific context** (e.g. nitrofurantoin
+  monohydrate/macrocrystals → particle-size/solid-state sensitivity) used to
+  frame hypotheses, never to assert cause.
+- **Solution-Fit Mapping** — most / possibly / low relevance service types, plus
+  partner categories, tuned per problem bucket.
+- **Safe Outreach Angle** — three non-accusatory variants (soft collaboration /
+  problem-aware / technology-provider). Never says "your product failed", assumes
+  root cause, or offers to "fix a recall"; uses "publicly available information",
+  "historical signal", "may be relevant", "confidential technical discussion".
+- **Confidence & Readiness** — separate assessments for event, stated reason,
+  root cause, technical fit, commercial opportunity, and outreach readiness, plus
+  0-100 sub-scores and a capped overall (capped when root cause is unknown, the
+  event is terminated/old, single-lot only, or there's no company/trial/news/
+  literature support).
+- **Validation Checklist + Lead classification** (Outreach-ready / Needs
+  validation / Monitor only / Low priority) before any BD action.
+
+The section renders only when a failure event is structurally confirmed, so it
+never appears on speculative or literature-only candidates.
+
 ## Deterministic reports are full BD memos (not placeholders)
 
 When the LLM is disabled (rate-limit / circuit breaker), reports are written by a

@@ -131,3 +131,87 @@ def has_event_source(evidence: list[dict]) -> bool:
         if e.get("source_category") in ("regulatory", "company"):
             return True
     return False
+
+
+# --- Deeper per-candidate corroboration (Root-Cause layer, req 1/3) ---------
+def _reliable_corroboration_queries(opp: dict) -> list[str]:
+    """Targeted, reliable-source-only queries to corroborate a specific lead:
+    product/molecule/firm/recall-number + problem, plus molecule+dosage-form
+    scientific angles. No forums/blogs — site-scoped or scholarly only."""
+    ent = {}
+    for e in opp.get("evidence", []):
+        ent = e.get("entities") or {}
+        if ent.get("recall_fields"):
+            break
+    rf = ent.get("recall_fields") or {}
+    firm = (opp.get("company") or rf.get("recalling_firm") or "").strip()
+    product = (opp.get("product") or rf.get("product_description") or "").strip()
+    recall_no = (rf.get("recall_number") or "").strip()
+    problem = (opp.get("problem_category") or opp.get("problem_signal") or "").strip()
+    # molecule guess = first token of product (deterministic, cheap)
+    molecule = product.split(",")[0].split()[0] if product else ""
+
+    q = []
+    if firm:
+        q.append(f'site:fda.gov warning letter "{firm}"')
+        q.append(f'"{firm}" recall {problem}')
+    if recall_no:
+        q.append(f'"{recall_no}" recall')
+    if product:
+        q.append(f'site:accessdata.fda.gov "{product[:60]}"')
+    if molecule and problem:
+        # scientific corroboration via scholarly/regulatory sources only
+        q.append(f'{molecule} {problem} dissolution OR bioavailability')
+        q.append(f'{molecule} particle size OR polymorph OR solid-state')
+    return [x for x in q if x][:6]
+
+
+def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
+                           log=None, max_candidates: int = 12) -> dict:
+    """For each selected candidate (post-cap), run a few reliable-source
+    corroboration searches and ATTACH any hits as extra evidence. This feeds the
+    Root-Cause Evidence Matrix (warning letters, company statements, molecule
+    literature). Respects the LLM-independent path: it only uses web search, and
+    only if Tavily is enabled. Returns a small debug dict."""
+    say = log or (lambda m: None)
+    debug = {"searched": 0, "hits": 0, "skipped_no_tavily": False}
+    from .. import settings as _settings
+    if "tavily" not in enabled or not _settings.env("TAVILY_API_KEY"):
+        debug["skipped_no_tavily"] = True
+        return debug
+    for opp in candidates[:max_candidates]:
+        queries = _reliable_corroboration_queries(opp)
+        if not queries:
+            continue
+        debug["searched"] += 1
+        existing_urls = {e.get("url") for e in opp.get("evidence", [])}
+        for q in queries:
+            res = tavily_search.search(q, max_results=3, cost=cost)
+            if not res.ok:
+                continue
+            for rec in res.records:
+                if rec.get("url") in existing_urls:
+                    continue
+                # tag as corroboration; keep source_category as-is (news/regulatory)
+                rec["corroboration"] = True
+                rec["query_text"] = q
+                opp.setdefault("evidence", []).append({
+                    "source_type": rec.get("source_type", "web"),
+                    "source_category": rec.get("source_category", "news"),
+                    "source_name": rec.get("source_name", "Web (Tavily)"),
+                    "record_id": rec.get("record_id", ""),
+                    "title": rec.get("title", ""),
+                    "url": rec.get("url", ""),
+                    "language": rec.get("language", "en"),
+                    "english_summary": (rec.get("raw_text") or "")[:400],
+                    "date_accessed": rec.get("date_accessed", ""),
+                    "entities": rec.get("entities") or {},
+                    "supports": "corroboration search result",
+                    "does_not_prove": "relevance requires validation",
+                })
+                existing_urls.add(rec.get("url"))
+                debug["hits"] += 1
+    if debug["searched"]:
+        say(f"Root-cause corroboration: searched {debug['searched']} lead(s), "
+            f"attached {debug['hits']} corroborating source(s).")
+    return debug

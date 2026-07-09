@@ -6,7 +6,7 @@ language and the mandatory 'Red Flags' and 'Why This May Be Wrong' sections.
 """
 from __future__ import annotations
 from .. import llm
-from . import failure_signal, bd_rules
+from . import failure_signal, bd_rules, root_cause
 
 SECTIONS = [
     "Quick Summary", "Scientific / RWE View", "Business & Commercial View",
@@ -246,4 +246,10 @@ def write_report(opp: dict, cost, report_type: str = "memo") -> str:
               "requires human validation before commercial decision-making.\n\n")
     # Embed the Failure Signal Intelligence section (deterministic, evidence-based).
     failure_section = failure_signal.render_failure_section(opp)
-    return header + body + failure_section
+    # Embed the Root-Cause & Solution-Fit Intelligence layer (deterministic).
+    # Only when there's a confirmed failure event to investigate — the renderer
+    # itself returns "" when there's no problem category, so this is safe.
+    root_cause_section = ""
+    if opp.get("failure") and failure_signal._event_structurally_confirmed(opp):
+        root_cause_section = root_cause.render_root_cause_section(opp)
+    return header + body + failure_section + root_cause_section

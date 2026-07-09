@@ -226,6 +226,19 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         say(f"Candidates kept for scoring: {len(kept)} (no cap needed).")
     candidates = kept
 
+    # --- Deeper per-candidate corroboration (Root-Cause layer) ---------------
+    # Runs only on the capped set (<=12), reliable sources only, to feed the
+    # Root-Cause Evidence Matrix (warning letters, company statements, molecule
+    # literature). Bounded and network-guarded; safe to no-op if Tavily is off.
+    if mode in ("failure", "test") and fail_on:
+        try:
+            corro = event_discovery.corroborate_candidates(
+                candidates, cost, enabled, log=say, max_candidates=keep_n)
+            debug["corroboration"] = corro
+        except Exception as e:
+            debug["corroboration_error"] = str(e)
+            say(f"  ⚠ corroboration step skipped: {e}")
+
     llm_up = not llm.BREAKER.tripped
     say(f"Scoring (0-100) — {'LLM+deterministic' if llm_up else 'DETERMINISTIC ONLY (LLM disabled by 429 breaker)'}…")
     min_ev = profile["output"].get("min_evidence_links", 2)
