@@ -32,7 +32,7 @@ SOURCE_LABELS = {
 
 
 def _blank_cov():
-    return {"queries": 0, "ok": 0, "failed": 0, "evidence": 0, "errors": []}
+    return {"queries": 0, "ok": 0, "failed": 0, "evidence": 0, "errors": [], "warnings": []}
 
 
 def retrieve(queries, enabled, cost, per_source=6, progress=None, log=None):
@@ -47,14 +47,16 @@ def retrieve(queries, enabled, cost, per_source=6, progress=None, log=None):
         if res.ok:
             cov["ok"] += 1
             cov["evidence"] += res.count
+            cov.setdefault("warnings", []).extend(getattr(res, "warnings", []) or [])
             for rec in res.records:
                 rec["region_hint"] = region
-                rec["query_text"] = query_text
+                rec["query_text"] = rec.get("query_text") or query_text
             evidence.extend(res.records)
         else:
             cov["failed"] += 1
             msg = f"{res.source} failed on '{res.query[:40]}': {res.error}"
             cov["errors"].append(msg)
+            cov.setdefault("warnings", []).extend(getattr(res, "warnings", []) or [])
             say("  ⚠ " + msg)
 
     for i, q in enumerate(queries):

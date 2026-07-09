@@ -51,6 +51,7 @@ def check_all(query: str = DEFAULT_QUERY, per_source: int = 3) -> list[dict]:
             "count": res.count,
             "error": res.error or "",
             "needs_key": needs_key,
+            "warning": "; ".join(getattr(res, "warnings", []) or []),
             "sample": sample,
         })
     return out
@@ -69,6 +70,8 @@ def _cli():
         if r["error"]:
             line += f"  → {r['error']}"
         print(line)
+        if r.get("warning"):
+            print(f"      warning: {r['warning']}")
         if r["sample"]:
             print(f"      e.g. {r['sample']}")
     ok = sum(1 for r in results if r["status"] == "OK")

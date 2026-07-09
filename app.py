@@ -89,7 +89,7 @@ def _matcher_table_rows(result: dict) -> list[dict]:
             "Lead": m.get("display_title") or m.get("matching_product_problem_lead") or m.get("matching_product_company_lead"),
             "Match strength": m.get("match_strength"),
             "Problem category": m.get("matched_problem_category") or _as_text(m.get("matched_problem_categories")),
-            "Score": m.get("opportunity_score"),
+            "Opportunity Score": m.get("opportunity_score"),
             "Grade": m.get("grade"),
             "Lead status": m.get("lead_status"),
             "Source type": m.get("source_type") or m.get("evidence_source"),
@@ -105,7 +105,7 @@ def _render_match_cards(result: dict, mode: str) -> None:
         st.markdown(f"#### {i}. {title}")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Match strength", m.get("match_strength") or "—")
-        c2.metric("Score", str(m.get("opportunity_score") or "—"))
+        c2.metric("Opportunity Score", str(m.get("opportunity_score") or "—"))
         c3.metric("Grade", str(m.get("grade") or "—"))
         c4.metric("Lead status", m.get("lead_status") or "—")
 
@@ -119,7 +119,7 @@ def _render_match_cards(result: dict, mode: str) -> None:
             st.markdown(f"**Safe BD action:** {m.get('safe_bd_action') or 'Validate before outreach.'}")
         else:
             st.markdown(f"**Safe outreach angle:** {m.get('safe_outreach_angle') or 'Potential relevance only; requires validation.'}")
-            st.caption(TECH_CERTAINTY_NOTE)
+
 
         with st.expander("Product / evidence details"):
             st.markdown("**Long stored product / recall description:**")
@@ -139,6 +139,7 @@ def _render_match_cards(result: dict, mode: str) -> None:
         with st.expander("Open full stored report"):
             report_md = m.get("stored_report_md") or ""
             if report_md.strip():
+                st.caption("Score note: matcher cards show the stored Opportunity Score used for ranking. The report may also include a separate Root-Cause/Solution-Fit overall score.")
                 st.markdown(report_md)
             else:
                 st.caption("No stored report body was found for this opportunity. Use the Results & Export tab if the report exists there.")
@@ -239,6 +240,18 @@ with tab_gen:
         st.success(f"Generated {len(accepted)} reports · {len(rejected)} rejected · "
                    f"est. ${cost.total_usd} (${cost.per_report_usd}/report)")
 
+        if dbg.get("llm_disabled_reason"):
+            st.warning(
+                "LLM unavailable/rate-limited; deterministic evidence mode used. "
+                "Candidate discovery, scoring fallback, and stored reports remain usable but require validation."
+            )
+
+        if dbg.get("web_enrichment_unavailable"):
+            st.warning(
+                "Web enrichment unavailable for this run because Tavily/API failed. "
+                "The run continued using structured sources and deterministic evidence; web corroboration was not available."
+            )
+
         if not accepted:
             st.error("0 reports generated. Open the Debug panel below — it shows "
                      "exactly where candidates were lost (LLM batch failures, "
@@ -248,17 +261,23 @@ with tab_gen:
         st.caption("Global public-source scouting — not complete global regulator "
                    "coverage.")
         cov_df = pd.DataFrame([
-            {"Source": s, "Evidence items": d["evidence_items"],
+            {"Source": s, "Status": d.get("status", "—"),
+             "Evidence items": d["evidence_items"],
              "Accepted leads citing": d["accepted_leads_citing"],
-             "Queries": d["queries"], "Failed": d["failed"]}
+             "Queries": d["queries"], "Succeeded": d.get("succeeded", 0),
+             "Failed": d["failed"]}
             for s, d in cov.items()])
         st.dataframe(cov_df, use_container_width=True, hide_index=True)
 
-        errors = [e for d in cov.values() for e in d["errors"]]
+        errors = [e for d in cov.values() for e in d.get("errors", [])]
+        warnings = [w for d in cov.values() for w in d.get("warnings", [])]
         if errors:
             st.warning(f"{len(errors)} source failure(s) — shown so nothing is "
                        "hidden:")
             st.code("\n".join(errors[:30]))
+        if warnings:
+            st.info(f"{len(warnings)} source warning(s), including sanitised fallback queries if used:")
+            st.code("\n".join(warnings[:20]))
 
         with st.expander("🔍 Debug: candidate pipeline (raw evidence → reports)",
                          expanded=not accepted):
@@ -275,7 +294,8 @@ with tab_gen:
 - **Candidates after dedup:** {dbg.get('candidates_after_dedup', 0)}
 - **Fallback:** generated {fbinfo.get('generated', 0)} · valid targets available {fbinfo.get('valid_available', 0)} · _{fbinfo.get('reason','n/a')}_
 - **Pre-scoring cap:** kept **{dbg.get('candidates_kept_for_scoring', 0)}** of {dbg.get('candidates_total_pre_cap', 0)} for scoring · {dbg.get('candidates_skipped_by_cap', 0)} skipped (deterministic ranking)
-- **LLM status:** {'🔴 DISABLED — ' + dbg.get('llm_disabled_reason','') if dbg.get('llm_disabled_reason') else '🟢 active (or not needed)'}
+- **Root-cause corroboration:** {dbg.get('corroboration', {}).get('searched_leads', dbg.get('corroboration', {}).get('searched', 0))} lead(s) · {dbg.get('corroboration', {}).get('queries_run', 0)} query(ies) · {dbg.get('corroboration', {}).get('attached', dbg.get('corroboration', {}).get('hits', 0))} attached · {dbg.get('corroboration', {}).get('hits_retrieved', 0)} hit(s) retrieved · {dbg.get('corroboration', {}).get('rejected', 0)} rejected · {dbg.get('corroboration', {}).get('no_hits', 0)} no-hit query(ies) · {dbg.get('corroboration', {}).get('api_failed', 0)} API-failed query(ies)
+- **LLM status:** {'🔴 unavailable/rate-limited — deterministic evidence mode used · ' + dbg.get('llm_disabled_reason','') if dbg.get('llm_disabled_reason') else '🟢 active (or not needed)'}
 - **Final valid-target gate dropped:** {dbg.get('final_gate_dropped', 0)} (no real product/company/trial)
 - **Accepted:** {dbg.get('accepted_count', 0)} · **Rejected:** {dbg.get('rejected_count', 0)}
   - rejected (too little evidence): {dbg.get('scoring', {}).get('rejected_low_evidence', 0)}
@@ -434,10 +454,10 @@ with tab_matcher:
                     st.markdown(f"**Technology category:** {result.get('technology_category', '—')}")
                     st.markdown("**Relevant problem categories:** " + _as_text(result.get("relevant_problem_categories", [])))
                     st.info(result.get("why_this_technology_may_fit", "Potential relevance only; requires validation."))
-                    st.caption(TECH_CERTAINTY_NOTE)
 
                 table_rows = _matcher_table_rows(result)
                 if table_rows:
+                    st.caption("Score shown here is the stored Opportunity Score used for app ranking. Root-Cause/Solution-Fit report sections may show a separate overall score.")
                     st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
                     st.download_button(
                         "⬇ Download current matcher results (.csv)",
@@ -461,7 +481,6 @@ with tab_matcher:
                     if result.get("technology_category"):
                         st.markdown(f"**Technology category:** {result.get('technology_category')}")
                         st.markdown("**Relevant problem categories:** " + _as_text(result.get("relevant_problem_categories", [])))
-                        st.caption(TECH_CERTAINTY_NOTE)
                 if result.get("hidden_weak_count"):
                     st.caption(
                         f"{result.get('hidden_weak_count')} related/weak/background match(es) hidden. "
@@ -579,9 +598,10 @@ with tab_conn:
         st.dataframe(pd.DataFrame([
             {"Source": r["source"], "Status": r["status"], "Records": r["count"],
              "Needs key": "yes" if r["needs_key"] else "no",
+             "Warning": r.get("warning", ""),
              "Error / sample": r["error"] or r["sample"]}
             for r in results]), use_container_width=True, hide_index=True)
         ok = sum(1 for r in results if r["status"] == "OK")
         (st.success if ok == len(results) else st.warning)(
             f"{ok}/{len(results)} sources OK")
-    st.caption("CLI equivalent:  python -m pharmadrone.test_connectors \"your query\"")
+    st.caption("CLI equivalent:  python -m pharmadrone.test_connectors \"your query\". Tavily site: queries are retried once with a sanitised query if the API rejects search-engine operators.")

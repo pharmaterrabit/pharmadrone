@@ -1028,7 +1028,7 @@ def _tech_match_row(
         "product": opp.get("product") or opp.get("brand_name") or opp.get("generic_name") or "",
         "why_this_technology_may_fit": (
             f"{tech_rule['why_fit']} Current match strength: {best_strength}. "
-            f"Matched from existing evidence via: {'; '.join(reasons[:2])}. {TECH_CERTAINTY_NOTE}"
+            f"Matched from existing evidence via: {'; '.join(reasons[:2])}."
         ),
         "evidence_strength": _confidence(opp, best_strength),
         "confidence": _confidence(opp, best_strength),
@@ -1095,7 +1095,7 @@ def match_technology_to_targets(
             "searched_technology": query,
             "technology_category": tech_rule["label"],
             "relevant_problem_categories": relevant_labels,
-            "why_this_technology_may_fit": tech_rule["why_fit"] + " " + TECH_CERTAINTY_NOTE,
+            "why_this_technology_may_fit": tech_rule["why_fit"],
             "hidden_weak_count": hidden_weak_count,
             "matches": [],
         }
@@ -1105,7 +1105,7 @@ def match_technology_to_targets(
         "searched_technology": query,
         "technology_category": tech_rule["label"],
         "relevant_problem_categories": relevant_labels,
-        "why_this_technology_may_fit": tech_rule["why_fit"] + " " + TECH_CERTAINTY_NOTE,
+        "why_this_technology_may_fit": tech_rule["why_fit"],
         "hidden_weak_count": hidden_weak_count,
         "matches": matches[:limit],
     }

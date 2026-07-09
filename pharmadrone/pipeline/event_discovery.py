@@ -100,7 +100,7 @@ def discover_events(profile: dict, cost, per_source: int = 8, log=None) -> tuple
 
 
 def _blank():
-    return {"queries": 0, "ok": 0, "failed": 0, "evidence": 0, "errors": []}
+    return {"queries": 0, "ok": 0, "failed": 0, "evidence": 0, "errors": [], "warnings": []}
 
 
 def _absorb(cov, res, evidence, region=None, say=None, query_text=None):
@@ -108,14 +108,16 @@ def _absorb(cov, res, evidence, region=None, say=None, query_text=None):
     if res.ok:
         cov["ok"] += 1
         cov["evidence"] += res.count
+        cov.setdefault("warnings", []).extend(getattr(res, "warnings", []) or [])
         for rec in res.records:
             rec["region_hint"] = region or rec.get("region_hint")
-            rec["query_text"] = query_text or res.query
+            rec["query_text"] = rec.get("query_text") or query_text or res.query
         evidence.extend(res.records)
     else:
         cov["failed"] += 1
         msg = f"{res.source} failed on '{str(res.query)[:40]}': {res.error}"
         cov["errors"].append(msg)
+        cov.setdefault("warnings", []).extend(getattr(res, "warnings", []) or [])
         if say:
             say("  ⚠ " + msg)
 
@@ -169,22 +171,42 @@ def _reliable_corroboration_queries(opp: dict) -> list[str]:
 def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
                            log=None, max_candidates: int = 12) -> dict:
     """For each selected candidate (post-cap), run a few reliable-source
-    corroboration searches and ATTACH any hits as extra evidence. This feeds the
-    Root-Cause Evidence Matrix (warning letters, company statements, molecule
-    literature). Respects the LLM-independent path: it only uses web search, and
-    only if Tavily is enabled. Returns a small debug dict."""
+    corroboration searches and ATTACH any hits as extra evidence.
+
+    The debug payload separates skipped search, API failures, zero-hit searches,
+    retrieved-but-rejected hits, and accepted attachments so the UI/logs do not
+    imply corroboration was performed when Tavily was unavailable.
+    """
     say = log or (lambda m: None)
-    debug = {"searched": 0, "hits": 0, "rejected": 0, "skipped_no_tavily": False}
+    debug = {
+        "searched": 0,              # backward-compatible: leads with queries
+        "searched_leads": 0,
+        "queries_run": 0,
+        "api_failed": 0,
+        "no_hits": 0,
+        "hits_retrieved": 0,
+        "hits": 0,                  # backward-compatible: accepted attachments
+        "attached": 0,
+        "rejected": 0,
+        "skipped_no_tavily": False,
+        "web_enrichment_unavailable": False,
+        "errors": [],
+        "warnings": [],
+    }
     from .. import settings as _settings
     from . import root_cause as _rc
     if "tavily" not in enabled or not _settings.env("TAVILY_API_KEY"):
         debug["skipped_no_tavily"] = True
+        debug["web_enrichment_unavailable"] = True
+        say("Root-cause corroboration: search skipped — Tavily is disabled or TAVILY_API_KEY is missing.")
         return debug
+
     for opp in candidates[:max_candidates]:
         queries = _reliable_corroboration_queries(opp)
         if not queries:
             continue
         debug["searched"] += 1
+        debug["searched_leads"] += 1
         existing_urls = {e.get("url") for e in opp.get("evidence", [])}
         # recall fields for relevance matching
         rf = {}
@@ -194,9 +216,33 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
                 break
         opp.setdefault("corroboration_debug", [])
         for q in queries:
+            debug["queries_run"] += 1
             res = tavily_search.search(q, max_results=3, cost=cost)
+            debug["warnings"].extend(getattr(res, "warnings", []) or [])
             if not res.ok:
+                debug["api_failed"] += 1
+                debug["errors"].append(f"{res.source} failed on {str(res.query)[:80]!r}: {res.error}")
+                opp["corroboration_debug"].append({
+                    "title": "API failed",
+                    "url": "",
+                    "class": "api_failed",
+                    "matched_fields": [],
+                    "accepted": False,
+                    "reason": f"Tavily/API failure for query {q!r}: {res.error}",
+                })
                 continue
+            if not res.records:
+                debug["no_hits"] += 1
+                opp["corroboration_debug"].append({
+                    "title": "No hits found",
+                    "url": "",
+                    "class": "no_hits",
+                    "matched_fields": [],
+                    "accepted": False,
+                    "reason": f"Tavily returned no results for query {q!r}.",
+                })
+                continue
+            debug["hits_retrieved"] += len(res.records)
             for rec in res.records:
                 if rec.get("url") in existing_urls:
                     continue
@@ -213,7 +259,7 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
                     "entities": rec.get("entities") or {},
                 }
                 # STRICT relevance filter — only attach evidence that matches THIS
-                # recall; classify and record why accepted/rejected (req 1/2/8).
+                # recall; classify and record why accepted/rejected.
                 verdict = _rc.classify_corroboration(candidate_ev, opp, rf)
                 opp["corroboration_debug"].append({
                     "title": (candidate_ev["title"] or "")[:80],
@@ -237,8 +283,22 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
                     "regulatory source")
                 opp.setdefault("evidence", []).append(candidate_ev)
                 debug["hits"] += 1
-    if debug["searched"]:
-        say(f"Root-cause corroboration: searched {debug['searched']} lead(s), "
-            f"attached {debug['hits']} relevant source(s), rejected "
-            f"{debug['rejected']} irrelevant/low-quality hit(s).")
+                debug["attached"] += 1
+
+    if debug["api_failed"] and debug["api_failed"] == debug["queries_run"]:
+        debug["web_enrichment_unavailable"] = True
+
+    if debug["searched_leads"]:
+        status_bits = [
+            f"searched {debug['searched_leads']} lead(s)",
+            f"ran {debug['queries_run']} query(ies)",
+            f"attached {debug['attached']} relevant source(s)",
+            f"retrieved {debug['hits_retrieved']} hit(s)",
+            f"rejected {debug['rejected']} irrelevant/low-quality hit(s)",
+            f"no hits on {debug['no_hits']} query(ies)",
+            f"API failed on {debug['api_failed']} query(ies)",
+        ]
+        say("Root-cause corroboration: " + ", ".join(status_bits) + ".")
+        if debug["web_enrichment_unavailable"]:
+            say("  ⚠ Web enrichment unavailable for corroboration this run — Tavily/API failed for all corroboration queries.")
     return debug

@@ -37,6 +37,23 @@ MAX_CANDIDATES_TO_SCORE = 12
 MAX_LLM_EXTRACTION_BATCHES = 3
 
 
+def _source_status(cov: dict) -> str:
+    """Human-readable source state for UI/source coverage."""
+    queries = int(cov.get("queries", 0) or 0)
+    ok = int(cov.get("ok", 0) or 0)
+    failed = int(cov.get("failed", 0) or 0)
+    evidence = int(cov.get("evidence", 0) or 0)
+    if queries == 0:
+        return "search skipped"
+    if failed >= queries and ok == 0:
+        return "API failed / unavailable"
+    if evidence == 0 and ok > 0:
+        return "no hits found"
+    if failed > 0 and evidence > 0:
+        return "partial — some API failures"
+    return "available"
+
+
 def _coverage_summary(coverage: dict, accepted: list[dict]) -> dict:
     """Per-source: raw evidence retrieved + how many ACCEPTED leads cite it."""
     leads_by_source = Counter()
@@ -47,10 +64,14 @@ def _coverage_summary(coverage: dict, accepted: list[dict]) -> dict:
     summary = {}
     for source, cov in coverage.items():
         summary[source] = {
-            "queries": cov["queries"], "succeeded": cov["ok"], "failed": cov["failed"],
-            "evidence_items": cov["evidence"],
+            "status": _source_status(cov),
+            "queries": cov.get("queries", 0),
+            "succeeded": cov.get("ok", 0),
+            "failed": cov.get("failed", 0),
+            "evidence_items": cov.get("evidence", 0),
             "accepted_leads_citing": leads_by_source.get(source, 0),
-            "errors": cov["errors"],
+            "errors": cov.get("errors", []),
+            "warnings": cov.get("warnings", []),
         }
     return summary
 
@@ -133,7 +154,8 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
             if src in coverage:
                 for k in ("queries", "ok", "failed", "evidence"):
                     coverage[src][k] += c[k]
-                coverage[src]["errors"].extend(c["errors"])
+                coverage[src]["errors"].extend(c.get("errors", []))
+                coverage[src].setdefault("warnings", []).extend(c.get("warnings", []))
             else:
                 coverage[src] = c
     say(f"Retrieved {len(evidence)} raw evidence items total.")
@@ -235,6 +257,8 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
             corro = event_discovery.corroborate_candidates(
                 candidates, cost, enabled, log=say, max_candidates=keep_n)
             debug["corroboration"] = corro
+            if corro.get("web_enrichment_unavailable"):
+                debug["web_enrichment_unavailable"] = True
         except Exception as e:
             debug["corroboration_error"] = str(e)
             say(f"  ⚠ corroboration step skipped: {e}")
@@ -246,7 +270,8 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     debug["scoring"] = score_debug
     if llm.BREAKER.tripped:
         debug["llm_disabled_reason"] = llm.BREAKER.trip_reason
-        say(f"  ℹ {llm.BREAKER.trip_reason}. Used deterministic scoring for the rest.")
+        debug["llm_mode"] = "deterministic evidence mode"
+        say(f"  ℹ {llm.BREAKER.trip_reason}. LLM unavailable/rate-limited; deterministic evidence mode used for the rest.")
 
     # Source-priority rule (req 5): regulatory recall/enforcement > trial
     # status/whyStopped > company/investor > pharma news > academic.
@@ -357,7 +382,7 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     say("\n── Source coverage summary ──")
     for src, s in cov_summary.items():
         flag = f"  ✗ {len(s['errors'])} error(s)" if s["failed"] else ""
-        say(f"  {src:<22} evidence={s['evidence_items']:<4} "
+        say(f"  {src:<22} status={s.get('status','n/a'):<28} evidence={s['evidence_items']:<4} "
             f"leads_citing={s['accepted_leads_citing']:<3}"
             f" queries={s['queries']}{flag}")
     say(f"\nDone. Est. cost ${cost.total_usd} (${cost.per_report_usd}/report). "

@@ -269,3 +269,11 @@ pharmadrone/
   run.py       orchestrator + CLI + coverage summary
 reports/                        generated output (created on first run)
 ```
+
+## Reliability patch notes — source health and deterministic mode
+
+- If the LLM provider is rate-limited or the 429 circuit breaker trips, the UI now states: **LLM unavailable/rate-limited; deterministic evidence mode used.** The deterministic fallback remains active; no candidate is fabricated to compensate for LLM failure.
+- Tavily web enrichment now uses a short timeout and a one-time sanitised retry when the API rejects advanced query syntax such as `site:` operators. Failed Tavily calls are logged and surfaced in Source Coverage; they do not block the run.
+- Source Coverage now distinguishes **available**, **no hits found**, **search skipped**, **API failed / unavailable**, and **partial — some API failures**.
+- Root-cause corroboration debug now separates API failures, no-hit searches, retrieved-but-rejected hits, and attached corroboration sources.
+- Matcher cards show the stored **Opportunity Score** used for app ranking. Report sections may separately show a **Root-Cause/Solution-Fit overall** score.

@@ -983,7 +983,7 @@ Choose one; none names a "faulty product", assumes root cause, or offers to "fix
 {scores['stated_reason_confidence']} · root-cause {scores['root_cause_confidence']} \
 · technical-fit {scores['technical_solution_fit']} · commercial \
 {scores['commercial_priority']} · contactability {scores['contactability']} → \
-**overall {scores['overall']}/100**{(' (capped: ' + '; '.join(scores['caps_applied']) + ')') if scores['caps_applied'] else ''}
+**Root-Cause/Solution-Fit overall {scores['overall']}/100**{(' (capped: ' + '; '.join(scores['caps_applied']) + ')') if scores['caps_applied'] else ''}
 
 ### Validation Checklist (before any BD action)
 {check_lines}

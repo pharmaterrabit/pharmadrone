@@ -275,7 +275,7 @@ def write_report(opp: dict, cost, report_type: str = "memo") -> str:
     header = (f"# {opp.get('company') or 'Unknown company'} — "
               f"{_short_product_name(opp)}\n"
               f"*{report_type.upper()} · {opp.get('region') or 'region not stated'} · "
-              f"Grade {opp.get('grade','?')} ({opp.get('score','?')}/100) · "
+              f"Grade {opp.get('grade','?')} · Opportunity Score {opp.get('score','?')}/100 · "
               f"Confidence {opp.get('confidence','?')}*\n"
               f"{banner}\n"
               "> Automated public-source scan. Possible opportunity signal only — "
