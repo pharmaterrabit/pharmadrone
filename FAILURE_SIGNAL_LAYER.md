@@ -101,6 +101,34 @@ or `python -m pharmadrone.benchmark` (live) checks all five classes — a recall
 quality issue, a terminated/withdrawn trial, a regulatory rejection/withdrawal, a
 company-discontinued programme, and a formulation/CMC signal.
 
+## Deterministic reports are full BD memos (not placeholders)
+
+When the LLM is disabled (rate-limit / circuit breaker), reports are written by a
+rule-based engine (`pipeline/bd_rules.py`) so they remain useful screening memos:
+
+- **Full openFDA recall fields** extracted and displayed: recall number,
+  recalling firm, product description (untruncated — the mid-word cut-off is
+  fixed), reason for recall, classification, status, FDA report date, recall
+  initiation date, center classification date, distribution pattern, product
+  quantity, code info, voluntary/mandated, firm city/state/country, and source
+  link. Dates normalised to YYYY-MM-DD.
+- **Evidence Table** shows the actual recall reason, not just the title.
+- **Failure Signal Intelligence** renders the complete recall field table under
+  "What happened?".
+- **Rule-based BD interpretation** maps the confirmed problem category to cautious
+  hedged language ("may indicate", "could suggest", "requires validation") — e.g.
+  dissolution failure → dissolution/formulation/manufacturing/QC/release-testing;
+  degradation → stability/packaging/shelf-life; impurity → CMC/analytical/process/
+  supplier; sterility/particulate → sterile-manufacturing/aseptic/filtration/QMS;
+  packaging/CCI → packaging/CCIT/labelling; subpotent/superpotent → assay/content-
+  uniformity/manufacturing-control; cGMP/failed-specs → QMS/CMC remediation.
+- **Partner categories, contact roles, outreach angle, and rescue strategy** are
+  all rule-based and problem-specific.
+- **Strict evidence discipline:** confirmed FDA facts are separated from
+  PharmaDrone interpretation; root cause is never invented beyond the recall
+  reason; the memo says not to initiate outreach until the record and scope are
+  validated.
+
 ## Quality gates (no fabricated targets or events)
 
 Deterministic discovery is now strictly gated so it can never emit a

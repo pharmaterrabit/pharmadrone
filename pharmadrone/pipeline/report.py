@@ -6,7 +6,7 @@ language and the mandatory 'Red Flags' and 'Why This May Be Wrong' sections.
 """
 from __future__ import annotations
 from .. import llm
-from . import failure_signal
+from . import failure_signal, bd_rules
 
 SECTIONS = [
     "Quick Summary", "Scientific / RWE View", "Business & Commercial View",
@@ -76,41 +76,130 @@ def _evidence_block(opp: dict) -> str:
     ) or "No evidence."
 
 
+def _recall_record(opp: dict) -> dict | None:
+    """Return the structured openFDA recall_fields from the strongest recall
+    evidence item, if any (entities.recall_fields set by the enforcement
+    connector). None if this candidate isn't recall-backed."""
+    for e in opp.get("evidence", []):
+        ent = e.get("entities") or {}
+        if ent.get("recall_fields"):
+            return ent["recall_fields"]
+    return None
+
+
+def _fmt(v) -> str:
+    return v if v else "not stated"
+
+
+def _evidence_table(opp: dict) -> str:
+    """Evidence table that shows the actual recall reason (req 3), not just the
+    title. 'Supports' carries the recall reason / event; 'Does not prove' is a
+    cautious disclaimer."""
+    rows = []
+    for e in opp.get("evidence", []):
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        reason = (rf.get("reason_for_recall") or ent.get("event_reason")
+                  or e.get("supports") or "")
+        reason = (reason[:160] + "…") if len(reason) > 160 else reason
+        supports = reason or "see source"
+        does_not = ("confirms an FDA recall event; does not establish root cause "
+                    "beyond the stated reason" if rf else
+                    "does not prove causation or scope — validate")
+        title = (e.get("title") or "")[:90]
+        url = e.get("url") or ""
+        rows.append(f"| {e.get('source_type','')} | {e.get('language','en')} | "
+                    f"{title} | {e.get('record_id','')} | "
+                    f"[{'link' if url else '—'}]({url}) | {supports} | {does_not} |")
+    body = "\n".join(rows) or "| — | — | (no evidence) | — | — | — | — |"
+    return ("| Source Type | Source Language | Title | ID | Link | Supports | "
+            "Does not prove |\n|---|---|---|---|---|---|---|\n" + body)
+
+
 def _deterministic_body(opp: dict) -> str:
-    """No-LLM report body for provisional candidates — guarantees a complete,
-    readable report even if the LLM provider is completely unavailable."""
-    ev_rows = "\n".join(
-        f"| {e.get('source_type','')} | {e.get('language','en')} | "
-        f"{e.get('title','')} | {e.get('record_id','')} | "
-        f"[{e.get('url','') or '—'}]({e.get('url','')}) | — | — |"
-        for e in opp.get("evidence", [])
-    ) or "| — | — | (no evidence) | — | — | — | — |"
+    """No-LLM report body — a useful rule-based BD screening memo (not a
+    placeholder). For recall-backed candidates it renders the full openFDA field
+    set and rule-based BD interpretation; strict evidence discipline throughout.
+    """
+    problem = opp.get("problem_category") or opp.get("problem_signal")
+    rf = _recall_record(opp)
+    company = opp.get("company") or (rf.get("recalling_firm") if rf else None) or "Unknown company"
+    product = opp.get("product") or (rf.get("product_description") if rf else None) or "product"
+
+    interp = bd_rules.interpretation(problem)
+    partners = bd_rules.partners(problem)
+    rescue = bd_rules.rescue_steps(problem)
+    outreach = bd_rules.outreach_angle(problem) if rf else (
+        "Do not initiate outreach from this candidate alone — validate the signal "
+        "first, then assess whether a formulation/CMC/analytical opportunity exists.")
+
+    # Confirmed-fact block (FDA facts only) vs interpretation — kept separate.
+    if rf:
+        confirmed = (
+            f"**Confirmed (FDA recall record — facts only):**\n"
+            f"- Recalling firm: {_fmt(rf.get('recalling_firm'))}\n"
+            f"- Product: {_fmt(rf.get('product_description'))}\n"
+            f"- Reason for recall: {_fmt(rf.get('reason_for_recall'))}\n"
+            f"- Recall number: {_fmt(rf.get('recall_number'))}\n"
+            f"- Classification: {_fmt(rf.get('classification'))}\n"
+            f"- Status: {_fmt(rf.get('status'))}\n"
+            f"- Recall initiation date: {_fmt(rf.get('recall_initiation_date'))}\n"
+            f"- FDA report date: {_fmt(rf.get('report_date'))}")
+    else:
+        confirmed = (f"**Confirmed:** {opp.get('confirmed_fact','A public-source signal '
+                     'was found for this target.')}")
+
+    who = "\n".join(f"- {r}" for r in bd_rules.CONTACT_ROLES)
+    partner_lines = "\n".join(f"- {p}" for p in partners)
+    rescue_lines = "\n".join(f"- {s}" for s in rescue)
+
     return f"""## Quick Summary
-Provisional candidate identified by deterministic evidence clustering (no LLM
-synthesis available/used for this candidate). {opp.get('confirmed_fact','')}
+Deterministic BD screening memo (generated without LLM synthesis — the LLM was
+unavailable or rate-limited for this run). {('This is a **confirmed FDA recall** '
+'signal.' if rf else 'Signal status: ' + str(opp.get('signal_status','needs_verification')) + '.')}
+Target: **{company} — {product}**. Problem signal: **{_fmt(problem)}**.
+
+{confirmed}
 
 ## Opportunity Fit
-{opp.get('why_commercial', 'Relevance not yet established — verify before any outreach.')}
+The recall reason {interp}. This is **PharmaDrone interpretation, not an FDA
+finding** — the FDA record confirms only the recall and its stated reason, not
+the underlying root cause. Requires validation before any commercial conclusion.
 
 ## Evidence Table
-| Source Type | Source Language | Title | ID | Link | Supports | Does not prove |
-|---|---|---|---|---|---|---|
-{ev_rows}
+{_evidence_table(opp)}
 
 ## Who to Contact
-Role not established from evidence — identify the relevant BD/CMC contact after validation.
+Buyer roles to consider (validate relevance to this specific firm/product first):
+{who}
 
 ## Outreach Angle
-Do not initiate outreach from this candidate alone — validate the signal first.
+{outreach}
+
+## Possible Partner Categories
+Opportunity types that *may* fit this signal (rule-based; validate before use):
+{partner_lines}
+
+## Possible Rescue Strategy
+Rule-based validation/rescue steps for a {_fmt(problem)} signal:
+{rescue_lines}
 
 ## Confidence Score
 {opp.get('confidence','low')} — signal status: **{opp.get('signal_status','needs_verification')}**.
+{'Confirmed FDA recall event; commercial relevance still requires validation.' if rf else ''}
 
 ## Red Flags
-{chr(10).join('- ' + r for r in (opp.get('red_flags') or ['provisional — not yet validated']))}
+{chr(10).join('- ' + r for r in (opp.get('red_flags') or [
+    'Root cause beyond the stated recall reason is unknown.',
+    'Scope (one lot vs recurring) not established from this record alone.',
+    'Not yet validated — do not treat as an outreach-ready lead.']))}
 
 ## Why This May Be Wrong
-{opp.get('why_this_may_be_wrong', 'This candidate was generated by clustering evidence deterministically, without full LLM synthesis. The company/product link, region, and problem category may be imprecise. Verify every field against the linked sources before any BD action.')}
+The recall reason is a confirmed FDA fact, but the BD interpretation, partner
+categories, and rescue steps above are rule-based inferences from the problem
+category — they may not reflect the firm's actual situation. The issue could be
+an isolated lot, a resolved supplier problem, or already remediated. Verify the
+recall record, its scope, and the firm's current status before any BD action.
 """
 
 

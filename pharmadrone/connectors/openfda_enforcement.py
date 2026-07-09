@@ -27,27 +27,86 @@ RECALL_REASON_TERMS = [
 ]
 
 
+def _clean(s):
+    """Collapse whitespace/newlines openFDA sometimes embeds in fields."""
+    if not s:
+        return ""
+    return " ".join(str(s).split()).strip()
+
+
+def _fmt_date(s):
+    """openFDA dates are YYYYMMDD strings — render as YYYY-MM-DD if parseable."""
+    s = _clean(s)
+    if len(s) == 8 and s.isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
 def _parse(results, term, max_results):
     out = []
     for r in results[:max_results]:
-        rid = r.get("recall_number", "")
-        firm = r.get("recalling_firm", "")
-        reason = r.get("reason_for_recall", "")
-        raw = (f"Recall {rid}. Firm: {firm}. Product: {r.get('product_description','')}. "
-               f"Reason: {reason}. Classification: {r.get('classification','')}. "
-               f"Status: {r.get('status','')}. Initiated: {r.get('recall_initiation_date','')}.")
+        rid = _clean(r.get("recall_number", ""))
+        firm = _clean(r.get("recalling_firm", ""))
+        reason = _clean(r.get("reason_for_recall", ""))
+        product = _clean(r.get("product_description", ""))
+        classification = _clean(r.get("classification", ""))
+        status = _clean(r.get("status", ""))
+
+        # Full structured field set (req 1) — kept untruncated for the report.
+        recall_fields = {
+            "recall_number": rid,
+            "recalling_firm": firm,
+            "product_description": product,
+            "reason_for_recall": reason,
+            "classification": classification,
+            "status": status,
+            "report_date": _fmt_date(r.get("report_date", "")),
+            "recall_initiation_date": _fmt_date(r.get("recall_initiation_date", "")),
+            "center_classification_date": _fmt_date(r.get("center_classification_date", "")),
+            "distribution_pattern": _clean(r.get("distribution_pattern", "")),
+            "product_quantity": _clean(r.get("product_quantity", "")),
+            "code_info": _clean(r.get("code_info", "")),
+            "voluntary_mandated": _clean(r.get("voluntary_mandated", "")),
+            "initial_firm_notification": _clean(r.get("initial_firm_notification", "")),
+            "country": _clean(r.get("country", "")),
+            "state": _clean(r.get("state", "")),
+            "city": _clean(r.get("city", "")),
+            "event_id": _clean(r.get("event_id", "")),
+        }
+        # openFDA sometimes nests firm address under openfda; fill gaps if present.
+        of = r.get("openfda", {}) or {}
+        if not recall_fields["product_description"] and of.get("brand_name"):
+            recall_fields["product_description"] = _clean(", ".join(of.get("brand_name", [])))
+
+        raw = (f"Recall {rid}. Firm: {firm}. Product: {product}. "
+               f"Reason: {reason}. Classification: {classification}. "
+               f"Status: {status}. "
+               f"Initiated: {recall_fields['recall_initiation_date']}. "
+               f"FDA report date: {recall_fields['report_date']}. "
+               f"Distribution: {recall_fields['distribution_pattern']}. "
+               f"Quantity: {recall_fields['product_quantity']}. "
+               f"Code info: {recall_fields['code_info']}.")
+
+        # Title: firm + short product label, but never a mid-word truncation.
+        prod_label = product if len(product) <= 90 else product[:87].rsplit(" ", 1)[0] + "…"
         title = f"Recall {rid}: {firm}".strip(": ") or "Drug recall"
+
+        loc = ", ".join([x for x in (recall_fields["city"], recall_fields["state"],
+                                     recall_fields["country"]) if x]) or None
         url = ("https://www.accessdata.fda.gov/scripts/ires/index.cfm"
                if rid else "https://open.fda.gov/apis/drug/enforcement/")
         out.append(record("recall", NAME, rid, title, url, raw,
                           source_category="regulatory",
                           entities={
                               "company": firm or None,
-                              "product": (r.get("product_description", "") or "")[:80] or None,
+                              "product": product or None,   # FULL name, not truncated
+                              "product_short": prod_label or None,
                               "trial_id": None,
                               "dosage_form": None,
                               "event_type": "recall",
                               "event_reason": reason or None,
+                              "region_location": loc,
+                              "recall_fields": recall_fields,
                           }))
     return out
 

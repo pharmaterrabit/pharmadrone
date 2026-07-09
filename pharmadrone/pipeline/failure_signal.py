@@ -414,7 +414,56 @@ failure/rescue signal.
 """
 
     # Confirmed event + BD-grade source -> real failure signal.
-    partners = ", ".join(opp.get("potential_partners", []) or []) or "—"
+    from . import bd_rules
+    # Pull the structured openFDA recall record if this is a recall.
+    rf = None
+    for e in opp.get("evidence", []):
+        ent = e.get("entities") or {}
+        if ent.get("recall_fields"):
+            rf = ent["recall_fields"]
+            break
+    src_link = next((e.get("url") for e in opp.get("evidence", []) if e.get("url")), "—")
+    problem = opp.get("problem_category") or opp.get("problem_signal")
+
+    if rf:
+        def g(k):
+            return rf.get(k) or "not stated"
+        what_block = f"""**What happened?** Confirmed FDA drug recall.
+
+| Field | Value |
+|---|---|
+| Recall number | {g('recall_number')} |
+| Recall classification | {g('classification')} |
+| Recall status | {g('status')} |
+| Recall initiation date | {g('recall_initiation_date')} |
+| FDA report date | {g('report_date')} |
+| Center classification date | {g('center_classification_date')} |
+| Product description | {g('product_description')} |
+| Recalling firm | {g('recalling_firm')} |
+| Reason for recall | {g('reason_for_recall')} |
+| Distribution pattern | {g('distribution_pattern')} |
+| Product quantity | {g('product_quantity')} |
+| Code information | {g('code_info')} |
+| Voluntary / mandated | {g('voluntary_mandated')} |
+| Firm location | {', '.join([x for x in (rf.get('city'), rf.get('state'), rf.get('country')) if x]) or 'not stated'} |
+| Source | [openFDA / FDA enforcement record]({src_link}) |"""
+        interp = bd_rules.interpretation(problem)
+        rescue_list = bd_rules.rescue_steps(problem)
+        partner_list = bd_rules.partners(problem)
+    else:
+        what_block = (f"**What happened?** {confirmed_event} · "
+                      f"{opp.get('product','—')} · {opp.get('company','—')} · "
+                      f"{opp.get('region','—')} · "
+                      f"{opp.get('event_date','date not stated')}\n\n"
+                      f"**Source:** [{src_link}]({src_link})")
+        interp = opp.get("interpretation") or bd_rules.interpretation(problem)
+        rescue_list = (opp.get("rescue_strategy") and [opp["rescue_strategy"]]) \
+            or bd_rules.rescue_steps(problem)
+        partner_list = opp.get("potential_partners") or bd_rules.partners(problem)
+
+    rescue_block = "\n".join(f"- {s}" for s in rescue_list)
+    partners_block = "\n".join(f"- {p}" for p in partner_list)
+
     return f"""
 
 ## Failure Signal Intelligence
@@ -422,33 +471,31 @@ failure/rescue signal.
 **Signal summary:** Confirmed {confirmed_event} event affecting \
 {opp.get('product') or opp.get('company') or 'the identified asset'}.
 
-**What happened?** {confirmed_event} · {opp.get('product','—')} · \
-{opp.get('company','—')} · {opp.get('region','—')} · {opp.get('event_date','date not stated')}
+{what_block}
 
-**Evidence:**
-{ev_block}
-
-**Problem classification:** {opp.get('problem_category') or 'not established (needs verification)'}
+**Problem classification:** {problem or 'not established (needs verification)'}
 
 **Evidence strength:** {opp.get('failure_rescue_strength','—')} \
 ({opp.get('failure_rescue_rationale','')})
 
-**Confirmed vs interpretation:**
-- Confirmed: {opp.get('confirmed_fact') or '—'}
-- PharmaDrone interpretation: {opp.get('interpretation') or opp.get('why_commercial') or '—'}
+**Confirmed vs interpretation (evidence discipline):**
+- Confirmed (FDA fact): {(opp.get('confirmed_fact') or 'the recall event and its stated reason above').rstrip('.')}.
+- PharmaDrone interpretation (not an FDA finding): the reason {interp}. This
+  does not establish root cause beyond the stated recall reason and requires
+  validation.
 
-**Scientific relevance:** {opp.get('why_scientific','—')}
+**Possible rescue strategy (rule-based; validate first):**
+{rescue_block}
 
-**Commercial relevance:** {opp.get('why_commercial','—')}
+**Possible partner categories:**
+{partners_block}
 
-**Possible rescue strategy:** {opp.get('rescue_strategy','—')}
+**Recommended next action:** {opp.get('next_action','validate')} — confirm scope \
+(isolated lot vs recurring), site, and supplier before any outreach.
 
-**Potential partners:** {partners}
+**Red flags / missing evidence:** {'; '.join(opp.get('red_flags', []) or []) or 'root cause and scope not established from the recall record alone — validate before outreach'}
 
-**Recommended next action:** {opp.get('next_action','validate')}
-
-**Red flags / missing evidence:** {'; '.join(opp.get('red_flags', []) or []) or 'none stated — verify before outreach'}
-
-> Signal status: **{opp.get('signal_status','needs_verification')}**. Prioritise \
-official regulatory sources; validate before any commercial decision.
+> Signal status: **{opp.get('signal_status','needs_verification')}**. Confirmed FDA \
+recall fact is separated from PharmaDrone interpretation above; validate before any \
+commercial decision.
 """
