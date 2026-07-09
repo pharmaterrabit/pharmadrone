@@ -24,6 +24,145 @@ from . import bd_rules
 CONF_LABELS = ["Confirmed", "Strongly supported", "Moderate", "Plausible",
                "Weak", "Unknown / requires validation"]
 
+# Text that is drug indication / mechanism / label description — NEVER a recall
+# root cause. Used to reject "nitrofurantoin is an antibacterial ... caused by
+# bacteria" style false positives.
+_INDICATION_MARKERS = [
+    "antibacterial", "antibiotic", "indicated for", "indication", "used to treat",
+    "used for", "treatment of", "mechanism of action", "pharmacology",
+    "urinary tract infection", "is a medication", "is an antibiotic",
+    "class of medications", "how it works", "drug information", "patient information",
+    "prescribing information", "side effects", "dosage and administration",
+    "caused by bacteria", "bacterial infection", "kills bacteria", "inhibits",
+]
+
+# Domains/text that are reliable for corroboration vs junk to reject outright.
+_REJECT_DOMAINS = [
+    "drugs.com", "webmd", "mayoclinic", "drugbank", "wikipedia", "medlineplus",
+    "rxlist", "healthline", "goodrx", "patient.info", "everydayhealth",
+    "vehicle", "automobile", "car recall", "honda", "toyota", "nhtsa",
+]
+_RELIABLE_REGULATORY = [
+    "fda.gov", "accessdata.fda.gov", "ema.europa.eu", "gov.uk", "mhra",
+    "tga.gov.au", "hc-sc.gc.ca", "canada.ca", "pmda.go.jp", "sfda.gov.sa",
+]
+
+# Explicit causal-evidence source types allowed to CONFIRM a root cause.
+_CAUSAL_SOURCE_MARKERS = [
+    "warning letter", "form 483", "483 observation", "inspection", "establishment inspection",
+    "recall notice", "recall press release", "recall statement",
+]
+
+
+def _norm(s):
+    return " ".join(str(s or "").split()).strip().lower()
+
+
+def _match_fields(rf: dict, opp: dict, e: dict) -> set:
+    """Which identifying fields of THIS recall does evidence item `e` match?"""
+    text = _norm(e.get("title", "")) + " " + _norm(e.get("english_summary", "")) \
+        + " " + _norm(e.get("url", ""))
+    matched = set()
+    recall_no = _norm(rf.get("recall_number"))
+    firm = _norm(rf.get("recalling_firm") or opp.get("company"))
+    product = _norm(rf.get("product_description") or opp.get("product"))
+    molecule = product.split(",")[0].split()[0] if product else ""
+    problem = _norm(opp.get("problem_category") or opp.get("problem_signal"))
+    ndc = _norm(rf.get("code_info"))  # code_info sometimes carries lot/NDC
+
+    if recall_no and recall_no in text:
+        matched.add("recall_number")
+    if firm and firm in text:
+        matched.add("recalling_firm")
+    if product and (product[:30] in text):
+        matched.add("product")
+    if molecule and len(molecule) >= 4 and molecule in text:
+        matched.add("molecule")
+    if problem and problem in text:
+        matched.add("problem_category")
+    if ndc and len(ndc) >= 5 and ndc in text:
+        matched.add("ndc")
+    # official recall/enforcement page for the drug
+    if any(d in text for d in ("accessdata.fda.gov", "fda.gov/safety/recalls")):
+        matched.add("official_recall_page")
+    return matched
+
+
+def _looks_like_indication(e: dict) -> bool:
+    text = _norm(e.get("title", "")) + " " + _norm(e.get("english_summary", ""))
+    return any(m in text for m in _INDICATION_MARKERS)
+
+
+def _is_reject_domain(e: dict) -> bool:
+    text = _norm(e.get("url", "")) + " " + _norm(e.get("title", ""))
+    return any(d in text for d in _REJECT_DOMAINS)
+
+
+def _is_regulatory_domain(e: dict) -> bool:
+    text = _norm(e.get("url", ""))
+    return any(d in text for d in _RELIABLE_REGULATORY)
+
+
+def classify_corroboration(e: dict, opp: dict, rf: dict) -> dict:
+    """Classify one evidence item's relevance to THIS specific recall (req 1/2/7).
+
+    Returns {class, matched_fields, accepted, reason}. Evidence classes:
+      direct_recall_evidence | same_product_firm | same_molecule_science |
+      same_firm_quality_history | formulation_science_background | reject
+    Only 'direct_recall_evidence' may support confirmed event/root-cause.
+    """
+    matched = _match_fields(rf, opp, e)
+    is_reg = _is_regulatory_domain(e)
+    causal_text = any(m in (_norm(e.get("title", "")) + " "
+                            + _norm(e.get("english_summary", "")))
+                      for m in _CAUSAL_SOURCE_MARKERS)
+
+    # Hard rejects first.
+    if _is_reject_domain(e) and "recall_number" not in matched:
+        return {"class": "reject", "matched_fields": sorted(matched),
+                "accepted": False,
+                "reason": "low-quality / unrelated domain (e.g. drug-info, vehicle recall)"}
+    if _looks_like_indication(e) and "recall_number" not in matched:
+        return {"class": "formulation_science_background"
+                if ("dissolution" in _norm(e.get("english_summary", ""))
+                    or "particle" in _norm(e.get("english_summary", ""))) else "reject",
+                "matched_fields": sorted(matched), "accepted": False,
+                "reason": "drug indication / label / mechanism text — not recall-cause evidence"}
+
+    # Direct recall evidence: the strongest tier.
+    if ("recall_number" in matched) or (
+            {"product", "recalling_firm", "problem_category"} <= matched) or (
+            {"molecule", "recalling_firm", "problem_category"} <= matched):
+        cls = "direct_recall_evidence"
+        # only regulatory/official pages with explicit causal language can confirm cause
+        return {"class": cls, "matched_fields": sorted(matched), "accepted": True,
+                "causal_source": bool(is_reg and causal_text),
+                "reason": "matches this recall (number, or product+firm+problem)"}
+
+    # Requirement: a source supports this recall only if it matches >=2 fields.
+    if len(matched) >= 2:
+        if {"product", "recalling_firm"} <= matched or {"molecule", "recalling_firm"} <= matched:
+            return {"class": "same_product_firm", "matched_fields": sorted(matched),
+                    "accepted": True,
+                    "reason": "same product/firm (supporting context, not the recall itself)"}
+        if "recalling_firm" in matched:
+            return {"class": "same_firm_quality_history", "matched_fields": sorted(matched),
+                    "accepted": True,
+                    "reason": "same firm, different product/context (quality history only)"}
+        if "molecule" in matched:
+            return {"class": "same_molecule_science", "matched_fields": sorted(matched),
+                    "accepted": True,
+                    "reason": "same molecule scientific context (not this specific recall)"}
+
+    # Molecule-only scientific literature = background, never recall support.
+    if "molecule" in matched and e.get("source_category") == "publication":
+        return {"class": "formulation_science_background", "matched_fields": sorted(matched),
+                "accepted": False,
+                "reason": "general molecule/formulation science — background context only"}
+
+    return {"class": "reject", "matched_fields": sorted(matched), "accepted": False,
+            "reason": "insufficient match to this recall (needs >=2 identifying fields)"}
+
 
 # --- Root-cause hypothesis sets per problem bucket -------------------------
 # Each hypothesis: (name, base_confidence, supporting_signal_keys, bd_relevance)
@@ -254,92 +393,187 @@ def _rank_conf(label: str) -> int:
 
 
 def confirmed_root_cause(opp: dict) -> str | None:
-    """Return a root cause ONLY if the evidence text explicitly states one
-    (e.g. a warning letter or company statement naming the cause). Otherwise
-    None — we never fabricate it."""
-    blob = _text_blob(opp)
-    # Look for explicit causal statements from authoritative sources.
-    cause_markers = ["root cause", "caused by", "attributed to", "due to",
-                     "determined that", "found that the"]
-    has_authoritative = any(
-        (e.get("source_category") in ("regulatory", "company"))
-        for e in opp.get("evidence", []))
-    if has_authoritative:
-        for m in cause_markers:
-            i = blob.find(m)
+    """Return a root cause ONLY when an authoritative source EXPLICITLY states the
+    cause of THIS recall. Allowed sources: FDA warning letter, inspection/Form 483,
+    an FDA/official recall page or company recall statement that explicitly explains
+    the defect. NEVER from a product label, drug-info page, mechanism/indication
+    text, general literature, or an unrelated/same-firm-different-product recall.
+    Returns None otherwise (we never fabricate a cause).
+    """
+    rf = _recall_fields(opp)
+    for e in opp.get("evidence", []):
+        cls = classify_corroboration(e, opp, rf)
+        # Must be direct recall evidence AND flagged as a causal regulatory source.
+        if cls["class"] != "direct_recall_evidence" or not cls.get("causal_source"):
+            continue
+        text = (str(e.get("english_summary", "")) + " " + str(e.get("title", "")))
+        low = text.lower()
+        # Reject if the matched text is actually indication/mechanism language.
+        if any(m in low for m in _INDICATION_MARKERS):
+            continue
+        # Find an EXPLICIT causal clause and return a tight, sourced snippet.
+        for m in ("root cause", "caused by", "attributed to", "resulted from",
+                  "determined that", "due to a", "due to the"):
+            i = low.find(m)
             if i != -1:
-                snippet = blob[i:i + 160].strip()
-                # Only treat as confirmed if it's more than the recall reason echo.
-                return snippet
+                snippet = " ".join(text[i:i + 200].split())
+                src = e.get("source_name") or "regulatory source"
+                return f"{snippet} (per {src})"
     return None
 
 
+def _relevant_text_blob(opp: dict) -> str:
+    """Text used for hypothesis grading — the recall record + evidence that was
+    ACCEPTED as relevant to this recall (direct/same-product-firm/same-molecule).
+    Rejected corroboration is excluded so unrelated pages can't sway grading."""
+    rf = _recall_fields(opp)
+    parts = [str(rf.get("reason_for_recall", "")), str(rf.get("product_description", "")),
+             str(opp.get("problem_category") or ""), str(opp.get("product") or "")]
+    for e in opp.get("evidence", []):
+        # recall record itself
+        if e.get("source_type") == "recall":
+            parts.append(str(e.get("english_summary", "")))
+            parts.append(str(e.get("title", "")))
+        # accepted corroboration only
+        elif e.get("corroboration") and e.get("evidence_class") in (
+                "direct_recall_evidence", "same_product_firm", "same_molecule_science"):
+            parts.append(str(e.get("english_summary", "")))
+            parts.append(str(e.get("title", "")))
+    return " ".join(parts).lower()
+
+
 def grade_hypotheses(opp: dict) -> list[dict]:
-    """Rank root-cause hypotheses for the problem bucket, grading each by whether
-    corroborating evidence is actually present in the collected text. With only
-    the recall reason, confidences stay at their (bounded) base level."""
+    """Rank root-cause hypotheses for the problem bucket. Grading uses only the
+    recall record and evidence accepted as relevant (see _relevant_text_blob).
+
+    Evidence phrasing is explicit (req 6): no vague "mentions:" — hypotheses tied
+    to product composition or the stated reason are described in full, and the
+    per-hypothesis gap ("no source links this to THIS recalled lot") is always
+    stated. Confidence is only raised above the base level by a RELEVANT,
+    accepted corroboration source — never by keyword coincidence."""
     bucket = bd_rules.bucket_for(opp.get("problem_category")
                                  or opp.get("problem_signal"))
     hyps = _HYPOTHESES.get(bucket)
     if not hyps:
         return []
-    blob = _text_blob(opp)
-    n_sources = len({e.get("source_name") for e in opp.get("evidence", [])})
+    rf = _recall_fields(opp)
+    reason = _norm(rf.get("reason_for_recall") or opp.get("problem_category"))
+    product = _norm(rf.get("product_description") or opp.get("product"))
+    blob = _relevant_text_blob(opp)
+
+    # Was there any ACCEPTED, relevant corroboration that actually discusses cause?
+    accepted_corro = [e for e in opp.get("evidence", [])
+                      if e.get("corroboration") and e.get("evidence_class") in (
+                          "direct_recall_evidence", "same_product_firm")]
+
     lot_specific = any(k in blob for k in ("one lot", "single lot", "lot #",
-                                           "lot number", "one batch"))
+                                           "lot number", "one batch", "repackaged lot"))
     graded = []
     for name, base_conf, keys, bd_rel in hyps:
-        # corroboration = how many distinct supporting signal keys appear
+        # A hit only counts if the term appears in the RECALL/relevant text AND
+        # is a product-composition or stated-reason fact — not a coincidental word.
         hits = [k for k in keys if k in blob]
         conf = base_conf
-        supporting = []
-        if hits:
-            supporting.append("mentions: " + ", ".join(sorted(set(hits))[:4]))
-            # raise confidence a step if corroborated by >1 signal AND >1 source
-            if len(hits) >= 2 and n_sources >= 2:
+        supporting = None
+        against = None
+
+        # Product-composition-based support (e.g. product literally contains
+        # "monohydrate/macrocrystals" -> particle-size/solid-state hypothesis).
+        composition_hit = [k for k in keys if k in product]
+        stated_reason_hit = [k for k in keys if k in reason]
+
+        if stated_reason_hit:
+            supporting = (f"The FDA-stated reason references "
+                          f"'{', '.join(sorted(set(stated_reason_hit))[:3])}'.")
+        elif composition_hit:
+            supporting = (f"Product contains "
+                          f"'{', '.join(sorted(set(composition_hit))[:3])}'; "
+                          f"{bucket} performance may be sensitive to this based on "
+                          "scientific literature.")
+        elif hits:
+            supporting = ("Related technical factor appears in the relevant "
+                          "evidence for this product/firm.")
+        else:
+            supporting = "Not indicated by the recall record."
+
+        # Confidence escalation ONLY from accepted, relevant corroboration whose
+        # text actually supports this specific hypothesis.
+        escalated = False
+        for e in accepted_corro:
+            etext = _norm(e.get("english_summary", "")) + " " + _norm(e.get("title", ""))
+            if any(k in etext for k in keys) and any(
+                    m in etext for m in ("root cause", "caused by", "due to",
+                                         "attributed to", "investigation", "finding")):
                 idx = max(0, CONF_LABELS.index(base_conf) - 1)
                 conf = CONF_LABELS[idx]
-        # lot-specific recalls boost the "isolated batch" hypothesis
-        if "batch" in name.lower() or "lot-specific" in name.lower():
-            if lot_specific:
-                conf = "Moderate"
-                supporting.append("recall appears lot-specific")
-        against = []
-        if not hits:
-            against.append("no corroborating evidence found beyond the stated reason")
+                supporting += (f" Corroborated by {e.get('source_name','a relevant source')} "
+                               "discussing this factor for this recall.")
+                escalated = True
+                break
+
+        # lot-specific recalls make the isolated-batch hypothesis more plausible.
+        if ("batch" in name.lower() or "lot-specific" in name.lower()) and lot_specific:
+            conf = "Moderate"
+            supporting = ("The recall record indicates it is lot/batch-specific "
+                          "(supports an isolated-batch explanation).")
+
+        # The mandatory gap statement (req 6): nothing ties this to THIS lot unless
+        # an accepted causal source did.
+        if not escalated:
+            against = ("No source links this factor to this specific recalled "
+                       "lot; scientific/plausibility only — requires validation.")
+        else:
+            against = "Still requires independent validation of scope and recurrence."
+
         graded.append({
             "hypothesis": name,
             "confidence": conf,
-            "supporting": "; ".join(supporting) or "stated reason only",
-            "against": "; ".join(against) or "none identified (still requires validation)",
+            "supporting": supporting,
+            "against": against,
             "bd_relevance": bd_rel,
         })
-    # Rank by confidence (desc), stable within same level by original order.
     graded.sort(key=lambda h: _rank_conf(h["confidence"]), reverse=True)
     return graded
 
 
 def evidence_gaps(opp: dict) -> list[str]:
-    """Enumerate the authoritative sources we did NOT find, so the gap is explicit."""
+    """Enumerate the authoritative sources we did NOT find, so the gap is explicit.
+    Only ACCEPTED, relevant evidence counts — rejected corroboration (unrelated
+    pages, indication text) cannot close a gap."""
     have = set()
-    blob = _text_blob(opp)
+    # Relevant text = recall record + accepted direct/product-firm corroboration.
+    rel_parts = []
     for e in opp.get("evidence", []):
         cat = e.get("source_category")
         stype = e.get("source_type")
+        is_corro = e.get("corroboration")
+        accepted_relevant = (not is_corro) or e.get("evidence_class") in (
+            "direct_recall_evidence", "same_product_firm", "same_firm_quality_history")
+        if not accepted_relevant:
+            continue
+        rel_parts.append(_norm(e.get("title", "")) + " " + _norm(e.get("english_summary", "")))
         if stype == "recall":
             have.add("recall")
         if cat == "regulatory":
             have.add("regulatory")
-        if cat == "company":
+        if cat == "company" and (e.get("entities") or {}).get("event_type"):
             have.add("company")
         if cat == "trial":
             have.add("trial")
-        if cat in ("publication",):
+        # Only count a warning letter / inspection if it's an ACCEPTED relevant source.
+        title_sum = _norm(e.get("title", "")) + " " + _norm(e.get("english_summary", ""))
+        if "warning letter" in title_sum and (not is_corro or e.get("evidence_class")
+                                              == "direct_recall_evidence"):
+            have.add("warning_letter")
+        if ("483" in title_sum or "inspection" in title_sum) and (
+                not is_corro or e.get("evidence_class") == "direct_recall_evidence"):
+            have.add("inspection")
+        if cat == "publication":
             have.add("publication")
     gaps = []
-    if "warning letter" not in blob:
+    if "warning_letter" not in have:
         gaps.append("no FDA warning letter found")
-    if "483" not in blob and "inspection" not in blob:
+    if "inspection" not in have:
         gaps.append("no FDA inspection / Form 483 finding found")
     if "company" not in have:
         gaps.append("no company statement / press release found")
@@ -407,8 +641,16 @@ def confidence_and_readiness(opp: dict) -> dict:
     top_conf = hyps[0]["confidence"] if hyps else "Unknown / requires validation"
     root_confirmed = confirmed_root_cause(opp) is not None
     n_sources = len({e.get("source_name") for e in opp.get("evidence", [])})
-    has_support = any(e.get("source_category") in ("company", "trial", "publication")
-                      for e in opp.get("evidence", []))
+    # "Support" for commercial scoring means RELEVANT support only (req 9): a
+    # genuine trial/company event source, OR corroboration that was ACCEPTED as
+    # direct/same-product-firm. Rejected web hits and generic publications do NOT
+    # count and must not lift the score.
+    has_support = any(
+        (e.get("source_category") == "company" and (e.get("entities") or {}).get("event_type"))
+        or (e.get("source_type") == "trial" and (e.get("entities") or {}).get("event_type"))
+        or (e.get("corroboration") and e.get("evidence_class") in (
+            "direct_recall_evidence", "same_product_firm"))
+        for e in opp.get("evidence", []))
 
     blob = _text_blob(opp)
     status = (rf.get("status") or "").lower()
@@ -568,6 +810,36 @@ def render_root_cause_section(opp: dict) -> str:
 
     src_link = next((e.get("url") for e in opp.get("evidence", []) if e.get("url")), "—")
 
+    # Direct supporting source (req 10): name the openFDA enforcement record.
+    direct_src = None
+    for e in opp.get("evidence", []):
+        if e.get("source_type") == "recall":
+            rid = (e.get("entities") or {}).get("recall_fields", {}).get("recall_number") \
+                or e.get("record_id")
+            direct_src = f"{e.get('source_name','openFDA Enforcement/Recalls')} " \
+                         f"{('record ' + rid) if rid else ''}".strip()
+            break
+
+    # Corroboration filtering debug (req 8): show accepted/rejected with reasons.
+    corro_dbg = opp.get("corroboration_debug") or []
+    if corro_dbg:
+        rows = "\n".join(
+            f"| {d['title'] or '—'} | {'✅ accepted' if d['accepted'] else '❌ rejected'} "
+            f"| {d['class']} | {', '.join(d['matched_fields']) or 'none'} | {d['reason']} |"
+            for d in corro_dbg[:20])
+        corro_block = (
+            "\n### Corroboration Filtering Debug\n"
+            "Every corroboration hit and why it was accepted or rejected "
+            "(only *direct recall evidence* can support the confirmed event/cause):\n\n"
+            "| Source | Verdict | Evidence class | Matched fields | Reason |\n"
+            "|---|---|---|---|---|\n" + rows + "\n")
+    else:
+        corro_block = (
+            "\n### Corroboration Filtering Debug\n"
+            "No external corroboration was attached (either none was searched, "
+            "Tavily was disabled, or all hits were filtered out as irrelevant). "
+            "The confirmed event/reason rests on the openFDA recall record only.\n")
+
     return f"""
 
 ## Root-Cause & Solution-Fit Intelligence
@@ -578,7 +850,8 @@ no root cause is asserted beyond what the evidence proves.*
 - **Confirmed event:** {event}
 - **Confirmed stated reason:** {stated_reason}
 - {cause_line}
-- **Source:** [regulatory / evidence record]({src_link})
+- **Direct supporting source:** {direct_src or 'openFDA Enforcement/Recalls record'}
+- **Source link:** [regulatory / evidence record]({src_link})
 
 {('**Molecule / dosage-form context:** ' + mol) if mol else ''}
 
@@ -591,7 +864,7 @@ reason available, most remain *Plausible* pending validation.
 {hyp_rows}
 
 {('> Underlying root cause is not publicly confirmed. The FDA record confirms the recall reason only.' if not confirmed_cause else '')}
-
+{corro_block}
 ### Evidence Gaps
 {gap_lines}
 

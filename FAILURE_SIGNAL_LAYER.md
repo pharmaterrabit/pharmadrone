@@ -116,10 +116,29 @@ it works even when the LLM is rate-limited. It produces:
   BD relevance. With only the recall reason, most stay *Plausible*; confidence
   rises only when corroborating evidence is actually found.
 - **Deeper corroboration search** (`event_discovery.corroborate_candidates`) runs
-  on the capped lead set only (≤12), reliable sources only (FDA warning letters,
-  accessdata recall pages, company statements, molecule/dosage-form literature),
-  and attaches hits as extra evidence that feeds the matrix. Bounded, network-
-  guarded, and skipped cleanly if Tavily has no key.
+  on the capped lead set only (≤12), reliable sources only, and every hit is
+  passed through a **strict relevance filter** before it can be attached. A hit
+  must match at least two identifying fields of *this* recall (recall number,
+  exact product/molecule, recalling firm, NDC, problem category, or an official
+  recall page); each hit is classified as *direct recall evidence*, *same
+  product/firm*, *same molecule science*, *same firm quality history*,
+  *formulation-science background*, or *reject*. Drug-indication / label /
+  mechanism text (e.g. "nitrofurantoin is an antibacterial … caused by
+  bacteria"), vehicle recalls, low-quality drug-info pages, and unrelated
+  recalls are rejected outright. Only *direct recall evidence* from a regulatory
+  source with explicit causal language can ever confirm a root cause — a product
+  label, DrugBank, Mayo Clinic, general literature, or a same-firm/different-
+  product recall never can. Weak or irrelevant corroboration is excluded from
+  scoring, so the overall score cannot rise just because many generic web links
+  were found. A **Corroboration Filtering Debug** table in each report shows
+  every hit, its verdict, matched fields, evidence class, and the accept/reject
+  reason.
+- **Root-Cause Evidence Matrix** uses explicit evidence phrasing (never vague
+  "mentions:") — e.g. "Product contains 'monohydrate/macrocrystals'; dissolution
+  performance may be sensitive to this based on scientific literature" — and
+  every hypothesis carries the gap "No source links this factor to this specific
+  recalled lot; scientific/plausibility only — requires validation." Confidence
+  is raised above the bounded base only by an accepted, relevant causal source.
 - **Molecule / dosage-form scientific context** (e.g. nitrofurantoin
   monohydrate/macrocrystals → particle-size/solid-state sensitivity) used to
   frame hypotheses, never to assert cause.

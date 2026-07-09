@@ -174,8 +174,9 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
     literature). Respects the LLM-independent path: it only uses web search, and
     only if Tavily is enabled. Returns a small debug dict."""
     say = log or (lambda m: None)
-    debug = {"searched": 0, "hits": 0, "skipped_no_tavily": False}
+    debug = {"searched": 0, "hits": 0, "rejected": 0, "skipped_no_tavily": False}
     from .. import settings as _settings
+    from . import root_cause as _rc
     if "tavily" not in enabled or not _settings.env("TAVILY_API_KEY"):
         debug["skipped_no_tavily"] = True
         return debug
@@ -185,6 +186,13 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
             continue
         debug["searched"] += 1
         existing_urls = {e.get("url") for e in opp.get("evidence", [])}
+        # recall fields for relevance matching
+        rf = {}
+        for e in opp.get("evidence", []):
+            if (e.get("entities") or {}).get("recall_fields"):
+                rf = e["entities"]["recall_fields"]
+                break
+        opp.setdefault("corroboration_debug", [])
         for q in queries:
             res = tavily_search.search(q, max_results=3, cost=cost)
             if not res.ok:
@@ -192,10 +200,7 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
             for rec in res.records:
                 if rec.get("url") in existing_urls:
                     continue
-                # tag as corroboration; keep source_category as-is (news/regulatory)
-                rec["corroboration"] = True
-                rec["query_text"] = q
-                opp.setdefault("evidence", []).append({
+                candidate_ev = {
                     "source_type": rec.get("source_type", "web"),
                     "source_category": rec.get("source_category", "news"),
                     "source_name": rec.get("source_name", "Web (Tavily)"),
@@ -206,12 +211,34 @@ def corroborate_candidates(candidates: list[dict], cost, enabled: set[str],
                     "english_summary": (rec.get("raw_text") or "")[:400],
                     "date_accessed": rec.get("date_accessed", ""),
                     "entities": rec.get("entities") or {},
-                    "supports": "corroboration search result",
-                    "does_not_prove": "relevance requires validation",
+                }
+                # STRICT relevance filter — only attach evidence that matches THIS
+                # recall; classify and record why accepted/rejected (req 1/2/8).
+                verdict = _rc.classify_corroboration(candidate_ev, opp, rf)
+                opp["corroboration_debug"].append({
+                    "title": (candidate_ev["title"] or "")[:80],
+                    "url": candidate_ev["url"],
+                    "class": verdict["class"],
+                    "matched_fields": verdict["matched_fields"],
+                    "accepted": verdict["accepted"],
+                    "reason": verdict["reason"],
                 })
                 existing_urls.add(rec.get("url"))
+                if not verdict["accepted"]:
+                    debug["rejected"] += 1
+                    continue
+                candidate_ev["corroboration"] = True
+                candidate_ev["evidence_class"] = verdict["class"]
+                candidate_ev["causal_source"] = verdict.get("causal_source", False)
+                candidate_ev["query_text"] = q
+                candidate_ev["supports"] = f"corroboration ({verdict['class']})"
+                candidate_ev["does_not_prove"] = ("relevance/root-cause requires "
+                    "validation; not this recall's confirmed cause unless a causal "
+                    "regulatory source")
+                opp.setdefault("evidence", []).append(candidate_ev)
                 debug["hits"] += 1
     if debug["searched"]:
         say(f"Root-cause corroboration: searched {debug['searched']} lead(s), "
-            f"attached {debug['hits']} corroborating source(s).")
+            f"attached {debug['hits']} relevant source(s), rejected "
+            f"{debug['rejected']} irrelevant/low-quality hit(s).")
     return debug
