@@ -4,10 +4,10 @@ This module is intentionally small and read-only. It does not call the web,
 LLMs, or databases. It only matches a user query against opportunities already
 created by the existing evidence pipeline.
 
-Patch v1.1 tightens the matcher so structured problem fields and recall reasons
-are prioritised over broad report/evidence text. Generic terms such as
-"release", "OOS", "specification", or "QC" are not enough to create a default
-Problem → Solution or Technology → Target match.
+Patch v1.2 tightens dissolution/release-performance matching so dosage-form
+descriptors such as "extended release" or "immediate release" are treated as
+background only unless the evidence states an actual dissolution or
+release-performance problem.
 """
 from __future__ import annotations
 
@@ -29,9 +29,15 @@ TECH_CERTAINTY_NOTE = (
 )
 
 MATCH_DIRECT = "Direct match"
-MATCH_RELATED = "Related match"
+MATCH_RELATED = "Strong related match"
 MATCH_WEAK = "Weak/background match"
-_STRENGTH_SCORE = {MATCH_DIRECT: 3, MATCH_RELATED: 2, MATCH_WEAK: 1}
+MATCH_DESCRIPTOR_ONLY = "Background dosage-form descriptor only"
+_STRENGTH_SCORE = {
+    MATCH_DIRECT: 4,
+    MATCH_RELATED: 3,
+    MATCH_WEAK: 1,
+    MATCH_DESCRIPTOR_ONLY: 1,
+}
 
 
 def _norm(text: Any) -> str:
@@ -349,21 +355,43 @@ TECH_RULES: dict[str, dict[str, Any]] = {
 
 _DISSOLUTION_DIRECT_TERMS = (
     "failed dissolution specifications", "failed dissolution specification",
-    "dissolution", "failed dissolution", "fails dissolution", "dissolution failure",
-    "dissolution specification", "dissolution specifications", "dissolution test",
-    "dissolution testing", "dissolution rate", "drug release above", "drug release below",
-    "drug release specification", "drug release specifications", "failed drug release",
-    "release performance", "drug-release performance", "release rate",
+    "dissolution failure", "failed dissolution", "fails dissolution",
+    "dissolution specification", "dissolution specifications",
+    "dissolution out of specification", "dissolution oos",
+    "drug release above specification", "drug release below specification",
+    "drug release above specifications", "drug release below specifications",
+    "drug release specification failure", "drug release specifications failure",
+    "failed drug release", "release-rate failure", "release rate failure",
+    "root-cause category dissolution", "dissolution/release performance",
+    "release-performance failure", "drug-release performance failure",
+    "dissolution",
 )
+# Strong related terms must describe an actual dissolution/release-performance
+# problem or test. They must not be plain dosage-form descriptors.
 _DISSOLUTION_RELATED_TERMS = (
-    "oral solid-dose release performance", "oral solid dose release performance",
-    "oral solid-dose performance", "oral solid dose performance", "tablet dissolution",
-    "capsule dissolution", "tablet release", "capsule release", "modified release",
-    "extended release", "immediate release", "release profile", "dissolution profile",
+    "dissolution testing", "dissolution test", "dissolution specification",
+    "dissolution specifications", "dissolution profile out of specification",
+    "dissolution profile out-of-specification", "failed dissolution",
+    "drug release above specification", "drug release below specification",
+    "drug release above specifications", "drug release below specifications",
+    "release-rate failure", "release rate failure",
+    "modified-release performance issue", "modified release performance issue",
+    "extended-release performance failure", "extended release performance failure",
+    "in vitro release failure", "release profile out of specification",
+    "release profile out-of-specification", "release performance failure",
+    "drug-release performance issue", "drug release performance issue",
+    "oral solid-dose performance problem", "oral solid dose performance problem",
+    "oral solid-dose release performance problem", "oral solid dose release performance problem",
 )
 _DISSOLUTION_WEAK_TERMS = (
     "release", "oos", "out of specification", "specification", "specifications", "qc",
     "batch release", "press release", "failed specifications", "failed specification",
+)
+_DISSOLUTION_DESCRIPTOR_ONLY_TERMS = (
+    "extended release", "extended-release", "immediate release", "immediate-release",
+    "modified release", "modified-release", "delayed release", "delayed-release",
+    "controlled release", "controlled-release", "sustained release", "sustained-release",
+    "oral", "tablet", "tablets", "capsule", "capsules",
 )
 _INJECTABLE_TERMS = (
     "injection", "injectable", "injectables", "vial", "syringe", "infusion", "iv ",
@@ -379,6 +407,7 @@ CATEGORY_MATCH_PROFILES: dict[str, dict[str, tuple[str, ...]]] = {
         "direct": _DISSOLUTION_DIRECT_TERMS,
         "related": _DISSOLUTION_RELATED_TERMS,
         "weak": _DISSOLUTION_WEAK_TERMS,
+        "descriptor_only": _DISSOLUTION_DESCRIPTOR_ONLY_TERMS,
     },
     "stability": {
         "direct": ("stability", "unstable", "degradation", "degradation product", "shelf life", "shelf-life", "expiry", "storage condition"),
@@ -610,16 +639,22 @@ def _make_reason(strength: str, field_label: str, hit: str, field_text: str) -> 
         return f"{strength}: stored problem_signal = {clean_text}"
     if field_label == "stored problem_category":
         return f"{strength}: stored problem_category = {clean_text}"
+    if strength == MATCH_DESCRIPTOR_ONLY:
+        return f"{strength}: {field_label} contains dosage-form descriptor '{hit}' only"
     return f"{strength}: {field_label} contains {hit}"
 
 
 def _match_problem_category(opp: dict[str, Any], category_key: str) -> dict[str, Any] | None:
-    """Return one Direct/Related/Weak match for an opportunity/category.
+    """Return one Direct/Strong related/Weak match for an opportunity/category.
 
     Priority order:
-      1) structured problem fields and recall reasons
-      2) specific evidence snippets
-      3) broad report/background text as weak only
+      1) structured problem fields and recall reasons for Direct matches
+      2) specific problem/performance evidence for Strong related matches
+      3) broad generic/background text as hidden weak matches only
+
+    Dissolution is intentionally strict: dosage-form descriptors such as
+    "extended release" and "immediate release" are background only unless the
+    text also states an actual dissolution or release-performance failure.
     """
     profile = _category_profile(category_key)
     structured = _labelled_opp_fields(opp)
@@ -629,8 +664,10 @@ def _match_problem_category(opp: dict[str, Any], category_key: str) -> dict[str,
     direct_terms = profile["direct"]
     related_terms = profile["related"]
     weak_terms = profile.get("weak", tuple())
+    descriptor_terms = profile.get("descriptor_only", tuple())
 
-    # Direct: structured fields first, including recall reasons.
+    # Direct: structured fields first, including recall reasons. Evidence summaries
+    # cannot create a Direct match by themselves.
     for field_label, text in structured + recall_reasons:
         hit = _first_hit(text, direct_terms)
         if hit:
@@ -642,31 +679,42 @@ def _match_problem_category(opp: dict[str, Any], category_key: str) -> dict[str,
                 "source_field": field_label,
             }
 
-    # Related: specific evidence and structured text only. For dissolution, avoid
-    # plain "release" and require dissolution/drug-release/oral-solid context.
+    # Dissolution/injectable guardrail: injectables should not appear for a
+    # dissolution-failure search unless a structured field or recall/event reason
+    # directly states dissolution or release-performance failure. Generic evidence
+    # wording such as "extended release" is not enough.
+    if category_key == "dissolution" and _looks_injectable(opp):
+        return None
+
+    # Strong related: structured, recall, or focused evidence snippets only.
+    # For dissolution, related terms are restricted to actual performance/problem
+    # phrases such as dissolution testing or release-profile OOS.
     for field_label, text in structured + recall_reasons + evidence:
         hit = _first_hit(text, related_terms)
         if hit:
-            if category_key == "dissolution" and _looks_injectable(opp):
-                # Do not let generic modified-release/injection wording create a target.
-                if not _first_hit(text, _DISSOLUTION_DIRECT_TERMS):
-                    continue
             return {
                 "strength": MATCH_RELATED,
-                "score": 60,
+                "score": 70,
                 "terms": sorted({hit}),
                 "reason": _make_reason(MATCH_RELATED, field_label, hit, text),
                 "source_field": field_label,
             }
 
-    # Dissolution/injectable guardrail: injectables should not appear for a
-    # dissolution-failure search unless a structured/evidence field above stated
-    # dissolution or drug-release performance. Generic release/OOS text is not
-    # enough, even when weak matches are explicitly included.
-    if category_key == "dissolution" and _looks_injectable(opp):
-        return None
+    # Descriptor-only/background: hidden by default. "Extended release" and
+    # "immediate release" are dosage-form descriptors, not evidence of a failure.
+    if category_key == "dissolution":
+        for field_label, text in structured + recall_reasons + evidence + [("broad generated report/background text", _broad_background_text(opp))]:
+            hit = _first_hit(text, descriptor_terms)
+            if hit:
+                return {
+                    "strength": MATCH_DESCRIPTOR_ONLY,
+                    "score": 10,
+                    "terms": sorted({hit}),
+                    "reason": _make_reason(MATCH_DESCRIPTOR_ONLY, field_label, hit, text),
+                    "source_field": field_label,
+                }
 
-    # Weak/background: hidden by default. Generic words live here only.
+    # Weak/background: hidden by default. Generic terms live here only.
     broad = _broad_background_text(opp)
     for field_label, text in evidence + [("broad generated report/background text", broad)]:
         hit = _first_hit(text, weak_terms)
@@ -679,7 +727,6 @@ def _match_problem_category(opp: dict[str, Any], category_key: str) -> dict[str,
                 "source_field": field_label,
             }
     return None
-
 
 def _source_summary(evidence: list[dict[str, Any]]) -> str:
     seen: list[str] = []
@@ -724,7 +771,7 @@ def _lead_status(opp: dict[str, Any], strength: str) -> str:
         return "outreach-ready"
     if strength in {MATCH_DIRECT, MATCH_RELATED} and ev_count >= 1 and (grade in {"A", "B", "C"} or score >= 30):
         return "needs validation"
-    if strength == MATCH_WEAK and ev_count >= 1:
+    if strength in {MATCH_WEAK, MATCH_DESCRIPTOR_ONLY} and ev_count >= 1:
         return "monitor only"
     return "low priority / archive"
 
@@ -800,7 +847,7 @@ def match_problem_to_solutions(
         match = _match_problem_category(opp, category_key)
         if not match:
             continue
-        if match["strength"] == MATCH_WEAK and not include_weak:
+        if match["strength"] in {MATCH_WEAK, MATCH_DESCRIPTOR_ONLY} and not include_weak:
             hidden_weak_count += 1
             continue
         matches.append(_problem_match_row(query, category_key, rule, opp, match))
@@ -905,7 +952,7 @@ def match_technology_to_targets(
             match = _match_problem_category(opp, category_key)
             if not match:
                 continue
-            if match["strength"] == MATCH_WEAK and not include_weak:
+            if match["strength"] in {MATCH_WEAK, MATCH_DESCRIPTOR_ONLY} and not include_weak:
                 hidden_weak_count += 1
                 continue
             category_matches.append((category_key, match))
