@@ -114,6 +114,12 @@ def score_one(opp: dict, cost) -> dict:
     opp_text = (f"Company: {opp.get('company')}; Product: {opp.get('product')}; "
                 f"Signal: {opp.get('problem_signal')}; Stage: {opp.get('stage')}; "
                 f"Region: {opp.get('region')}")
+    # If the circuit breaker has tripped, skip the LLM call entirely and score
+    # deterministically — no network, no waiting.
+    if getattr(llm, "BREAKER", None) is not None and llm.BREAKER.tripped:
+        deterministic_score(opp)
+        opp["score_error"] = "LLM disabled (429 circuit breaker); deterministic score"
+        return opp
     try:
         res = llm.complete_json(
             SCORE_PROMPT.format(opp=opp_text, evidence=ev_text, n_types=n_types), cost)
@@ -159,18 +165,27 @@ def score_one(opp: dict, cost) -> dict:
     return opp
 
 
-def score_and_filter(candidates, cost, min_evidence: int = 2):
+def score_and_filter(candidates, cost, min_evidence: int = 2,
+                     time_budget_s: float = 90.0):
     """Returns (accepted, rejected, debug).
 
     Provisional candidates (opp['provisional'] is True) are scored
     deterministically (no LLM dependency) and ALWAYS included in `accepted` —
     they exist precisely to guarantee visible, clearly-labelled output when the
     LLM path is degraded. Non-provisional candidates keep the full LLM-scored,
-    evidence-gated path unchanged.
+    evidence-gated path.
+
+    Timeout protection: once cumulative wall-clock time in this function exceeds
+    `time_budget_s`, all remaining candidates are scored deterministically (no
+    LLM), so a slow/unreliable provider can never make the run spin. Combined
+    with the pre-scoring cap and the 429 circuit breaker, scoring is bounded.
     """
+    import time as _time
+    start = _time.monotonic()
     accepted, rejected = [], []
     debug = {"rejected_low_evidence": 0, "rejected_grade_d": 0,
-             "score_errors": [], "provisional_included": 0}
+             "score_errors": [], "provisional_included": 0,
+             "deterministic_after_timeout": 0}
     for c in candidates:
         if c.get("provisional"):
             scored = deterministic_score(c)
@@ -209,15 +224,22 @@ def score_and_filter(candidates, cost, min_evidence: int = 2):
             rejected.append(c)
             debug["rejected_low_evidence"] += 1
             continue
-        scored = score_one(c, cost)
-        if scored.get("score_error"):
-            debug["score_errors"].append(
-                f"{scored.get('company') or scored.get('product')}: {scored['score_error']}")
-        if scored["grade"] == "D":
-            scored["reject_reason"] = f"grade D (score {scored['score']}/100)"
-            rejected.append(scored)
+        # Timeout guard: past the budget, don't make any more LLM calls.
+        if _time.monotonic() - start > time_budget_s:
+            deterministic_score(c)
+            c["score_error"] = "scoring time budget exceeded; deterministic score"
+            debug["deterministic_after_timeout"] += 1
+        else:
+            scored = score_one(c, cost)
+            c = scored
+            if c.get("score_error"):
+                debug["score_errors"].append(
+                    f"{c.get('company') or c.get('product')}: {c['score_error']}")
+        if c["grade"] == "D":
+            c["reject_reason"] = f"grade D (score {c['score']}/100)"
+            rejected.append(c)
             debug["rejected_grade_d"] += 1
         else:
-            accepted.append(scored)
+            accepted.append(c)
     accepted.sort(key=lambda x: x.get("score", 0), reverse=True)
     return accepted, rejected, debug

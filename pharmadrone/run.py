@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
-from . import settings, db, export
+from . import settings, db, export, llm
 from .cost import CostTracker
 from .pipeline import (queries, retrieve, extract, dedup, score, report,
                        failure_signal, discover, event_discovery)
@@ -30,6 +30,11 @@ from .pipeline import (queries, retrieve, extract, dedup, score, report,
 FALLBACK_MIN_TOTAL = 3
 FALLBACK_MAX_TOTAL = 5
 FALLBACK_MIN_RAW_EVIDENCE = 20
+# Hard cap on how many candidates are scored (LLM or deterministic) per run.
+# Prevents scoring 100+ candidates — we rank deterministically and keep the best.
+MAX_CANDIDATES_TO_SCORE = 12
+# Cap evidence batches sent to the LLM extraction step (each batch = 1 LLM call).
+MAX_LLM_EXTRACTION_BATCHES = 3
 
 
 def _coverage_summary(coverage: dict, accepted: list[dict]) -> dict:
@@ -57,6 +62,10 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     enabled = settings.enabled_sources(profile)
     say = log or (lambda m: None)
     debug = {}
+
+    # Fresh circuit breaker for this run: after 2 consecutive 429s the LLM is
+    # disabled and the run continues deterministically (no more OpenRouter calls).
+    llm.reset_breaker(threshold=2)
 
     # Hard budget guardrail: one click can never exceed MAX_REPORTS_PER_RUN.
     hard_cap = int(settings.env("MAX_REPORTS_PER_RUN", "5") or "5")
@@ -140,22 +149,29 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         "cluster(s) discarded (no valid target).")
     debug["discovered_deterministic"] = len(discovered)
 
-    # --- Step 2: LLM-based extraction (best-effort enrichment) ------------
-    llm_candidates, extract_debug = extract.extract(evidence, cost)
+    # --- Step 2: LLM-based extraction (best-effort enrichment, capped) ----
+    # Enrichment only. Capped to a few batches, and skipped entirely once the
+    # circuit breaker trips, so a rate-limited LLM never stalls the run.
+    llm_candidates, extract_debug = extract.extract(
+        evidence, cost, max_batches=MAX_LLM_EXTRACTION_BATCHES)
     debug["llm_extraction"] = extract_debug
     say(f"LLM opportunity extraction: {len(llm_candidates)} candidate(s) "
-        f"({extract_debug['batches_ok']}/{extract_debug['batches_total']} batch(es) ok).")
-    for err in extract_debug["errors"]:
+        f"({extract_debug['batches_ok']}/{extract_debug['batches_total']} batch(es) ok"
+        + (", LLM disabled (429 circuit breaker)" if extract_debug.get("llm_disabled")
+           else "") + ").")
+    for err in extract_debug["errors"][:3]:
         say(f"  ⚠ {err}")
 
     fsignals, fsig_debug = ([], {"batches_total": 0, "batches_ok": 0,
                                  "batches_failed": 0, "errors": []})
     if fail_on:
-        fsignals, fsig_debug = failure_signal.extract_failure_signals(evidence, cost)
+        fsignals, fsig_debug = failure_signal.extract_failure_signals(
+            evidence, cost, max_batches=MAX_LLM_EXTRACTION_BATCHES)
         debug["failure_llm_extraction"] = fsig_debug
         say(f"Failure Signal layer (LLM): {len(fsignals)} candidate(s) "
-            f"({fsig_debug['batches_ok']}/{fsig_debug['batches_total']} batch(es) ok).")
-        for err in fsig_debug["errors"]:
+            f"({fsig_debug['batches_ok']}/{fsig_debug['batches_total']} batch(es) ok"
+            + (", LLM disabled (429)" if fsig_debug.get("llm_disabled") else "") + ").")
+        for err in fsig_debug["errors"][:3]:
             say(f"  ⚠ {err}")
 
     candidates = dedup.dedup(discovered + llm_candidates + fsignals)
@@ -190,10 +206,34 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
             f"{fb_info['reason']}. No misleading reports generated.")
     debug["fallback_generated"] = len(fallback)
 
-    say("Scoring (0-100)…")
+    # --- Pre-scoring cap: rank deterministically, keep only the strongest -----
+    # This is the fix for the "spinning at Scoring on 104 candidates" hang. We
+    # never send more than MAX_CANDIDATES_TO_SCORE candidates to scoring.
+    total_candidates = len(candidates)
+    keep_n = min(MAX_CANDIDATES_TO_SCORE, max(n * 2, MAX_CANDIDATES_TO_SCORE))
+    kept, skipped = discover.prerank_and_cap(candidates, keep=keep_n)
+    debug["candidates_discovered"] = debug.get("discovered_deterministic", 0)
+    debug["candidates_total_pre_cap"] = total_candidates
+    debug["candidates_kept_for_scoring"] = len(kept)
+    debug["candidates_skipped_by_cap"] = len(skipped)
+    say(f"Candidates discovered: {debug['candidates_discovered']} · "
+        f"after dedup+fallback: {total_candidates}")
+    if skipped:
+        say(f"Pre-scoring cap: ranked deterministically, keeping top {len(kept)} "
+            f"for scoring; {len(skipped)} lower-priority candidate(s) skipped "
+            "(not scored — prevents scoring 100+ items).")
+    else:
+        say(f"Candidates kept for scoring: {len(kept)} (no cap needed).")
+    candidates = kept
+
+    llm_up = not llm.BREAKER.tripped
+    say(f"Scoring (0-100) — {'LLM+deterministic' if llm_up else 'DETERMINISTIC ONLY (LLM disabled by 429 breaker)'}…")
     min_ev = profile["output"].get("min_evidence_links", 2)
     accepted, rejected, score_debug = score.score_and_filter(candidates, cost, min_ev)
     debug["scoring"] = score_debug
+    if llm.BREAKER.tripped:
+        debug["llm_disabled_reason"] = llm.BREAKER.trip_reason
+        say(f"  ℹ {llm.BREAKER.trip_reason}. Used deterministic scoring for the rest.")
 
     # Source-priority rule (req 5): regulatory recall/enforcement > trial
     # status/whyStopped > company/investor > pharma news > academic.

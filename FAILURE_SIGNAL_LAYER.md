@@ -80,11 +80,21 @@ candidate must rest on a regulatory recall, a stopped trial, or a company/news
 event source; otherwise the run says so instead of emitting literature-only
 reports.
 
-**429 handling:** the LLM client uses 429-aware exponential backoff, an optional
-`LLM_FALLBACK_MODEL` tried once on persistent failure, and — critically — the
-whole event-first + scoring path is deterministic, so a fully rate-limited LLM
-still yields correct reports from the structured event records (verified in the
-benchmark with every LLM call forced to 429).
+**Candidate volume control + 429 handling:** event-first discovery can surface
+100+ candidates. Before any scoring, candidates are ranked deterministically
+(`prerank_and_cap`) and only the top ~12 are kept — the rest are skipped, never
+scored, so the app never tries to LLM-score 100+ items. Up to 5 reports are
+written. LLM robustness has three layers: (1) 429s are not retried — they fail
+fast; (2) a run-scoped **circuit breaker** trips after 2 consecutive 429s and
+disables the LLM for the rest of the run, switching everything (extraction,
+scoring, report writing) to deterministic behaviour; (3) a wall-clock **scoring
+time budget** (~90 s) makes any remaining candidates score deterministically if
+the provider is merely slow. Net effect: a run that used to spin for 10+ minutes
+on 104 candidates under sustained 429 now finishes in seconds with 5
+deterministic reports (verified in tests). An optional `LLM_FALLBACK_MODEL` is
+tried once on non-rate-limit failures. Visible log lines report: candidates
+discovered, after dedup, kept for scoring, skipped by cap, LLM disabled by the
+429 breaker, and deterministic scoring in use.
 
 **Benchmark:** `python -m pharmadrone.benchmark --offline` (fixtures, no network)
 or `python -m pharmadrone.benchmark` (live) checks all five classes — a recall /

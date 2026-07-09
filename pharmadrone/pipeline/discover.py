@@ -462,6 +462,67 @@ def build_fallback_candidates(evidence: list[dict], existing_count: int,
     return out, info
 
 
+def prerank_score(o: dict) -> tuple:
+    """Deterministic pre-ranking key (higher = stronger). Used to cap candidates
+    BEFORE any LLM scoring, so we never send 100+ candidates to the LLM. Ranks by:
+    source priority > event confirmation > valid target > source diversity >
+    problem-category match > recency > evidence count. No network, no LLM.
+    """
+    ev = o.get("evidence", [])
+    stypes = {e.get("source_type") for e in ev}
+    cats = {e.get("source_category") for e in ev}
+
+    # 1) source priority: recall > regulatory > trial > company > news > academic
+    if "recall" in stypes:
+        source_pri = 6
+    elif "regulatory" in cats:
+        source_pri = 5
+    elif "trial" in stypes:
+        source_pri = 4
+    elif "company" in cats:
+        source_pri = 3
+    elif "news" in cats:
+        source_pri = 2
+    else:
+        source_pri = 1
+
+    event_confirmed = 1 if (o.get("failure_event_confirmed")
+                            or any((e.get("entities") or {}).get("event_type") for e in ev)
+                            or "recall" in stypes) else 0
+    has_target = 1 if (
+        (o.get("company") and not is_blacklisted_target(o.get("company")))
+        or (o.get("product") and not is_blacklisted_target(o.get("product")))
+        or any(e.get("source_type") == "trial" for e in ev)) else 0
+    diversity = len(cats)
+    problem_match = 1 if o.get("problem_category") or o.get("problem_signal") else 0
+    recency = _recency_score(ev)
+    n_ev = min(len(ev), 10)
+
+    return (source_pri, event_confirmed, has_target, diversity,
+            problem_match, recency, n_ev)
+
+
+def _recency_score(evidence: list[dict]) -> int:
+    """Rough recency: prefer evidence carrying a recent year in its date/text.
+    Returns a small integer; 0 if nothing datable."""
+    best = 0
+    for e in evidence:
+        blob = (str(e.get("date_accessed", "")) + " "
+                + str(e.get("english_summary", "")) + " " + str(e.get("title", "")))
+        for yr in range(2026, 2015, -1):
+            if str(yr) in blob:
+                best = max(best, yr - 2015)
+                break
+    return best
+
+
+def prerank_and_cap(candidates: list[dict], keep: int = 12) -> tuple[list[dict], list[dict]]:
+    """Sort candidates by deterministic strength and keep the top `keep`.
+    Returns (kept, skipped)."""
+    ranked = sorted(candidates, key=prerank_score, reverse=True)
+    return ranked[:keep], ranked[keep:]
+
+
 def top_entities(evidence: list[dict], n: int = 10) -> list[dict]:
     """For the debug panel: most frequently mentioned VALID product/company
     names across all evidence (blacklisted/generic terms excluded)."""

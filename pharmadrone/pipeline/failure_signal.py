@@ -168,22 +168,31 @@ def _format_snippets(evidence: list[dict], limit: int = 40) -> str:
     return "\n".join(lines)
 
 
-def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40) -> tuple[list[dict], dict]:
-    """Return (failure-signal candidates, debug). Candidates carry the same
-    company/product + evidence shape as normal opportunity candidates, plus the
-    failure schema fields and a `failure` flag so the report writer knows to
-    render the section."""
+def extract_failure_signals(evidence: list[dict], cost, batch_size: int = 40,
+                            max_batches: int = 3) -> tuple[list[dict], dict]:
+    """Return (failure-signal candidates, debug). Enrichment only, capped at
+    `max_batches` LLM calls, and stops if the circuit breaker trips."""
     signals = []
-    debug = {"batches_total": 0, "batches_ok": 0, "batches_failed": 0, "errors": []}
-    for start in range(0, len(evidence), batch_size):
+    debug = {"batches_total": 0, "batches_ok": 0, "batches_failed": 0,
+             "errors": [], "llm_disabled": False}
+    for bi, start in enumerate(range(0, len(evidence), batch_size)):
+        if bi >= max_batches:
+            break
         batch = evidence[start:start + batch_size]
         debug["batches_total"] += 1
         try:
             items = llm.complete_json(EXTRACT_PROMPT.format(
                 snippets=_format_snippets(batch)), cost)
+        except llm.LLMDisabled as e:
+            debug["llm_disabled"] = True
+            debug["errors"].append(f"LLM disabled: {e}")
+            break
         except Exception as e:
             debug["batches_failed"] += 1
             debug["errors"].append(f"failure-signal extraction batch {start}: {e}")
+            if llm.BREAKER.tripped:
+                debug["llm_disabled"] = True
+                break
             continue
         if not isinstance(items, list):
             debug["batches_failed"] += 1

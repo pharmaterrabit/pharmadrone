@@ -116,8 +116,12 @@ Do not initiate outreach from this candidate alone — validate the signal first
 
 def write_report(opp: dict, cost, report_type: str = "memo") -> str:
     is_provisional = bool(opp.get("provisional"))
-    if is_provisional:
+    llm_disabled = getattr(llm, "BREAKER", None) is not None and llm.BREAKER.tripped
+    if is_provisional or llm_disabled:
         body = _deterministic_body(opp)
+        if llm_disabled and not is_provisional:
+            body = ("> ℹ LLM was rate-limited this run (429); this report uses the "
+                    "deterministic evidence view.\n\n" + body)
     else:
         prompt_tpl = FLAGSHIP_PROMPT if report_type == "flagship" else MEMO_PROMPT
         prompt = prompt_tpl.format(
