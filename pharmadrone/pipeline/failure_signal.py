@@ -447,22 +447,12 @@ failure/rescue signal.
 | Voluntary / mandated | {g('voluntary_mandated')} |
 | Firm location | {', '.join([x for x in (rf.get('city'), rf.get('state'), rf.get('country')) if x]) or 'not stated'} |
 | Source | [openFDA / FDA enforcement record]({src_link}) |"""
-        interp = bd_rules.interpretation(problem)
-        rescue_list = bd_rules.rescue_steps(problem)
-        partner_list = bd_rules.partners(problem)
     else:
         what_block = (f"**What happened?** {confirmed_event} · "
                       f"{opp.get('product','—')} · {opp.get('company','—')} · "
                       f"{opp.get('region','—')} · "
                       f"{opp.get('event_date','date not stated')}\n\n"
                       f"**Source:** [{src_link}]({src_link})")
-        interp = opp.get("interpretation") or bd_rules.interpretation(problem)
-        rescue_list = (opp.get("rescue_strategy") and [opp["rescue_strategy"]]) \
-            or bd_rules.rescue_steps(problem)
-        partner_list = opp.get("potential_partners") or bd_rules.partners(problem)
-
-    rescue_block = "\n".join(f"- {s}" for s in rescue_list)
-    partners_block = "\n".join(f"- {p}" for p in partner_list)
 
     return f"""
 
@@ -480,15 +470,11 @@ failure/rescue signal.
 
 **Confirmed vs interpretation (evidence discipline):**
 - Confirmed (FDA fact): {(opp.get('confirmed_fact') or 'the recall event and its stated reason above').rstrip('.')}.
-- PharmaDrone interpretation (not an FDA finding): the reason {interp}. This
-  does not establish root cause beyond the stated recall reason and requires
-  validation.
-
-**Possible rescue strategy (rule-based; validate first):**
-{rescue_block}
-
-**Possible partner categories:**
-{partners_block}
+- Interpretation, root-cause hypotheses, solution-fit mapping, safe outreach
+  wording, and the confidence/readiness assessment are in the **Root-Cause &
+  Solution-Fit Intelligence** section below — specific to this recall's confirmed
+  reason, not generic problem-category text. No root cause is asserted beyond the
+  stated recall reason.
 
 **Recommended next action:** {opp.get('next_action','validate')} — confirm scope \
 (isolated lot vs recurring), site, and supplier before any outreach.
@@ -496,6 +482,6 @@ failure/rescue signal.
 **Red flags / missing evidence:** {'; '.join(opp.get('red_flags', []) or []) or 'root cause and scope not established from the recall record alone — validate before outreach'}
 
 > Signal status: **{opp.get('signal_status','needs_verification')}**. Confirmed FDA \
-recall fact is separated from PharmaDrone interpretation above; validate before any \
+recall fact is separated from PharmaDrone interpretation; validate before any \
 commercial decision.
 """

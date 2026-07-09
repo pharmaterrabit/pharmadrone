@@ -91,6 +91,23 @@ def _fmt(v) -> str:
     return v if v else "not stated"
 
 
+def _short_product_name(opp: dict) -> str:
+    """Short product label for the report title (issue 6): keep the molecule +
+    dosage form, drop the long ", 100 Capsules per bottle, Rx only" tail. The
+    full description stays in the recall details table."""
+    prod = (opp.get("product") or "asset").strip()
+    if not prod or prod == "asset":
+        return "asset"
+    # Take the part before the first comma (usually "Nitrofurantoin Capsules USP"
+    # or "Nitrofurantoin Capsules"), and cap length as a safety net.
+    head = prod.split(",")[0].strip()
+    # Keep an immediately-following dosage-form/strength token group if short.
+    if len(head) < 12 and "," in prod:
+        # e.g. head was just a molecule; add the next chunk (dosage form)
+        head = ", ".join(p.strip() for p in prod.split(",")[:2])
+    return (head[:70].rsplit(" ", 1)[0] + "…") if len(head) > 70 else head
+
+
 def _evidence_table(opp: dict) -> str:
     """Evidence table that shows the actual recall reason (req 3), not just the
     title. 'Supports' carries the recall reason / event; 'Does not prove' is a
@@ -126,6 +143,12 @@ def _deterministic_body(opp: dict) -> str:
     company = opp.get("company") or (rf.get("recalling_firm") if rf else None) or "Unknown company"
     product = opp.get("product") or (rf.get("product_description") if rf else None) or "product"
 
+    # Will the richer Root-Cause & Solution-Fit section render after this body?
+    # (It renders for confirmed failure events.) If so, defer the BD-analysis
+    # sections to it instead of repeating weaker generic text here (issue 4).
+    rc_will_render = bool(opp.get("failure")
+                          and failure_signal._event_structurally_confirmed(opp))
+
     interp = bd_rules.interpretation(problem)
     partners = bd_rules.partners(problem)
     rescue = bd_rules.rescue_steps(problem)
@@ -153,21 +176,21 @@ def _deterministic_body(opp: dict) -> str:
     partner_lines = "\n".join(f"- {p}" for p in partners)
     rescue_lines = "\n".join(f"- {s}" for s in rescue)
 
-    return f"""## Quick Summary
-Deterministic BD screening memo (generated without LLM synthesis — the LLM was
-unavailable or rate-limited for this run). {('This is a **confirmed FDA recall** '
-'signal.' if rf else 'Signal status: ' + str(opp.get('signal_status','needs_verification')) + '.')}
-Target: **{company} — {product}**. Problem signal: **{_fmt(problem)}**.
-
-{confirmed}
-
-## Opportunity Fit
+    if rc_will_render:
+        # Defer Opportunity Fit / Who to Contact / Outreach / Partners / Rescue to
+        # the Root-Cause & Solution-Fit Intelligence section below (issue 4).
+        analysis_block = (
+            "## BD Analysis\n"
+            "Root-cause hypotheses (evidence-graded), solution-fit mapping, safe "
+            "outreach wording, contact roles, confidence/readiness, and the "
+            "validation checklist are in the **Root-Cause & Solution-Fit "
+            "Intelligence** section below — they are specific to this recall's "
+            "confirmed reason, not generic problem-category text.")
+    else:
+        analysis_block = f"""## Opportunity Fit
 The recall reason {interp}. This is **PharmaDrone interpretation, not an FDA
 finding** — the FDA record confirms only the recall and its stated reason, not
 the underlying root cause. Requires validation before any commercial conclusion.
-
-## Evidence Table
-{_evidence_table(opp)}
 
 ## Who to Contact
 Buyer roles to consider (validate relevance to this specific firm/product first):
@@ -182,7 +205,20 @@ Opportunity types that *may* fit this signal (rule-based; validate before use):
 
 ## Possible Rescue Strategy
 Rule-based validation/rescue steps for a {_fmt(problem)} signal:
-{rescue_lines}
+{rescue_lines}"""
+
+    return f"""## Quick Summary
+Deterministic BD screening memo (generated without LLM synthesis — the LLM was
+unavailable or rate-limited for this run). {('This is a **confirmed FDA recall** '
+'signal.' if rf else 'Signal status: ' + str(opp.get('signal_status','needs_verification')) + '.')}
+Target: **{company} — {product}**. Problem signal: **{_fmt(problem)}**.
+
+{confirmed}
+
+## Evidence Table
+{_evidence_table(opp)}
+
+{analysis_block}
 
 ## Confidence Score
 {opp.get('confidence','low')} — signal status: **{opp.get('signal_status','needs_verification')}**.
@@ -196,7 +232,7 @@ Rule-based validation/rescue steps for a {_fmt(problem)} signal:
 
 ## Why This May Be Wrong
 The recall reason is a confirmed FDA fact, but the BD interpretation, partner
-categories, and rescue steps above are rule-based inferences from the problem
+categories, and rescue steps are rule-based inferences from the problem
 category — they may not reflect the firm's actual situation. The issue could be
 an isolated lot, a resolved supplier problem, or already remediated. Verify the
 recall record, its scope, and the firm's current status before any BD action.
@@ -237,7 +273,7 @@ def write_report(opp: dict, cost, report_type: str = "memo") -> str:
                   "Verify every field before any BD action.\n")
 
     header = (f"# {opp.get('company') or 'Unknown company'} — "
-              f"{opp.get('product','asset')}\n"
+              f"{_short_product_name(opp)}\n"
               f"*{report_type.upper()} · {opp.get('region') or 'region not stated'} · "
               f"Grade {opp.get('grade','?')} ({opp.get('score','?')}/100) · "
               f"Confidence {opp.get('confidence','?')}*\n"

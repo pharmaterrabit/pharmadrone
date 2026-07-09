@@ -58,6 +58,41 @@ def _norm(s):
     return " ".join(str(s or "").split()).strip().lower()
 
 
+# Label / SPL / ANDA / approval pages are regulatory CONTEXT, not recall evidence.
+_LABEL_PAGE_MARKERS = [
+    "/spl/", "/label/", "drugsatfda", "/scripts/cder", "prescribing information",
+    "package insert", "structured product label", "anda ", "nda ", "approval package",
+    "label pdf", "/daf/", "drug label",
+]
+# An official RECALL/enforcement page (distinct from a label page).
+_RECALL_PAGE_MARKERS = [
+    "enforcement", "/safety/recalls", "recall", "ires/index.cfm", "/recalls/",
+]
+
+
+def _is_label_page(e: dict) -> bool:
+    text = _norm(e.get("url", "")) + " " + _norm(e.get("title", "")) + " " \
+        + _norm(e.get("english_summary", ""))
+    return any(m in text for m in _LABEL_PAGE_MARKERS)
+
+
+def _is_recall_page(e: dict) -> bool:
+    text = _norm(e.get("url", "")) + " " + _norm(e.get("title", ""))
+    # A recall page marker AND not obviously just a label page.
+    return any(m in text for m in _RECALL_PAGE_MARKERS) and not _is_label_page(e)
+
+
+def _distinctive_product_tokens(product: str) -> list[str]:
+    """Distinctive tokens from the product name (drop generic dosage words) so a
+    product match means the SAME product, not just any capsule/tablet."""
+    generic = {"capsules", "capsule", "tablets", "tablet", "usp", "mg", "ml",
+               "oral", "rx", "only", "per", "bottle", "solution", "injection",
+               "100", "50", "500", "the", "and", "of", "for"}
+    toks = [t for t in _norm(product).replace(",", " ").split()
+            if t not in generic and len(t) >= 4]
+    return toks
+
+
 def _match_fields(rf: dict, opp: dict, e: dict) -> set:
     """Which identifying fields of THIS recall does evidence item `e` match?"""
     text = _norm(e.get("title", "")) + " " + _norm(e.get("english_summary", "")) \
@@ -74,7 +109,10 @@ def _match_fields(rf: dict, opp: dict, e: dict) -> set:
         matched.add("recall_number")
     if firm and firm in text:
         matched.add("recalling_firm")
-    if product and (product[:30] in text):
+    # Product match requires the DISTINCTIVE product token(s), not a 30-char
+    # prefix (which would let "Nitrofurantoin Capsules" match any capsule).
+    prod_tokens = _distinctive_product_tokens(product)
+    if prod_tokens and all(t in text for t in prod_tokens[:2]):
         matched.add("product")
     if molecule and len(molecule) >= 4 and molecule in text:
         matched.add("molecule")
@@ -82,8 +120,8 @@ def _match_fields(rf: dict, opp: dict, e: dict) -> set:
         matched.add("problem_category")
     if ndc and len(ndc) >= 5 and ndc in text:
         matched.add("ndc")
-    # official recall/enforcement page for the drug
-    if any(d in text for d in ("accessdata.fda.gov", "fda.gov/safety/recalls")):
+    # An OFFICIAL RECALL page (enforcement/recall), NOT a label/SPL/ANDA page.
+    if _is_recall_page(e):
         matched.add("official_recall_page")
     return matched
 
@@ -104,15 +142,23 @@ def _is_regulatory_domain(e: dict) -> bool:
 
 
 def classify_corroboration(e: dict, opp: dict, rf: dict) -> dict:
-    """Classify one evidence item's relevance to THIS specific recall (req 1/2/7).
+    """Classify one evidence item's relevance to THIS specific recall.
 
-    Returns {class, matched_fields, accepted, reason}. Evidence classes:
-      direct_recall_evidence | same_product_firm | same_molecule_science |
-      same_firm_quality_history | formulation_science_background | reject
-    Only 'direct_recall_evidence' may support confirmed event/root-cause.
+    Evidence classes:
+      direct_recall_evidence        — the recall itself / same product+firm+problem
+                                       / explicit recall number; the ONLY class that
+                                       can support confirmed event/root-cause.
+      same_product_firm             — same product AND firm, different record.
+      same_firm_quality_history     — SAME FIRM, DIFFERENT product (context only).
+      regulatory_label_context      — FDA label/SPL/ANDA/approval page (context).
+      same_molecule_science         — same molecule, scientific/regulatory context.
+      formulation_science_background— general molecule/formulation literature.
+      reject                        — unrelated / low-quality.
     """
     matched = _match_fields(rf, opp, e)
     is_reg = _is_regulatory_domain(e)
+    is_label = _is_label_page(e)
+    is_recall_pg = _is_recall_page(e)
     causal_text = any(m in (_norm(e.get("title", "")) + " "
                             + _norm(e.get("english_summary", "")))
                       for m in _CAUSAL_SOURCE_MARKERS)
@@ -129,39 +175,58 @@ def classify_corroboration(e: dict, opp: dict, rf: dict) -> dict:
                 "matched_fields": sorted(matched), "accepted": False,
                 "reason": "drug indication / label / mechanism text — not recall-cause evidence"}
 
-    # Direct recall evidence: the strongest tier.
-    if ("recall_number" in matched) or (
-            {"product", "recalling_firm", "problem_category"} <= matched) or (
-            {"molecule", "recalling_firm", "problem_category"} <= matched):
-        cls = "direct_recall_evidence"
-        # only regulatory/official pages with explicit causal language can confirm cause
-        return {"class": cls, "matched_fields": sorted(matched), "accepted": True,
-                "causal_source": bool(is_reg and causal_text),
-                "reason": "matches this recall (number, or product+firm+problem)"}
+    # FDA label / SPL / ANDA / approval page = regulatory CONTEXT, never recall
+    # evidence, even though it lives on an FDA domain (issue 3).
+    if is_label and "recall_number" not in matched and not is_recall_pg:
+        return {"class": "regulatory_label_context", "matched_fields": sorted(matched),
+                "accepted": False, "causal_source": False,
+                "reason": "FDA label / SPL / ANDA / approval page — regulatory "
+                          "context only, not a recall or root-cause source"}
 
-    # Requirement: a source supports this recall only if it matches >=2 fields.
-    if len(matched) >= 2:
-        if {"product", "recalling_firm"} <= matched or {"molecule", "recalling_firm"} <= matched:
-            return {"class": "same_product_firm", "matched_fields": sorted(matched),
-                    "accepted": True,
-                    "reason": "same product/firm (supporting context, not the recall itself)"}
-        if "recalling_firm" in matched:
-            return {"class": "same_firm_quality_history", "matched_fields": sorted(matched),
-                    "accepted": True,
-                    "reason": "same firm, different product/context (quality history only)"}
-        if "molecule" in matched:
-            return {"class": "same_molecule_science", "matched_fields": sorted(matched),
-                    "accepted": True,
-                    "reason": "same molecule scientific context (not this specific recall)"}
+    # Direct recall evidence: strongest tier. Requires an explicit recall-number
+    # match, OR this exact product + firm + problem, OR an official RECALL page
+    # (not a label page) that names this product.
+    is_direct = (
+        ("recall_number" in matched)
+        or ({"product", "recalling_firm", "problem_category"} <= matched)
+        or ({"official_recall_page", "product"} <= matched))
+    if is_direct:
+        return {"class": "direct_recall_evidence", "matched_fields": sorted(matched),
+                "accepted": True,
+                "causal_source": bool(is_reg and is_recall_pg and causal_text
+                                      or (causal_text and "warning letter" in
+                                          _norm(e.get("title", "")))),
+                "reason": "matches this recall (recall number, or exact product+firm+problem, "
+                          "or official recall page naming this product)"}
 
-    # Molecule-only scientific literature = background, never recall support.
-    if "molecule" in matched and e.get("source_category") == "publication":
-        return {"class": "formulation_science_background", "matched_fields": sorted(matched),
-                "accepted": False,
-                "reason": "general molecule/formulation science — background context only"}
+    # Same product AND firm (different record) — supporting context, not the recall.
+    if {"product", "recalling_firm"} <= matched:
+        return {"class": "same_product_firm", "matched_fields": sorted(matched),
+                "accepted": True, "causal_source": False,
+                "reason": "same product and firm (supporting context, not this recall)"}
+
+    # SAME FIRM, DIFFERENT product (e.g. potassium/ranitidine/valsartan recalls
+    # by the same firm) — historical quality context ONLY. Never product-specific
+    # evidence, root cause, or a score lift (issue 1).
+    if "recalling_firm" in matched and "product" not in matched:
+        return {"class": "same_firm_quality_history", "matched_fields": sorted(matched),
+                "accepted": True, "causal_source": False,
+                "context_only": True,
+                "reason": "Same-firm quality history only; not evidence for this "
+                          "product or root cause"}
+
+    # Same molecule (not same product) — scientific/regulatory context only.
+    if "molecule" in matched:
+        cls = "same_molecule_science" if e.get("source_category") in (
+            "regulatory", "news") else "formulation_science_background"
+        return {"class": cls, "matched_fields": sorted(matched),
+                "accepted": False, "causal_source": False,
+                "reason": "same molecule scientific/regulatory context — not this "
+                          "specific recall or its root cause"}
 
     return {"class": "reject", "matched_fields": sorted(matched), "accepted": False,
-            "reason": "insufficient match to this recall (needs >=2 identifying fields)"}
+            "reason": "insufficient match to this recall (needs recall number, or "
+                      "product+firm, or official recall page naming this product)"}
 
 
 # --- Root-cause hypothesis sets per problem bucket -------------------------
@@ -570,6 +635,14 @@ def evidence_gaps(opp: dict) -> list[str]:
             have.add("inspection")
         if cat == "publication":
             have.add("publication")
+        # Track whether ANY general molecule/formulation science context exists
+        # (either retrieved literature, or the built-in molecule note).
+        if e.get("evidence_class") in ("same_molecule_science",
+                                       "formulation_science_background"):
+            have.add("molecule_science_context")
+    # The built-in molecule note also counts as general scientific context.
+    if molecule_note(opp):
+        have.add("molecule_science_context")
     gaps = []
     if "warning_letter" not in have:
         gaps.append("no FDA warning letter found")
@@ -577,7 +650,13 @@ def evidence_gaps(opp: dict) -> list[str]:
         gaps.append("no FDA inspection / Form 483 finding found")
     if "company" not in have:
         gaps.append("no company statement / press release found")
-    if "publication" not in have:
+    # Issue 2: don't say "no scientific literature" when we DO use molecule/
+    # dosage-form context. Distinguish general context from lot-specific linkage.
+    if "molecule_science_context" in have:
+        gaps.append("No source was found linking the scientific mechanism to this "
+                    "specific recalled lot. General molecule/formulation context "
+                    "was retrieved.")
+    else:
         gaps.append("no supporting scientific literature retrieved")
     if "trial" not in have:
         gaps.append("no related clinical-trial record found")
