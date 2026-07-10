@@ -899,25 +899,40 @@ def render_root_cause_section(opp: dict) -> str:
                          f"{('record ' + rid) if rid else ''}".strip()
             break
 
-    # Corroboration filtering debug (req 8): show accepted/rejected with reasons.
-    corro_dbg = opp.get("corroboration_debug") or []
-    if corro_dbg:
+    # User-facing corroboration check. Raw API/search failures remain available
+    # in developer/debug outputs, connector logs, and source_coverage/debug JSON;
+    # normal reports should show a clean evidence gap instead of HTTP/API rows.
+    raw_corro_dbg = opp.get("corroboration_debug") or []
+    hidden_api_rows = [
+        d for d in raw_corro_dbg
+        if (d.get("class") or "") in {"api_failed", "no_hits", "search_skipped"}
+    ]
+    user_corro_dbg = [
+        d for d in raw_corro_dbg
+        if (d.get("class") or "") not in {"api_failed", "no_hits", "search_skipped"}
+    ]
+    if user_corro_dbg:
         rows = "\n".join(
-            f"| {d['title'] or '—'} | {'✅ accepted' if d['accepted'] else '❌ rejected'} "
-            f"| {d['class']} | {', '.join(d['matched_fields']) or 'none'} | {d['reason']} |"
-            for d in corro_dbg[:20])
+            f"| {d.get('title') or '—'} | {'✅ accepted' if d.get('accepted') else '❌ rejected'} "
+            f"| {d.get('class') or '—'} | {', '.join(d.get('matched_fields') or []) or 'none'} | {d.get('reason') or '—'} |"
+            for d in user_corro_dbg[:20])
+        suffix = (
+            "\nRaw API/no-hit diagnostics were hidden from this report and kept in developer/debug outputs.\n"
+            if hidden_api_rows else ""
+        )
         corro_block = (
-            "\n### Corroboration Filtering Debug\n"
-            "Every corroboration hit and why it was accepted or rejected "
-            "(only *direct recall evidence* can support the confirmed event/cause):\n\n"
+            "\n### External Corroboration Check\n"
+            "Meaningful corroboration hits and rejected evidence are shown below. "
+            "Only *direct recall evidence* can support the confirmed event/cause; "
+            "context sources do not prove root cause.\n\n"
             "| Source | Verdict | Evidence class | Matched fields | Reason |\n"
-            "|---|---|---|---|---|\n" + rows + "\n")
+            "|---|---|---|---|---|\n" + rows + "\n" + suffix)
     else:
         corro_block = (
-            "\n### Corroboration Filtering Debug\n"
-            "No external corroboration was attached (either none was searched, "
-            "Tavily was disabled, or all hits were filtered out as irrelevant). "
-            "The confirmed event/reason rests on the openFDA recall record only.\n")
+            "\n### External Corroboration Check\n"
+            "No FDA warning letter, inspection finding, company statement, or supporting "
+            "literature was found in this run. The confirmed event/reason rests on the "
+            "direct regulatory record already cited above.\n")
 
     return f"""
 

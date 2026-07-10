@@ -271,13 +271,18 @@ with tab_gen:
 
         errors = [e for d in cov.values() for e in d.get("errors", [])]
         warnings = [w for d in cov.values() for w in d.get("warnings", [])]
-        if errors:
-            st.warning(f"{len(errors)} source failure(s) — shown so nothing is "
-                       "hidden:")
-            st.code("\n".join(errors[:30]))
-        if warnings:
-            st.info(f"{len(warnings)} source warning(s), including sanitised fallback queries if used:")
-            st.code("\n".join(warnings[:20]))
+        if errors or warnings:
+            st.caption(
+                "Some source/API diagnostics are available in developer/debug mode and debug exports. "
+                "Normal reports show evidence gaps rather than raw API error text."
+            )
+            with st.expander("Developer/debug: source/API diagnostics", expanded=False):
+                if errors:
+                    st.markdown(f"**Source failure details ({len(errors)}):**")
+                    st.code("\n".join(errors[:30]))
+                if warnings:
+                    st.markdown(f"**Source warnings ({len(warnings)}), including sanitised fallback queries if used:**")
+                    st.code("\n".join(warnings[:20]))
 
         with st.expander("🔍 Debug: candidate pipeline (raw evidence → reports)",
                          expanded=not accepted):
@@ -352,9 +357,9 @@ with tab_gen:
 with tab_matcher:
     st.subheader("Phase 1 — Opportunity Matcher")
     st.caption(
-        "Matched from existing evidence only — this is not a live worldwide search. "
-        "Run Generate first, then use this tab to match stored product/problem signals "
-        "to solution types, partner categories, or technology-target hypotheses."
+        "Matched against currently indexed PharmaTune evidence. Use Generate/Refresh to add new signals. "
+        "This tab matches stored product/problem signals to solution types, partner categories, "
+        "or technology-target hypotheses."
     )
     st.caption("Potential relevance only · Requires validation · Not proof that the company needs this technology.")
 
@@ -373,7 +378,7 @@ with tab_matcher:
             "to search the whole world when no stored evidence exists."
         )
     else:
-        st.success(f"{MATCH_SCOPE_LABEL}: {len(matcher_opps)} stored opportunity record(s) available.")
+        st.success(f"{len(matcher_opps)} indexed opportunity record(s) available for matching.")
         mode = st.radio(
             "Matcher mode",
             ["Problem → Solution Match", "Technology → Target Match"],

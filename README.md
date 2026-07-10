@@ -8,7 +8,7 @@ weak leads, and writes evidence-backed case studies (Markdown + HTML) plus expor
 Phase 1 also includes a small **Opportunity Matcher** that reuses already generated
 evidence to match product/problem signals to solution types, partner categories, and
 technology-target hypotheses. It is **matched from existing evidence only** — not a
-live worldwide search and not proof that a company needs a specific technology.
+live worldwide search; matches are potential relevance signals and not proof that a company needs a specific technology.
 
 Not a chatbot. No accounts, no billing. Runs on your laptop **or** as a private
 password-protected cloud dashboard (see `DEPLOY.md` for Render Free). **Milestone 1
@@ -210,7 +210,7 @@ BD workflow helpers in the matcher tab:
 Important discipline:
 
 - The matcher only uses stored opportunities/evidence from previous Generate runs.
-- It does not call new sources, LLMs, or live worldwide search.
+- It does not call new sources, LLMs, or live worldwide search; use Generate/Refresh to add new signals.
 - Results are labelled as **Direct match**, **Strong related match**,
   **Weak/background match**, or **Background dosage-form descriptor only**.
 - Default display shows Direct and Strong related matches only; descriptor-only and

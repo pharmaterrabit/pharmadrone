@@ -22,7 +22,7 @@ NO_MATCH_MESSAGE = (
 EMPTY_EVIDENCE_MESSAGE = (
     "Run Generate first to create evidence-backed opportunities, then use the matcher."
 )
-MATCH_SCOPE_LABEL = "Matched from existing evidence"
+MATCH_SCOPE_LABEL = "Matched against currently indexed PharmaTune evidence. Use Generate/Refresh to add new signals."
 TECH_CERTAINTY_NOTE = (
     "Potential relevance only — not proof that the company needs this technology. "
     "Requires validation before outreach."
@@ -1028,7 +1028,7 @@ def _tech_match_row(
         "product": opp.get("product") or opp.get("brand_name") or opp.get("generic_name") or "",
         "why_this_technology_may_fit": (
             f"{tech_rule['why_fit']} Current match strength: {best_strength}. "
-            f"Matched from existing evidence via: {'; '.join(reasons[:2])}."
+            f"Matched against indexed evidence via: {'; '.join(reasons[:2])}."
         ),
         "evidence_strength": _confidence(opp, best_strength),
         "confidence": _confidence(opp, best_strength),
