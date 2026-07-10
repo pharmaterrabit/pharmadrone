@@ -35,6 +35,33 @@ def _safe_status_from_summary(summary: dict[str, Any], web_attempted: bool, web_
     return "no corroboration found"
 
 
+def _strongest_evidence_tier(*values: Any) -> str:
+    """Choose the strongest non-empty evidence tier label.
+
+    Phase 3B can find no new official/context evidence while the indexed lead
+    already has Tier 1 regulatory event evidence. In that case the exported
+    best_evidence_tier should reflect the strongest available evidence, not the
+    Phase 3B track's "not checked" placeholder.
+    """
+    rank = {
+        "Tier 1 / high": 1,
+        "Tier 2 / moderate": 2,
+        "Tier 3 / limited": 3,
+        "Tier 4 / weak": 4,
+    }
+    best = "not checked"
+    best_rank = 999
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label == "not checked":
+            continue
+        r = rank.get(label, 999)
+        if r < best_rank:
+            best = label
+            best_rank = r
+    return best
+
+
 def _merge_unique_evidence(existing: list[dict[str, Any]], new_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = {str(e.get("url") or e.get("record_id") or e.get("title") or "") for e in existing}
     merged = list(existing)
@@ -131,7 +158,7 @@ def enrich_one_index_record(conn, row: dict[str, Any], *, run_id: str = "", use_
         "label_context_status": phase3b.get("label_context_status") or "not checked",
         "clinical_trial_context_status": phase3b.get("clinical_trial_context_status") or "not checked",
         "literature_context_status": phase3b.get("literature_context_status") or "not checked",
-        "best_evidence_tier": phase3b.get("best_evidence_tier") or summary.get("evidence_quality") or "not checked",
+        "best_evidence_tier": _strongest_evidence_tier(phase3b.get("best_evidence_tier"), summary.get("evidence_quality")),
         "official_source_count": phase3b.get("official_source_count") or 0,
         "literature_source_count": phase3b.get("literature_source_count") or 0,
         "data_json": json.dumps({

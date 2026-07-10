@@ -315,7 +315,9 @@ def fetch_index_records(conn, include_hidden: bool = False) -> list[dict]:
                   COALESCE(oe.label_context_status, 'not checked') AS label_context_status,
                   COALESCE(oe.clinical_trial_context_status, 'not checked') AS clinical_trial_context_status,
                   COALESCE(oe.literature_context_status, 'not checked') AS literature_context_status,
-                  COALESCE(oe.best_evidence_tier, 'not checked') AS best_evidence_tier,
+                  CASE WHEN COALESCE(oe.best_evidence_tier, 'not checked') IN ('', 'not checked')
+                       THEN COALESCE(oe.evidence_quality, 'not checked')
+                       ELSE oe.best_evidence_tier END AS best_evidence_tier,
                   COALESCE(oe.official_source_count, 0) AS official_source_count,
                   COALESCE(oe.literature_source_count, 0) AS literature_source_count
            FROM opportunity_index oi
@@ -469,7 +471,7 @@ def upsert_enrichment(conn, payload: dict) -> None:
             payload.get("label_context_status") or "not checked",
             payload.get("clinical_trial_context_status") or "not checked",
             payload.get("literature_context_status") or "not checked",
-            payload.get("best_evidence_tier") or payload.get("evidence_quality") or "not checked",
+            (payload.get("evidence_quality") if (payload.get("best_evidence_tier") in (None, "", "not checked")) else payload.get("best_evidence_tier")) or "not checked",
             _int_or_none(payload.get("official_source_count")) or 0,
             _int_or_none(payload.get("literature_source_count")) or 0,
             payload.get("data_json") or "{}", created_at, now,

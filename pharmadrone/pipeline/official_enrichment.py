@@ -78,9 +78,19 @@ def _is_fda_or_regulatory_lead(lead: dict[str, Any]) -> bool:
 
 
 def _is_trial_lead(lead: dict[str, Any]) -> bool:
+    """Return True only for explicit ClinicalTrials/NCT leads.
+
+    FDA recall/enforcement records can contain generic words such as
+    "trial" or connector/source-status metadata, which should not trigger a
+    ClinicalTrials.gov enrichment attempt. Deeper trial context is only valid
+    when the indexed record itself is a trial source or an NCT identifier is
+    present.
+    """
     terms = _primary_terms(lead)
-    blob = _text_blob(terms, lead)
-    return "clinicaltrials" in blob or "nct" in blob or "trial" in terms.get("source_type", "").lower()
+    source_type = _norm(terms.get("source_type"))
+    if "clinicaltrials" in source_type or source_type in {"trial", "clinical trial", "clinical trial registry"}:
+        return True
+    return bool(_nct_id(lead))
 
 
 def _nct_id(lead: dict[str, Any]) -> str:
