@@ -47,6 +47,28 @@ CREATE TABLE IF NOT EXISTS opportunity_run_summary (
 CREATE INDEX IF NOT EXISTS idx_opportunity_index_queue ON opportunity_index(queue_status, has_full_report, queue_rank);
 CREATE INDEX IF NOT EXISTS idx_opportunity_index_problem ON opportunity_index(problem_category);
 CREATE INDEX IF NOT EXISTS idx_opportunity_index_seen ON opportunity_index(last_checked_at, novelty_status);
+
+CREATE TABLE IF NOT EXISTS source_health_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT, stable_lead_id TEXT, source_name TEXT, source_type TEXT,
+    query TEXT, sanitized_query TEXT, status TEXT, failure_reason TEXT,
+    query_count INTEGER DEFAULT 1,
+    retrieved_count INTEGER DEFAULT 0, accepted_count INTEGER DEFAULT 0,
+    rejected_count INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS opportunity_enrichment (
+    stable_lead_id TEXT PRIMARY KEY,
+    last_enrichment_check TEXT, enrichment_status TEXT, corroboration_status TEXT,
+    evidence_quality TEXT, source_coverage_count INTEGER DEFAULT 0,
+    tier1_count INTEGER DEFAULT 0, tier2_count INTEGER DEFAULT 0,
+    tier3_count INTEGER DEFAULT 0, tier4_count INTEGER DEFAULT 0,
+    regulator_confirmed INTEGER DEFAULT 0, company_confirmed INTEGER DEFAULT 0,
+    literature_supported INTEGER DEFAULT 0, external_corroboration_found INTEGER DEFAULT 0,
+    data_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health_events(source_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_source_health_lead ON source_health_events(stable_lead_id, created_at);
 """
 
 
@@ -54,7 +76,20 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # Additive migrations for local MVP databases created by older ZIPs.
+    _ensure_column(conn, "source_health_events", "query_count", "INTEGER DEFAULT 1")
     return conn
+
+
+def _ensure_column(conn, table: str, column: str, spec: str) -> None:
+    try:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+            conn.commit()
+    except Exception:
+        # Do not block app startup on a non-critical additive migration.
+        pass
 
 
 def reset(db_path: Path) -> None:
@@ -239,9 +274,26 @@ def upsert_index_record(conn, record: dict) -> str:
 
 
 def fetch_index_records(conn, include_hidden: bool = False) -> list[dict]:
-    where = "" if include_hidden else "WHERE COALESCE(novelty_status,'') NOT IN ('archived','rejected / hidden') AND COALESCE(queue_status,'') NOT IN ('archived','rejected')"
+    where = "" if include_hidden else "WHERE COALESCE(oi.novelty_status,'') NOT IN ('archived','rejected / hidden') AND COALESCE(oi.queue_status,'') NOT IN ('archived','rejected')"
     rows = conn.execute(
-        f"SELECT * FROM opportunity_index {where} ORDER BY has_full_report DESC, COALESCE(queue_rank, 999999), last_checked_at DESC"
+        f"""SELECT oi.*,
+                  COALESCE(oe.enrichment_status, 'enrichment not checked') AS enrichment_status,
+                  COALESCE(oe.corroboration_status, 'direct source only') AS corroboration_status,
+                  COALESCE(oe.evidence_quality, 'not checked') AS evidence_quality,
+                  COALESCE(oe.source_coverage_count, 0) AS source_coverage_count,
+                  COALESCE(oe.last_enrichment_check, '') AS last_enrichment_check,
+                  COALESCE(oe.tier1_count, 0) AS tier1_count,
+                  COALESCE(oe.tier2_count, 0) AS tier2_count,
+                  COALESCE(oe.tier3_count, 0) AS tier3_count,
+                  COALESCE(oe.tier4_count, 0) AS tier4_count,
+                  COALESCE(oe.regulator_confirmed, 0) AS regulator_confirmed,
+                  COALESCE(oe.company_confirmed, 0) AS company_confirmed,
+                  COALESCE(oe.literature_supported, 0) AS literature_supported,
+                  COALESCE(oe.external_corroboration_found, 0) AS external_corroboration_found
+           FROM opportunity_index oi
+           LEFT JOIN opportunity_enrichment oe ON oe.stable_lead_id = oi.stable_lead_id
+           {where}
+           ORDER BY oi.has_full_report DESC, COALESCE(oi.queue_rank, 999999), oi.last_checked_at DESC"""
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -300,6 +352,114 @@ def save_run_summary(conn, summary: dict) -> None:
 def fetch_run_summaries(conn, limit: int = 10) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM opportunity_run_summary ORDER BY created_at DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Phase 3A source health / enrichment helpers --------------------------
+
+def save_source_health_event(conn, event: dict) -> None:
+    now = _now_iso()
+    conn.execute(
+        """INSERT INTO source_health_events
+        (run_id, stable_lead_id, source_name, source_type, query, sanitized_query,
+         status, failure_reason, query_count, retrieved_count, accepted_count, rejected_count, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            event.get("run_id") or "",
+            event.get("stable_lead_id") or "",
+            event.get("source_name") or "unknown source",
+            event.get("source_type") or "source",
+            event.get("query") or "",
+            event.get("sanitized_query") or "",
+            event.get("status") or "not checked",
+            event.get("failure_reason") or "",
+            _int_or_none(event.get("query_count")) or _int_or_none(event.get("queries")) or 1,
+            _int_or_none(event.get("retrieved_count")) or 0,
+            _int_or_none(event.get("accepted_count")) or 0,
+            _int_or_none(event.get("rejected_count")) or 0,
+            event.get("created_at") or now,
+        ),
+    )
+    conn.commit()
+
+
+def save_source_health_events(conn, events: list[dict]) -> None:
+    for event in events or []:
+        save_source_health_event(conn, event)
+
+
+def fetch_source_health_events(conn, limit: int = 250) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM source_health_events ORDER BY created_at DESC, id DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_source_health_summary(conn, limit: int = 500) -> list[dict]:
+    from .pipeline import source_health as _sh
+    return _sh.summarize_events(fetch_source_health_events(conn, limit=limit))
+
+
+def upsert_enrichment(conn, payload: dict) -> None:
+    now = _now_iso()
+    sid = payload.get("stable_lead_id")
+    if not sid:
+        return
+    existing = conn.execute(
+        "SELECT stable_lead_id, created_at FROM opportunity_enrichment WHERE stable_lead_id=?",
+        (sid,),
+    ).fetchone()
+    created_at = dict(existing).get("created_at") if existing else now
+    conn.execute(
+        """INSERT OR REPLACE INTO opportunity_enrichment
+        (stable_lead_id, last_enrichment_check, enrichment_status, corroboration_status,
+         evidence_quality, source_coverage_count, tier1_count, tier2_count, tier3_count,
+         tier4_count, regulator_confirmed, company_confirmed, literature_supported,
+         external_corroboration_found, data_json, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            sid, now, payload.get("enrichment_status") or "checked",
+            payload.get("corroboration_status") or "direct source only",
+            payload.get("evidence_quality") or "not checked",
+            _int_or_none(payload.get("source_coverage_count")) or 0,
+            _int_or_none(payload.get("tier1_count")) or 0,
+            _int_or_none(payload.get("tier2_count")) or 0,
+            _int_or_none(payload.get("tier3_count")) or 0,
+            _int_or_none(payload.get("tier4_count")) or 0,
+            int(bool(payload.get("regulator_confirmed"))),
+            int(bool(payload.get("company_confirmed"))),
+            int(bool(payload.get("literature_supported"))),
+            int(bool(payload.get("external_corroboration_found"))),
+            payload.get("data_json") or "{}", created_at, now,
+        ),
+    )
+    conn.commit()
+
+
+def fetch_enrichment_map(conn) -> dict[str, dict]:
+    rows = conn.execute("SELECT * FROM opportunity_enrichment").fetchall()
+    return {dict(r)["stable_lead_id"]: dict(r) for r in rows}
+
+
+def fetch_enrichment_candidates(conn, limit: int = 5) -> list[dict]:
+    rows = conn.execute(
+        """SELECT oi.*,
+                  COALESCE(oe.last_enrichment_check, '') AS last_enrichment_check,
+                  COALESCE(oe.enrichment_status, 'enrichment not checked') AS enrichment_status
+           FROM opportunity_index oi
+           LEFT JOIN opportunity_enrichment oe ON oe.stable_lead_id = oi.stable_lead_id
+           WHERE COALESCE(oi.novelty_status,'') NOT IN ('archived','rejected / hidden')
+             AND COALESCE(oi.queue_status,'') NOT IN ('archived','rejected')
+           ORDER BY
+             CASE WHEN COALESCE(oe.last_enrichment_check,'')='' THEN 0 ELSE 1 END,
+             oi.has_full_report DESC,
+             CASE WHEN oi.novelty_status IN ('new','updated') THEN 0 ELSE 1 END,
+             COALESCE(oi.score, 0) DESC,
+             COALESCE(oi.queue_rank, 999999)
+           LIMIT ?""",
         (int(limit),),
     ).fetchall()
     return [dict(r) for r in rows]

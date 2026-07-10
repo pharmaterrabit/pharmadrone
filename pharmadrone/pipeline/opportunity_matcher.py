@@ -493,6 +493,10 @@ def _parse_opp(row: dict[str, Any]) -> dict[str, Any]:
         "stable_lead_id", "first_seen_at", "last_seen_at", "last_updated_at",
         "last_checked_at", "novelty_status", "queue_status", "has_full_report",
         "report_path", "report_opportunity_id", "source_id", "lead_status",
+        "enrichment_status", "corroboration_status", "evidence_quality",
+        "source_coverage_count", "last_enrichment_check", "tier1_count", "tier2_count",
+        "tier3_count", "tier4_count", "regulator_confirmed", "company_confirmed",
+        "literature_supported", "external_corroboration_found",
     ):
         if key in row and row.get(key) not in (None, ""):
             merged[key] = row.get(key)
@@ -935,6 +939,15 @@ def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
         "report_path": opp.get("report_path") or "",
         "last_generated_date": _last_generated_date(opp),
         "stored_report_md": opp.get("report_md") or "",
+        "enrichment_status": opp.get("enrichment_status") or "enrichment not checked",
+        "corroboration_status": opp.get("corroboration_status") or "direct source only",
+        "evidence_quality": opp.get("evidence_quality") or "not checked",
+        "source_coverage_count": opp.get("source_coverage_count") or 0,
+        "last_enrichment_check": opp.get("last_enrichment_check") or "",
+        "tier1_count": opp.get("tier1_count") or 0,
+        "tier2_count": opp.get("tier2_count") or 0,
+        "tier3_count": opp.get("tier3_count") or 0,
+        "tier4_count": opp.get("tier4_count") or 0,
     }
 
 

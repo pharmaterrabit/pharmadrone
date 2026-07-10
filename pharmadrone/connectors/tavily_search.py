@@ -10,9 +10,9 @@ in Source Coverage.
 """
 from __future__ import annotations
 
-import re
 import httpx
 
+from ..pipeline.query_safety import sanitize_tavily_query
 from .base import record, ConnectorResult, describe_error, USER_AGENT
 from .. import settings
 
@@ -22,20 +22,7 @@ TIMEOUT_SECONDS = float(settings.env("TAVILY_TIMEOUT_SECONDS", "25") or "25")
 
 
 def _sanitize_query(query: str) -> str:
-    """Reduce search-engine syntax that Tavily may reject.
-
-    Examples:
-    - `site:fda.gov recall dissolution tablet` -> `fda.gov recall dissolution tablet`
-    - quoted firm/product strings -> unquoted strings
-    - `OR` operators / parentheses -> plain terms
-    """
-    q = str(query or "").strip()
-    q = re.sub(r"\bsite:\s*", "", q, flags=re.I)
-    q = q.replace('"', " ").replace("'", " ")
-    q = re.sub(r"[(){}\[\]]", " ", q)
-    q = re.sub(r"\bOR\b|\bAND\b", " ", q, flags=re.I)
-    q = re.sub(r"\s+", " ", q).strip()
-    return q[:220]
+    return sanitize_tavily_query(query, max_chars=220)
 
 
 def _post_tavily(payload: dict) -> dict:

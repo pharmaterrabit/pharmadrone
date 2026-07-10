@@ -26,7 +26,7 @@ import uuid
 from . import settings, db, export, llm
 from .cost import CostTracker
 from .pipeline import (queries, retrieve, extract, dedup, score, report,
-                       failure_signal, discover, event_discovery, opportunity_index)
+                       failure_signal, discover, event_discovery, opportunity_index, source_health)
 
 FALLBACK_MIN_TOTAL = 3
 FALLBACK_MAX_TOTAL = 5
@@ -432,6 +432,15 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         f"{idx_stats_final['updated_count']} updated since last indexing.")
 
     cov_summary = _coverage_summary(coverage, accepted)
+    try:
+        conn_sh = db.connect(settings.DB_PATH)
+        db.save_source_health_events(
+            conn_sh,
+            source_health.events_from_coverage(cov_summary, run_id=run_summary["run_id"]),
+        )
+        conn_sh.close()
+    except Exception as e:
+        debug["source_health_error"] = str(e)
     (settings.REPORTS_DIR / "source_coverage.json").write_text(
         json.dumps(cov_summary, ensure_ascii=False, indent=2), encoding="utf-8")
     (settings.REPORTS_DIR / "debug_report.json").write_text(
@@ -562,6 +571,15 @@ def continue_queue(n=5, progress=None, log=None):
         "accepted_leads_citing": len(accepted),
         "errors": [], "warnings": [],
     }}
+    try:
+        conn_sh = db.connect(settings.DB_PATH)
+        db.save_source_health_events(
+            conn_sh,
+            source_health.events_from_coverage(cov_summary, run_id=debug.get("run_id", "continue_queue")),
+        )
+        conn_sh.close()
+    except Exception as e:
+        debug["source_health_error"] = str(e)
     (settings.REPORTS_DIR / "debug_report.json").write_text(
         json.dumps(debug, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     (settings.REPORTS_DIR / "source_coverage.json").write_text(

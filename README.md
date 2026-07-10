@@ -303,3 +303,17 @@ What changed:
 MVP limitation: this uses local SQLite persistence, which is suitable for a
 private Streamlit prototype but not production SaaS persistence. On free hosted
 apps, disk may be ephemeral; download exports during the session.
+
+## Phase 3A — Source reliability and evidence enrichment
+
+Phase 3A adds a minimal, additive source reliability and enrichment layer. It does not add new global source expansion, accounts, billing, CRM, outreach automation, or an AI chat co-pilot.
+
+New local MVP capabilities:
+
+- `source_health_events` tracks source/API status for developer/debug review: available, failed, rate-limited, rejected, no results, or skipped.
+- `opportunity_enrichment` stores deterministic enrichment metadata for indexed opportunity records.
+- Evidence quality is labelled separately from the Opportunity Score using Tier 1–4 source quality.
+- Indexed leads can be enriched in a capped queue without rerunning discovery.
+- Normal user-facing reports continue to show clean evidence gaps rather than raw Tavily/API errors.
+
+SQLite remains acceptable for this local/Streamlit MVP. It should not be treated as production SaaS persistence.

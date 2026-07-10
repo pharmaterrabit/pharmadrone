@@ -422,7 +422,9 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
         "source_type", "source_id", "region", "first_seen_at", "last_seen_at",
         "last_updated_at", "last_checked_at", "score", "grade", "lead_status",
         "novelty_status", "queue_status", "queue_rank", "has_full_report",
-        "report_path", "source_freshness",
+        "report_path", "source_freshness", "enrichment_status", "corroboration_status",
+        "evidence_quality", "source_coverage_count", "last_enrichment_check",
+        "tier1_count", "tier2_count", "tier3_count", "tier4_count",
     ]
     with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)

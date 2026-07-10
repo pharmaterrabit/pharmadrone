@@ -1,0 +1,81 @@
+"""Source-specific query safety helpers for Phase 3A.
+
+These helpers are deterministic. They do not call APIs. They prepare safer,
+shorter queries for web enrichment and preserve the original query in source
+health logs so rejected API patterns can be audited in developer/debug mode.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+
+def normalise_query(text: Any) -> str:
+    q = str(text or "").strip()
+    q = q.replace("\n", " ")
+    q = re.sub(r"\s+", " ", q)
+    return q.strip()
+
+
+def sanitize_tavily_query(query: str, *, max_chars: int = 180) -> str:
+    """Remove search-engine syntax that Tavily may reject.
+
+    Tavily is useful for web enrichment but can reject some `site:` patterns and
+    long Boolean-heavy queries. This function keeps the meaning while stripping
+    unsupported syntax. It is intentionally conservative and deterministic.
+    """
+    q = normalise_query(query)
+    q = re.sub(r"\bsite:\s*", "", q, flags=re.I)
+    q = q.replace('"', " ").replace("'", " ")
+    q = re.sub(r"[(){}\[\]]", " ", q)
+    q = re.sub(r"\b(OR|AND|NOT)\b", " ", q, flags=re.I)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q[:max_chars].strip()
+
+
+def compact_terms(*values: Any, max_terms: int = 10, max_chars: int = 180) -> str:
+    terms: list[str] = []
+    for value in values:
+        for token in re.split(r"[|;,/]+", str(value or "")):
+            token = normalise_query(token)
+            if not token:
+                continue
+            if token.lower() not in {t.lower() for t in terms}:
+                terms.append(token)
+            if len(terms) >= max_terms:
+                break
+        if len(terms) >= max_terms:
+            break
+    return normalise_query(" ".join(terms))[:max_chars]
+
+
+def lead_web_enrichment_queries(lead: dict[str, Any], *, max_queries: int = 4) -> list[str]:
+    """Build a small set of safe web-enrichment queries for one indexed lead.
+
+    These queries enrich an existing lead. They do not discover new leads and do
+    not imply that corroboration exists unless retrieved evidence supports it.
+    """
+    company = normalise_query(lead.get("company"))
+    product = normalise_query(lead.get("product") or lead.get("molecule"))
+    molecule = normalise_query(lead.get("molecule"))
+    problem = normalise_query(lead.get("problem_category"))
+    source_id = normalise_query(lead.get("source_id"))
+
+    queries: list[str] = []
+    if source_id and source_id != "unknown-source":
+        queries.append(compact_terms(source_id, company, product, "recall", max_chars=150))
+    if company or product:
+        queries.append(compact_terms(company, product, problem, "official statement recall", max_chars=170))
+    if company:
+        queries.append(compact_terms(company, "FDA warning letter inspection finding", problem, max_chars=170))
+    if molecule or product:
+        queries.append(compact_terms(molecule or product, problem, "PubMed literature", max_chars=170))
+
+    out: list[str] = []
+    for q in queries:
+        q = sanitize_tavily_query(q)
+        if q and q.lower() not in {x.lower() for x in out}:
+            out.append(q)
+        if len(out) >= max_queries:
+            break
+    return out

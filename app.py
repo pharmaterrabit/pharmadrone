@@ -12,7 +12,7 @@ import streamlit as st
 from pharmadrone import settings, db, auth
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
-from pharmadrone.pipeline import opportunity_index
+from pharmadrone.pipeline import opportunity_index, enrichment
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -107,6 +107,11 @@ def _matcher_export_csv(result: dict, mode: str, search_term: str) -> bytes:
             "last updated": m.get("last_updated_at") or "",
             "source freshness": m.get("source_freshness") or "",
             "full report": "yes" if m.get("has_full_report") else "no",
+            "corroboration status": m.get("corroboration_status") or "",
+            "evidence quality": m.get("evidence_quality") or "",
+            "enrichment status": m.get("enrichment_status") or "",
+            "last enrichment check": m.get("last_enrichment_check") or "",
+            "source coverage count": m.get("source_coverage_count") or "",
             "safe BD action": m.get("safe_bd_action") or m.get("safe_outreach_angle") or "",
         })
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
@@ -125,6 +130,11 @@ def _matcher_table_rows(result: dict) -> list[dict]:
             "Source type": m.get("source_type") or m.get("evidence_source"),
             "Freshness": m.get("source_freshness") or "—",
             "Full report": "yes" if m.get("has_full_report") else "no",
+            "Corroboration": m.get("corroboration_status") or "direct source only",
+            "Evidence quality": m.get("evidence_quality") or "not checked",
+            "Enrichment": m.get("enrichment_status") or "enrichment not checked",
+            "Source coverage": m.get("source_coverage_count") or 0,
+            "Last enrichment": m.get("last_enrichment_check") or "—",
             "Last checked": m.get("last_checked_at") or "—",
             "Match reason": m.get("match_reason"),
         })
@@ -152,6 +162,12 @@ def _render_match_cards(result: dict, mode: str) -> None:
         fresh3.markdown(f"**Source freshness:** {m.get('source_freshness') or '—'}")
         if m.get('last_updated_at'):
             st.caption(f"Last updated: {m.get('last_updated_at')} · Novelty: {m.get('novelty_status') or '—'} · Queue: {m.get('queue_status') or '—'}")
+
+        enrich1, enrich2, enrich3 = st.columns(3)
+        enrich1.markdown(f"**Corroboration:** {m.get('corroboration_status') or 'direct source only'}")
+        enrich2.markdown(f"**Evidence quality:** {m.get('evidence_quality') or 'not checked'}")
+        enrich3.markdown(f"**Enrichment:** {m.get('enrichment_status') or 'enrichment not checked'}")
+        st.caption(f"Source coverage count: {m.get('source_coverage_count') or 0} · Last enrichment check: {m.get('last_enrichment_check') or '—'}")
 
         st.markdown(f"**Match reason:** {m.get('match_reason') or '—'}")
         if mode == "Problem → Solution Match":
@@ -635,10 +651,35 @@ with tab_results:
         show_cols = [c for c in [
             "stable_lead_id", "company", "product", "problem_category", "source_type",
             "source_id", "region", "score", "grade", "lead_status", "novelty_status",
-            "queue_status", "has_full_report", "first_seen_at", "last_checked_at", "last_updated_at"
+            "queue_status", "has_full_report", "corroboration_status", "evidence_quality",
+            "enrichment_status", "source_coverage_count", "last_enrichment_check",
+            "first_seen_at", "last_checked_at", "last_updated_at"
         ] if c in preview.columns]
         if show_cols:
             st.dataframe(preview[show_cols], use_container_width=True, hide_index=True)
+
+        st.markdown("#### Enrichment queue")
+        st.caption("Capped enrichment checks indexed leads only. It does not rerun discovery and does not change Opportunity Score.")
+        ecol1, ecol2 = st.columns([1, 3])
+        enrich_clicked = ecol1.button("Enrich indexed leads — next 5")
+        use_web_enrich = ecol2.checkbox(
+            "Use Tavily/web if available for enrichment",
+            value=True,
+            help="If Tavily is unavailable, enrichment still records evidence quality from indexed evidence only.",
+        )
+        if enrich_clicked:
+            with st.spinner("Enriching indexed leads…"):
+                conn_e = db.connect(settings.DB_PATH)
+                logs_e = []
+                result_e = enrichment.enrich_indexed_leads(
+                    conn_e, limit=5, use_web=use_web_enrich, log=lambda m: logs_e.append(m)
+                )
+                opportunity_index.export_index_csv(conn_e, settings.REPORTS_DIR)
+                conn_e.close()
+            st.success(result_e.get("message", "Enrichment completed."))
+            if logs_e:
+                with st.expander("Developer/debug: enrichment log", expanded=False):
+                    st.code("\n".join(logs_e[-30:]))
     else:
         st.caption("No indexed opportunity records yet.")
 
@@ -718,4 +759,21 @@ with tab_conn:
         ok = sum(1 for r in results if r["status"] == "OK")
         (st.success if ok == len(results) else st.warning)(
             f"{ok}/{len(results)} sources OK")
+    st.divider()
+    st.subheader("Source Health / API Reliability")
+    st.caption("Developer/debug view. Normal user reports show evidence gaps, not raw API errors.")
+    try:
+        conn_h = db.connect(settings.DB_PATH)
+        health_summary = db.fetch_source_health_summary(conn_h)
+        health_events = db.fetch_source_health_events(conn_h, limit=100)
+        conn_h.close()
+    except Exception:
+        health_summary, health_events = [], []
+    if health_summary:
+        st.dataframe(pd.DataFrame(health_summary), use_container_width=True, hide_index=True)
+        with st.expander("Raw source health events", expanded=False):
+            st.dataframe(pd.DataFrame(health_events), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No source health events recorded yet. Run Generate or Enrich indexed leads first.")
+
     st.caption("CLI equivalent:  python -m pharmadrone.test_connectors \"your query\". Tavily site: queries are retried once with a sanitised query if the API rejects search-engine operators.")
