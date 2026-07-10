@@ -880,17 +880,135 @@ def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalise_lead_status(value: Any) -> str | None:
+    """Return one of the user-facing lead status labels, if recognised."""
+    raw = _norm(value)
+    if not raw:
+        return None
+    if "outreach" in raw and "ready" in raw:
+        return "outreach-ready"
+    if "needs" in raw and "validation" in raw:
+        return "needs validation"
+    if "monitor" in raw:
+        return "monitor only"
+    if "low" in raw and ("priority" in raw or "archive" in raw):
+        return "low priority / archive"
+    return None
+
+
+def _stored_report_lead_status(opp: dict[str, Any]) -> str | None:
+    """Prefer the status already written in the stored full report.
+
+    The matcher card and the expandable report must not disagree.  Existing
+    reports expose this as, for example:
+    **Lead classification:** **Monitor only**
+    """
+    report = str(opp.get("report_md") or opp.get("stored_report_md") or "")
+    if not report:
+        return None
+    patterns = (
+        r"Lead classification:\s*\*\*([^*]+)\*\*",
+        r"Lead classification:\s*([^\n—-]+)",
+        r"Lead status:\s*\*\*([^*]+)\*\*",
+        r"Lead status:\s*([^\n—-]+)",
+    )
+    for pat in patterns:
+        m = re.search(pat, report, flags=re.I)
+        if m:
+            status = _normalise_lead_status(m.group(1))
+            if status:
+                return status
+    return None
+
+
+def _status_text_blob(opp: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in (
+        "status", "stage", "problem_signal", "problem_category", "event_reason",
+        "failure_event_summary", "confirmed_fact", "root_cause", "root_cause_summary",
+        "discovery_reason", "interpretation",
+    ):
+        if opp.get(key):
+            parts.append(_stringify(opp.get(key)))
+    for label, text in _labelled_recall_reason_fields(opp):
+        parts.append(f"{label}: {text}")
+    for e in opp.get("evidence", []) or []:
+        if not isinstance(e, dict):
+            continue
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        parts.extend(_stringify(x) for x in (
+            e.get("title"), e.get("supports"), e.get("english_summary"),
+            ent.get("event_type"), ent.get("event_reason"),
+            rf.get("status"), rf.get("classification"), rf.get("product_quantity"),
+            rf.get("distribution_pattern"), rf.get("reason_for_recall"),
+        ) if x)
+    return _norm(" ".join(parts))
+
+
+def _recall_status_meta(opp: dict[str, Any]) -> dict[str, bool]:
+    blob = _status_text_blob(opp)
+    terminated = any(x in blob for x in (
+        "terminated", "recall terminated", "completed", "status terminated"
+    ))
+    lot_specific = any(x in blob for x in (
+        "one lot", "single lot", "one batch", "single batch", "lot #",
+        "lot number", "lot numbers", " lot ", " lot:"
+    ))
+    old_or_scope_unclear = terminated or any(x in blob for x in (
+        "current relevance", "requires validation", "not established", "unclear",
+        "historical", "archive"
+    ))
+    root_confirmed = any(x in blob for x in (
+        "confirmed root cause", "root cause confirmed", "confirmed underlying root cause"
+    )) and "not publicly confirmed" not in blob
+    repeated_or_current = any(x in blob for x in (
+        "repeated", "recurring", "multiple lots", "multiple batches", "ongoing",
+        "active recall", "not terminated"
+    )) and not terminated
+    return {
+        "terminated": terminated,
+        "lot_specific": lot_specific,
+        "old_or_scope_unclear": old_or_scope_unclear,
+        "root_confirmed": root_confirmed,
+        "repeated_or_current": repeated_or_current,
+    }
+
+
 def _lead_status(opp: dict[str, Any], strength: str) -> str:
+    """Lead status used by matcher cards and CSV export.
+
+    Priority order:
+      1. use the lead classification already present in the stored report;
+      2. otherwise apply the same conservative recall-readiness logic;
+      3. only then fall back to score/grade heuristics.
+    """
+    report_status = _stored_report_lead_status(opp)
+    if report_status:
+        return report_status
+
+    meta = _recall_status_meta(opp)
+    if meta["terminated"] and meta["lot_specific"] and not meta["root_confirmed"]:
+        return "monitor only"
+    if strength in {MATCH_WEAK, MATCH_DESCRIPTOR_ONLY}:
+        return "monitor only"
+    if meta["old_or_scope_unclear"] and not meta["repeated_or_current"]:
+        return "needs validation"
+
     grade = str(opp.get("grade") or "").upper()
     confidence = _norm(opp.get("confidence") or "")
     ev_count = int(opp.get("evidence_count") or len(opp.get("evidence", [])) or 0)
     score = int(opp.get("score") or 0)
-    if strength == MATCH_DIRECT and ev_count >= 2 and grade in {"A", "B"} and confidence != "low":
+    if (
+        strength == MATCH_DIRECT
+        and meta["repeated_or_current"]
+        and ev_count >= 2
+        and grade in {"A", "B"}
+        and confidence != "low"
+    ):
         return "outreach-ready"
     if strength in {MATCH_DIRECT, MATCH_RELATED} and ev_count >= 1 and (grade in {"A", "B", "C"} or score >= 30):
         return "needs validation"
-    if strength in {MATCH_WEAK, MATCH_DESCRIPTOR_ONLY} and ev_count >= 1:
-        return "monitor only"
     return "low priority / archive"
 
 
