@@ -544,23 +544,23 @@ with tab_gen:
                         "Indexed leads": values.get("indexed_leads", 0),
                     })
                 st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
-                with st.expander("Candidate rejection reasons by source", expanded=False):
-                    rejection_rows = []
-                    for source_name, values in source_pipeline.items():
-                        for reason, count in (values.get("source_rejection_reasons") or {}).items():
-                            rejection_rows.append({
-                                "Source": source_name, "Stage": "source gate",
-                                "Reason": reason, "Count": count,
-                            })
-                        for reason, count in (values.get("candidate_rejection_reasons") or {}).items():
-                            rejection_rows.append({
-                                "Source": source_name, "Stage": "candidate construction",
-                                "Reason": reason, "Count": count,
-                            })
-                    if rejection_rows:
-                        st.dataframe(pd.DataFrame(rejection_rows), use_container_width=True, hide_index=True)
-                    else:
-                        st.caption("No candidate-construction rejections recorded for this run.")
+                st.markdown("#### Candidate rejection reasons by source")
+                rejection_rows = []
+                for source_name, values in source_pipeline.items():
+                    for reason, count in (values.get("source_rejection_reasons") or {}).items():
+                        rejection_rows.append({
+                            "Source": source_name, "Stage": "source gate",
+                            "Reason": reason, "Count": count,
+                        })
+                    for reason, count in (values.get("candidate_rejection_reasons") or {}).items():
+                        rejection_rows.append({
+                            "Source": source_name, "Stage": "candidate construction",
+                            "Reason": reason, "Count": count,
+                        })
+                if rejection_rows:
+                    st.dataframe(pd.DataFrame(rejection_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No candidate-construction rejections recorded for this run.")
 
             examples = disc.get('discarded_examples', [])
             if examples:
