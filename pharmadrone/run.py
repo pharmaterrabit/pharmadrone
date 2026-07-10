@@ -22,10 +22,11 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+import uuid
 from . import settings, db, export, llm
 from .cost import CostTracker
 from .pipeline import (queries, retrieve, extract, dedup, score, report,
-                       failure_signal, discover, event_discovery)
+                       failure_signal, discover, event_discovery, opportunity_index)
 
 FALLBACK_MIN_TOTAL = 3
 FALLBACK_MAX_TOTAL = 5
@@ -228,12 +229,29 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
             f"{fb_info['reason']}. No misleading reports generated.")
     debug["fallback_generated"] = len(fallback)
 
+    # --- Phase 2: index all valid deduplicated candidates before scoring -------
+    # The index is additive/read-only for the discovery pipeline: it stores lead
+    # previews and queue metadata without generating extra reports.
+    total_candidates = len(candidates)
+    ranked_all = sorted(candidates, key=discover.prerank_score, reverse=True)
+    try:
+        conn_index = db.connect(settings.DB_PATH)
+        opportunity_index.upsert_index_records(
+            conn_index, ranked_all, queue_status="waiting", has_full_report=False, starting_rank=1)
+        idx_stats = db.fetch_index_stats(conn_index)
+        conn_index.close()
+        debug["opportunity_index_stats_pre_report"] = idx_stats
+        say(f"Opportunity index: {idx_stats['indexed_total']} indexed opportunity record(s) · "
+            f"{idx_stats['waiting_queue']} waiting in queue before report generation.")
+    except Exception as e:
+        debug["opportunity_index_error"] = str(e)
+        say(f"  ⚠ opportunity index update skipped: {e}")
+
     # --- Pre-scoring cap: rank deterministically, keep only the strongest -----
     # This is the fix for the "spinning at Scoring on 104 candidates" hang. We
     # never send more than MAX_CANDIDATES_TO_SCORE candidates to scoring.
-    total_candidates = len(candidates)
     keep_n = min(MAX_CANDIDATES_TO_SCORE, max(n * 2, MAX_CANDIDATES_TO_SCORE))
-    kept, skipped = discover.prerank_and_cap(candidates, keep=keep_n)
+    kept, skipped = ranked_all[:keep_n], ranked_all[keep_n:]
     debug["candidates_discovered"] = debug.get("discovered_deterministic", 0)
     debug["candidates_total_pre_cap"] = total_candidates
     debug["candidates_kept_for_scoring"] = len(kept)
@@ -242,8 +260,8 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         f"after dedup+fallback: {total_candidates}")
     if skipped:
         say(f"Pre-scoring cap: ranked deterministically, keeping top {len(kept)} "
-            f"for scoring; {len(skipped)} lower-priority candidate(s) skipped "
-            "(not scored — prevents scoring 100+ items).")
+            f"for scoring; {len(skipped)} lower-priority candidate(s) stored in "
+            "the opportunity index queue (not scored — prevents scoring 100+ items).")
     else:
         say(f"Candidates kept for scoring: {len(kept)} (no cap needed).")
     candidates = kept
@@ -359,19 +377,59 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         if progress:
             progress(i + 1, len(accepted), f"report: {opp.get('company')}")
 
-    conn = db.connect(settings.DB_PATH)
+    # Stable IDs for generated opportunities keep report records aligned with
+    # the Phase 2 opportunity index while preserving the existing report flow.
     for opp in accepted:
-        db.save_opportunity(conn,
-            {**opp, "id": f"{opp.get('company','x')}-{opp.get('product','y')}"},
-            opp.get("evidence", []))
-    for r in rejected:
-        db.save_rejected(conn, r.get("company"), r.get("product"),
-                         r.get("reject_reason"), len(r.get("evidence", [])), r)
-    conn.close()
+        opp["stable_lead_id"] = opportunity_index.stable_lead_id(opp)
+        opp["id"] = opp["stable_lead_id"]
 
     index = export.write_reports(accepted, settings.REPORTS_DIR)
     export.write_datasets(accepted, rejected, settings.REPORTS_DIR)
     export.write_static_site(index, settings.REPORTS_DIR)
+
+    report_paths = {}
+    for opp, idx_row in zip(accepted, index):
+        if opp.get("stable_lead_id") and idx_row.get("file"):
+            report_paths[opp["stable_lead_id"]] = idx_row["file"]
+
+    conn = db.connect(settings.DB_PATH)
+    for opp in accepted:
+        db.save_opportunity(conn, opp, opp.get("evidence", []))
+    for r in rejected:
+        db.save_rejected(conn, r.get("company"), r.get("product"),
+                         r.get("reject_reason"), len(r.get("evidence", [])), r)
+    if accepted:
+        opportunity_index.upsert_index_records(
+            conn, accepted, queue_status="report_generated", has_full_report=True,
+            starting_rank=1, report_paths=report_paths)
+    if rejected:
+        opportunity_index.upsert_index_records(
+            conn, rejected, queue_status="rejected", has_full_report=False,
+            starting_rank=1)
+    idx_stats_final = db.fetch_index_stats(conn)
+    debug["opportunity_index_stats"] = idx_stats_final
+    run_summary = {
+        "run_id": str(uuid.uuid4()),
+        "started_at": opportunity_index.utc_now_iso(),
+        "mode": mode,
+        "indexed_total": idx_stats_final.get("indexed_total", 0),
+        "new_count": idx_stats_final.get("new_count", 0),
+        "updated_count": idx_stats_final.get("updated_count", 0),
+        "seen_count": idx_stats_final.get("seen_count", 0),
+        "reports_generated": len(accepted),
+        "waiting_count": idx_stats_final.get("waiting_queue", 0),
+        "monitor_only_count": idx_stats_final.get("monitor_only_count", 0),
+        "llm_mode": debug.get("llm_mode", "active or not needed"),
+        "web_enrichment_status": "unavailable" if debug.get("web_enrichment_unavailable") else "available or not needed",
+    }
+    db.save_run_summary(conn, run_summary)
+    opportunity_index.export_index_csv(conn, settings.REPORTS_DIR)
+    conn.close()
+
+    say(f"Opportunity index summary: {idx_stats_final['indexed_total']} indexed opportunity record(s) · "
+        f"{idx_stats_final['full_reports']} full report(s) · "
+        f"{idx_stats_final['waiting_queue']} waiting in queue · "
+        f"{idx_stats_final['updated_count']} updated since last indexing.")
 
     cov_summary = _coverage_summary(coverage, accepted)
     (settings.REPORTS_DIR / "source_coverage.json").write_text(
@@ -387,6 +445,130 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
             f" queries={s['queries']}{flag}")
     say(f"\nDone. Est. cost ${cost.total_usd} (${cost.per_report_usd}/report). "
         f"Output in ./reports")
+    return accepted, rejected, cost, cov_summary, debug
+
+
+def continue_queue(n=5, progress=None, log=None):
+    """Generate reports for the next waiting indexed opportunity records.
+
+    This does not run new discovery, Tavily, or LLM extraction. It only reads the
+    local Phase 2 opportunity_index queue and keeps the same server-side report
+    cap as Generate.
+    """
+    profile = settings.load_profile()
+    cost = CostTracker(profile.get("pricing_usd_per_million_tokens", {}))
+    say = log or (lambda m: None)
+    debug = {"continue_queue": True}
+
+    llm.reset_breaker(threshold=2)
+    hard_cap = int(settings.env("MAX_REPORTS_PER_RUN", "5") or "5")
+    if n > hard_cap:
+        say(f"Queue cap active: requested {n}, capped to {hard_cap}.")
+        n = hard_cap
+    n = min(int(n), MAX_CANDIDATES_TO_SCORE, hard_cap)
+
+    conn = db.connect(settings.DB_PATH)
+    opportunity_index.backfill_generated_opportunities(conn)
+    queued_rows = db.fetch_waiting_index_records(conn, limit=n)
+    conn.close()
+
+    if not queued_rows:
+        say("No waiting indexed opportunity records found. Run Generate/Refresh to add new signals.")
+        return [], [], cost, {}, {**debug, "queue_empty": True}
+
+    candidates = []
+    for row in queued_rows:
+        try:
+            cand = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            cand = {}
+        if not cand:
+            continue
+        cand.setdefault("stable_lead_id", row.get("stable_lead_id"))
+        cand.setdefault("company", row.get("company"))
+        cand.setdefault("product", row.get("product"))
+        cand.setdefault("problem_category", row.get("problem_category"))
+        candidates.append(cand)
+
+    say(f"Continue previous queue: selected {len(candidates)} waiting indexed lead(s) "
+        f"for report generation (cap {hard_cap}).")
+
+    min_ev = profile["output"].get("min_evidence_links", 2)
+    accepted, rejected, score_debug = score.score_and_filter(candidates, cost, min_ev)
+    debug["scoring"] = score_debug
+    debug["accepted_count"] = len(accepted)
+    debug["rejected_count"] = len(rejected)
+    if llm.BREAKER.tripped:
+        debug["llm_disabled_reason"] = llm.BREAKER.trip_reason
+        debug["llm_mode"] = "deterministic evidence mode"
+        say(f"  ℹ {llm.BREAKER.trip_reason}. LLM unavailable/rate-limited; deterministic evidence mode used for the rest.")
+
+    accepted = accepted[:n]
+    for i, opp in enumerate(accepted):
+        opp["report_type"] = "memo"
+        opp["stable_lead_id"] = opp.get("stable_lead_id") or opportunity_index.stable_lead_id(opp)
+        opp["id"] = opp["stable_lead_id"]
+        opp["report_md"] = report.write_report(opp, cost, opp["report_type"])
+        cost.reports_done += 1
+        if progress:
+            progress(i + 1, len(accepted), f"queue report: {opp.get('company')}")
+
+    index = export.write_reports(accepted, settings.REPORTS_DIR)
+    export.write_datasets(accepted, rejected, settings.REPORTS_DIR)
+    export.write_static_site(index, settings.REPORTS_DIR)
+
+    report_paths = {}
+    for opp, idx_row in zip(accepted, index):
+        if opp.get("stable_lead_id") and idx_row.get("file"):
+            report_paths[opp["stable_lead_id"]] = idx_row["file"]
+
+    conn = db.connect(settings.DB_PATH)
+    for opp in accepted:
+        db.save_opportunity(conn, opp, opp.get("evidence", []))
+    for r in rejected:
+        db.save_rejected(conn, r.get("company"), r.get("product"),
+                         r.get("reject_reason"), len(r.get("evidence", [])), r)
+    if accepted:
+        opportunity_index.upsert_index_records(
+            conn, accepted, queue_status="report_generated", has_full_report=True,
+            starting_rank=1, report_paths=report_paths)
+    if rejected:
+        opportunity_index.upsert_index_records(
+            conn, rejected, queue_status="rejected", has_full_report=False,
+            starting_rank=1)
+    idx_stats = db.fetch_index_stats(conn)
+    debug["opportunity_index_stats"] = idx_stats
+    db.save_run_summary(conn, {
+        "run_id": str(uuid.uuid4()),
+        "started_at": opportunity_index.utc_now_iso(),
+        "mode": "continue_queue",
+        "indexed_total": idx_stats.get("indexed_total", 0),
+        "new_count": idx_stats.get("new_count", 0),
+        "updated_count": idx_stats.get("updated_count", 0),
+        "seen_count": idx_stats.get("seen_count", 0),
+        "reports_generated": len(accepted),
+        "waiting_count": idx_stats.get("waiting_queue", 0),
+        "monitor_only_count": idx_stats.get("monitor_only_count", 0),
+        "llm_mode": debug.get("llm_mode", "active or not needed"),
+        "web_enrichment_status": "not used for continue queue",
+    })
+    opportunity_index.export_index_csv(conn, settings.REPORTS_DIR)
+    conn.close()
+
+    cov_summary = {"opportunity_index": {
+        "status": "local indexed evidence",
+        "queries": 0, "succeeded": 0, "failed": 0,
+        "evidence_items": len(candidates),
+        "accepted_leads_citing": len(accepted),
+        "errors": [], "warnings": [],
+    }}
+    (settings.REPORTS_DIR / "debug_report.json").write_text(
+        json.dumps(debug, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    (settings.REPORTS_DIR / "source_coverage.json").write_text(
+        json.dumps(cov_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    say(f"Queue done. Generated {len(accepted)} report(s); "
+        f"{idx_stats.get('waiting_queue', 0)} waiting indexed lead(s) remain.")
     return accepted, rejected, cost, cov_summary, debug
 
 

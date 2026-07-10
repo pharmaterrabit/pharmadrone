@@ -10,8 +10,9 @@ import pandas as pd
 import streamlit as st
 
 from pharmadrone import settings, db, auth
-from pharmadrone.run import generate
+from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
+from pharmadrone.pipeline import opportunity_index
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -45,6 +46,30 @@ def _zip_reports() -> bytes | None:
     return buf.getvalue()
 
 
+def _load_index_state(include_hidden: bool = False) -> tuple[list[dict], dict]:
+    try:
+        conn = db.connect(settings.DB_PATH)
+        opportunity_index.backfill_generated_opportunities(conn)
+        records = db.fetch_index_records(conn, include_hidden=include_hidden)
+        stats = db.fetch_index_stats(conn)
+        conn.close()
+        return records, stats
+    except Exception:
+        return [], {
+            "indexed_total": 0, "full_reports": 0, "waiting_queue": 0,
+            "new_count": 0, "updated_count": 0, "seen_count": 0,
+            "monitor_only_count": 0, "archived_hidden_count": 0,
+        }
+
+
+def _index_summary_text(stats: dict) -> str:
+    return (
+        f"{stats.get('indexed_total', 0)} indexed opportunity records · "
+        f"{stats.get('full_reports', 0)} full reports · "
+        f"{stats.get('waiting_queue', 0)} waiting in queue · "
+        f"{stats.get('updated_count', 0)} updated since last indexing"
+    )
+
 
 def _as_text(value) -> str:
     if value is None:
@@ -77,6 +102,11 @@ def _matcher_export_csv(result: dict, mode: str, search_term: str) -> bytes:
             "grade": m.get("grade") or "",
             "lead status": m.get("lead_status") or "",
             "source type": m.get("source_type") or m.get("evidence_source") or "",
+            "first found": m.get("first_seen_at") or "",
+            "last checked": m.get("last_checked_at") or "",
+            "last updated": m.get("last_updated_at") or "",
+            "source freshness": m.get("source_freshness") or "",
+            "full report": "yes" if m.get("has_full_report") else "no",
             "safe BD action": m.get("safe_bd_action") or m.get("safe_outreach_angle") or "",
         })
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
@@ -93,7 +123,9 @@ def _matcher_table_rows(result: dict) -> list[dict]:
             "Grade": m.get("grade"),
             "Lead status": m.get("lead_status"),
             "Source type": m.get("source_type") or m.get("evidence_source"),
-            "Last generated": m.get("last_generated_date") or "—",
+            "Freshness": m.get("source_freshness") or "—",
+            "Full report": "yes" if m.get("has_full_report") else "no",
+            "Last checked": m.get("last_checked_at") or "—",
             "Match reason": m.get("match_reason"),
         })
     return rows
@@ -112,7 +144,14 @@ def _render_match_cards(result: dict, mode: str) -> None:
         meta1, meta2, meta3 = st.columns(3)
         meta1.markdown(f"**Problem category:** {_as_text(m.get('matched_problem_category') or m.get('matched_problem_categories') or m.get('relevant_problem_categories')) or '—'}")
         meta2.markdown(f"**Source type:** {m.get('source_type') or m.get('evidence_source') or '—'}")
-        meta3.markdown(f"**Last generated:** {m.get('last_generated_date') or '—'}")
+        meta3.markdown(f"**Full report:** {'yes' if m.get('has_full_report') else 'no — indexed preview'}")
+
+        fresh1, fresh2, fresh3 = st.columns(3)
+        fresh1.markdown(f"**First found:** {m.get('first_seen_at') or '—'}")
+        fresh2.markdown(f"**Last checked:** {m.get('last_checked_at') or '—'}")
+        fresh3.markdown(f"**Source freshness:** {m.get('source_freshness') or '—'}")
+        if m.get('last_updated_at'):
+            st.caption(f"Last updated: {m.get('last_updated_at')} · Novelty: {m.get('novelty_status') or '—'} · Queue: {m.get('queue_status') or '—'}")
 
         st.markdown(f"**Match reason:** {m.get('match_reason') or '—'}")
         if mode == "Problem → Solution Match":
@@ -142,7 +181,7 @@ def _render_match_cards(result: dict, mode: str) -> None:
                 st.caption("Score note: matcher cards show the stored Opportunity Score used for ranking. The report may also include a separate Root-Cause/Solution-Fit overall score.")
                 st.markdown(report_md)
             else:
-                st.caption("No stored report body was found for this opportunity. Use the Results & Export tab if the report exists there.")
+                st.caption("Full report not generated yet. This is an indexed opportunity preview. Use Continue previous queue or Generate/Refresh to create full reports for selected/top leads.")
         st.divider()
 
 st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
@@ -201,6 +240,22 @@ with tab_gen:
                "terminations, withdrawals, CRLs, CMC/formulation/quality/delivery "
                "problems — see `FAILURE_SIGNAL_LAYER.md`.")
 
+    index_records_now, index_stats_now = _load_index_state(include_hidden=True)
+    if index_stats_now.get("indexed_total", 0):
+        st.info(_index_summary_text(index_stats_now))
+        qcols = st.columns(5)
+        qcols[0].metric("New leads", index_stats_now.get("new_count", 0))
+        qcols[1].metric("Updated leads", index_stats_now.get("updated_count", 0))
+        qcols[2].metric("Already seen", index_stats_now.get("seen_count", 0))
+        qcols[3].metric("Monitor only", index_stats_now.get("monitor_only_count", 0))
+        qcols[4].metric("Archived / hidden", index_stats_now.get("archived_hidden_count", 0))
+    continue_requested = False
+    if index_stats_now.get("waiting_queue", 0):
+        continue_requested = st.button(
+            f"Continue previous queue ({index_stats_now.get('waiting_queue', 0)} waiting)",
+            help="Generate reports from waiting indexed opportunity records only. No new source search is run.",
+        )
+
     if ALLOW_SCALE:
         st.info("Scale runs are unlocked (ALLOW_SCALE_RUNS is on).")
         b2, b3 = st.columns(2)
@@ -212,6 +267,33 @@ with tab_gen:
         st.caption("🔒 The 20 / 80 / 100 runs are hidden until you approve the "
                    "5-report test. Unlock later by setting `ALLOW_SCALE_RUNS=true` "
                    "in the host environment.")
+
+    if continue_requested:
+        prog = st.progress(0.0)
+        logbox = st.empty()
+        logs = []
+
+        def qlog(m):
+            logs.append(m)
+            logbox.code("\n".join(logs[-16:]))
+
+        with st.spinner("Continuing previous queue…"):
+            accepted, rejected, cost, cov, dbg = continue_queue(
+                5,
+                progress=lambda i, t, msg: prog.progress(min(1.0, i / max(t, 1))),
+                log=qlog,
+            )
+        st.success(f"Generated {len(accepted)} queued report(s) · {len(rejected)} rejected · "
+                   f"est. ${cost.total_usd} (${cost.per_report_usd}/report)")
+        if dbg.get("llm_disabled_reason"):
+            st.warning(
+                "LLM unavailable/rate-limited; deterministic evidence mode used. "
+                "Queued reports remain usable but require validation."
+            )
+        idx = dbg.get("opportunity_index_stats") or {}
+        if idx:
+            st.info(_index_summary_text(idx))
+        st.info("Open the ④ Results & Export tab to read reports and export files.")
 
     if run_mode:
         for r in profile["regions"]:
@@ -251,6 +333,10 @@ with tab_gen:
                 "Web enrichment unavailable for this run because Tavily/API failed. "
                 "The run continued using structured sources and deterministic evidence; web corroboration was not available."
             )
+
+        idx = dbg.get("opportunity_index_stats") or dbg.get("opportunity_index_stats_pre_report") or {}
+        if idx:
+            st.info(_index_summary_text(idx))
 
         if not accepted:
             st.error("0 reports generated. Open the Debug panel below — it shows "
@@ -355,7 +441,7 @@ with tab_gen:
 # TAB 2 — OPPORTUNITY MATCHER
 # ===========================================================================
 with tab_matcher:
-    st.subheader("Phase 1 — Opportunity Matcher")
+    st.subheader("Opportunity Matcher — indexed evidence")
     st.caption(
         "Matched against currently indexed PharmaTune evidence. Use Generate/Refresh to add new signals. "
         "This tab matches stored product/problem signals to solution types, partner categories, "
@@ -363,22 +449,22 @@ with tab_matcher:
     )
     st.caption("Potential relevance only · Requires validation · Not proof that the company needs this technology.")
 
-    try:
-        conn = db.connect(settings.DB_PATH)
-        matcher_opps = db.fetch_all(conn, "opportunities")
-        matcher_ev = db.fetch_all(conn, "evidence")
-        conn.close()
-    except Exception:
-        matcher_opps, matcher_ev = [], []
+    matcher_opps, matcher_stats = _load_index_state(include_hidden=False)
+    matcher_ev = []
 
     if not matcher_opps:
         st.info("Run Generate first to create evidence-backed opportunities, then use the matcher.")
         st.caption(
-            "The matcher is intentionally read-only. It will not invent leads or pretend "
-            "to search the whole world when no stored evidence exists."
+            "The matcher is intentionally read-only. It searches indexed PharmaTune evidence only, "
+            "and will not invent leads or pretend to search the whole world when no stored evidence exists."
         )
     else:
-        st.success(f"{len(matcher_opps)} indexed opportunity record(s) available for matching.")
+        st.success(_index_summary_text(matcher_stats))
+        mcols = st.columns(4)
+        mcols[0].metric("New", matcher_stats.get("new_count", 0))
+        mcols[1].metric("Updated", matcher_stats.get("updated_count", 0))
+        mcols[2].metric("Waiting", matcher_stats.get("waiting_queue", 0))
+        mcols[3].metric("Monitor only", matcher_stats.get("monitor_only_count", 0))
         mode = st.radio(
             "Matcher mode",
             ["Problem → Solution Match", "Technology → Target Match"],
@@ -529,13 +615,33 @@ with tab_results:
     st.subheader("Generated opportunities")
     try:
         conn = db.connect(settings.DB_PATH)
+        opportunity_index.backfill_generated_opportunities(conn)
         opps = db.fetch_all(conn, "opportunities")
         ev = db.fetch_all(conn, "evidence")
         rej = db.fetch_all(conn, "rejected")
+        idx_records = db.fetch_index_records(conn, include_hidden=True)
+        idx_stats = db.fetch_index_stats(conn)
         conn.close()
     except Exception:
-        opps, ev, rej = [], [], []
+        opps, ev, rej, idx_records, idx_stats = [], [], [], [], {}
 
+    st.markdown("### Opportunity index")
+    if idx_stats.get("indexed_total", 0):
+        st.info(_index_summary_text(idx_stats))
+        st.caption("SQLite persistence is suitable for this local/Streamlit MVP, but it is not production SaaS persistence.")
+        preview = pd.DataFrame(idx_records)
+        show_cols = [c for c in [
+            "stable_lead_id", "company", "product", "problem_category", "source_type",
+            "source_id", "region", "score", "grade", "lead_status", "novelty_status",
+            "queue_status", "has_full_report", "first_seen_at", "last_checked_at", "last_updated_at"
+        ] if c in preview.columns]
+        if show_cols:
+            st.dataframe(preview[show_cols], use_container_width=True, hide_index=True)
+    else:
+        st.caption("No indexed opportunity records yet.")
+
+    st.divider()
+    st.markdown("### Generated full reports")
     if opps:
         st.dataframe(pd.DataFrame(opps)[
             ["company", "product", "region", "problem_signal", "grade",
@@ -578,11 +684,12 @@ with tab_results:
     if zbytes:
         st.download_button("⬇ Download all outputs (.zip)", zbytes,
                            file_name="pharmadrone_reports.zip", type="primary")
-        colx, coly, colz = st.columns(3)
+        colx, coly, colz, coli = st.columns(4)
         for col, fname, label in (
             (colx, "opportunities.csv", "opportunities.csv"),
             (coly, "evidence.json", "evidence.json"),
-            (colz, "rejected_leads.csv", "rejected_leads.csv")):
+            (colz, "rejected_leads.csv", "rejected_leads.csv"),
+            (coli, "opportunity_index.csv", "opportunity_index.csv")):
             fpath = settings.REPORTS_DIR / fname
             if fpath.exists():
                 col.download_button(label, fpath.read_bytes(), file_name=fname)

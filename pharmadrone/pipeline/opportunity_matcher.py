@@ -485,7 +485,18 @@ def _parse_opp(row: dict[str, Any]) -> dict[str, Any]:
             data = json.loads(raw)
         except Exception:
             data = {}
-    return {**row, **data}
+    merged = {**row, **data}
+    # Phase 2 opportunity_index metadata must survive even if data_json was
+    # created before those fields existed. These fields drive freshness and queue
+    # display; they do not change matching strictness.
+    for key in (
+        "stable_lead_id", "first_seen_at", "last_seen_at", "last_updated_at",
+        "last_checked_at", "novelty_status", "queue_status", "has_full_report",
+        "report_path", "report_opportunity_id", "source_id", "lead_status",
+    ):
+        if key in row and row.get(key) not in (None, ""):
+            merged[key] = row.get(key)
+    return merged
 
 
 def prepare_existing_opportunities(
@@ -843,7 +854,21 @@ def _display_title(opp: dict[str, Any]) -> str:
 
 
 def _last_generated_date(opp: dict[str, Any]) -> str:
-    return str(opp.get("created_at") or opp.get("date_generated") or opp.get("generated_at") or "")
+    if int(opp.get("has_full_report") or 0):
+        return str(opp.get("created_at") or opp.get("date_generated") or opp.get("generated_at") or opp.get("last_updated_at") or "")
+    return ""
+
+
+def _source_freshness(opp: dict[str, Any]) -> str:
+    lead_status = _norm(opp.get("lead_status") or "")
+    novelty = _norm(opp.get("novelty_status") or "")
+    if "monitor" in lead_status:
+        return "monitor only"
+    if novelty == "updated":
+        return "updated"
+    if novelty == "new":
+        return "current"
+    return "current" if opp.get("last_checked_at") else "stale"
 
 
 def _confirmed_fact(opp: dict[str, Any]) -> str:
@@ -869,12 +894,24 @@ def _target_label(opp: dict[str, Any]) -> str:
 
 def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
     evidence = opp.get("evidence", []) or []
+    has_full_report = int(opp.get("has_full_report") or (1 if opp.get("report_md") else 0) or 0)
     return {
-        "opportunity_id": opp.get("id") or "",
+        "opportunity_id": opp.get("stable_lead_id") or opp.get("id") or "",
+        "stable_lead_id": opp.get("stable_lead_id") or opp.get("id") or "",
         "short_product": _short_product_name(opp),
         "display_title": _display_title(opp),
         "long_product_description": _long_product_description(opp),
-        "source_type": _source_type_label(evidence),
+        "source_type": opp.get("source_type") or _source_type_label(evidence),
+        "source_id": opp.get("source_id") or "",
+        "first_seen_at": opp.get("first_seen_at") or "",
+        "last_seen_at": opp.get("last_seen_at") or "",
+        "last_checked_at": opp.get("last_checked_at") or "",
+        "last_updated_at": opp.get("last_updated_at") or "",
+        "source_freshness": _source_freshness(opp),
+        "novelty_status": opp.get("novelty_status") or "",
+        "queue_status": opp.get("queue_status") or "",
+        "has_full_report": bool(has_full_report),
+        "report_path": opp.get("report_path") or "",
         "last_generated_date": _last_generated_date(opp),
         "stored_report_md": opp.get("report_md") or "",
     }
@@ -986,6 +1023,9 @@ def _lead_status(opp: dict[str, Any], strength: str) -> str:
     report_status = _stored_report_lead_status(opp)
     if report_status:
         return report_status
+    explicit_status = _normalise_lead_status(opp.get("lead_status"))
+    if explicit_status:
+        return explicit_status
 
     meta = _recall_status_meta(opp)
     if meta["terminated"] and meta["lot_specific"] and not meta["root_confirmed"]:

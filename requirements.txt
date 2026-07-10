@@ -1,8 +1,16 @@
-streamlit>=1.36
-httpx>=0.27
-pandas>=2.2
-python-dotenv>=1.0
-PyYAML>=6.0
-jinja2>=3.1
-tenacity>=8.4
-markdown>=3.6
+# Deployment-stable dependency set for Streamlit Cloud / Render.
+# Python target: 3.12.x (see .python-version and render.yaml).
+# Pins intentionally avoid unbounded latest numpy/pandas/pyarrow/streamlit wheels,
+# which can cause native runtime instability on hosted Linux images.
+streamlit==1.40.2
+pandas==2.2.3
+numpy==1.26.4; python_version < "3.13"
+numpy==2.2.6; python_version >= "3.13"
+pyarrow==17.0.0; python_version < "3.13"
+pyarrow==20.0.0; python_version >= "3.13"
+httpx==0.27.2
+python-dotenv==1.0.1
+PyYAML==6.0.2
+jinja2==3.1.4
+tenacity==8.5.0
+markdown==3.6

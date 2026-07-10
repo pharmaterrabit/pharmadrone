@@ -45,4 +45,4 @@ services:
       - key: ALLOW_SCALE_RUNS      # keep false until the 5-report test is approved
         value: "false"
       - key: PYTHON_VERSION
-        value: "3.11.9"
+        value: "3.12.13"

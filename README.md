@@ -7,8 +7,7 @@ weak leads, and writes evidence-backed case studies (Markdown + HTML) plus expor
 
 Phase 1 also includes a small **Opportunity Matcher** that reuses already generated
 evidence to match product/problem signals to solution types, partner categories, and
-technology-target hypotheses. It is **matched from existing evidence only** — not a
-live worldwide search; matches are potential relevance signals and not proof that a company needs a specific technology.
+technology-target hypotheses. It is **matched against currently indexed PharmaTune evidence**; use Generate/Refresh to add new signals. Matches are potential relevance signals and not proof that a company needs a specific technology.
 
 Not a chatbot. No accounts, no billing. Runs on your laptop **or** as a private
 password-protected cloud dashboard (see `DEPLOY.md` for Render Free). **Milestone 1
@@ -18,7 +17,7 @@ is just 5 real test reports** — you review those before generating any more.
 
 ## Run it on your laptop (step by step)
 
-You need **Python 3.10+**. Check with `python --version` (or `python3 --version`).
+Use **Python 3.12.x** for deployment stability. The repo pins `.python-version` to `3.12.13`, and the package stack is pinned in `requirements.txt` to avoid unbounded hosted-runtime upgrades. Check locally with `python --version` (or `python3 --version`).
 
 **1. Open a terminal in the project folder**
 
@@ -277,3 +276,30 @@ reports/                        generated output (created on first run)
 - Source Coverage now distinguishes **available**, **no hits found**, **search skipped**, **API failed / unavailable**, and **partial — some API failures**.
 - Root-cause corroboration debug now separates API failures, no-hit searches, retrieved-but-rejected hits, and attached corroboration sources.
 - Matcher cards show the stored **Opportunity Score** used for app ranking. Report sections may separately show a **Root-Cause/Solution-Fit overall** score.
+
+## Phase 2 — opportunity index and novelty queue
+
+Phase 2 adds a lightweight local **opportunity index** so PharmaTune can remember
+which evidence-backed opportunity signals have already been found.
+
+What changed:
+
+- Each indexed opportunity record gets a stable lead ID generated from company,
+  product/molecule, problem category, source type, source ID, and region.
+- The local SQLite store now includes `opportunity_index` and
+  `opportunity_run_summary` tables.
+- Valid deduplicated candidates are indexed even when only the top few reports
+  are generated.
+- Candidates skipped by the pre-scoring cap are stored as a waiting queue.
+- Repeated leads are not duplicated; `last_seen_at`, `last_checked_at`, evidence
+  hash, score, grade, and lead status are compared for update detection.
+- Results and matcher cards show first found, last checked, last updated,
+  source freshness, novelty status, queue status, and whether a full report is
+  available.
+- Opportunity Matcher searches the indexed PharmaTune evidence, not only the
+  current run's generated reports.
+- `opportunity_index.csv` is exported with the normal report files.
+
+MVP limitation: this uses local SQLite persistence, which is suitable for a
+private Streamlit prototype but not production SaaS persistence. On free hosted
+apps, disk may be ephemeral; download exports during the session.

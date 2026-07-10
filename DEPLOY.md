@@ -30,6 +30,10 @@ keys and no secrets get pushed**. (Double-check: `git status` should not list `.
 
 ## Part 2 — Deploy
 
+## Runtime stability note
+
+This build targets **Python 3.12.13** and pins Streamlit, pandas, numpy and pyarrow in `requirements.txt`. This avoids accidental upgrades to latest native wheels on Streamlit Cloud/Render, which can produce hard runtime crashes such as segmentation faults rather than normal Python tracebacks.
+
 Two supported paths. Both read the same code; only where secrets live differs.
 
 ### Option A — Render Free (env vars)
@@ -47,7 +51,7 @@ Two supported paths. Both read the same code; only where secrets live differs.
      **blank** unless you switch `LLM_PROVIDER` to one of them.
    (The non-secret ones — `LLM_PROVIDER=openrouter`,
    `LLM_MODEL=...:free`, `MAX_REPORTS_PER_RUN=5`, `ALLOW_SCALE_RUNS=false`,
-   `PYTHON_VERSION` — are already filled from the blueprint.)
+   `PYTHON_VERSION=3.12.13` — are already filled from the blueprint.)
 5. Click **Apply** / **Create**. First build takes a few minutes.
 6. When it's live, Render shows a URL like `https://pharmadrone.onrender.com`.
    Open it → password screen → enter your `APP_PASSWORD`.
@@ -67,8 +71,7 @@ as a fallback, so this works with no code changes.
 4. Streamlit rebuilds automatically. Open the app's `*.streamlit.app` URL →
    password screen → enter your `APP_PASSWORD`.
 
-`requirements.txt` and `.python-version` are already set up for this — no extra
-config file is needed for Streamlit Cloud itself.
+`requirements.txt` and `.python-version` are pinned for a stable Python 3.12 deployment. In Streamlit Cloud, select Python 3.12 in Advanced settings if shown, then deploy with the pinned `requirements.txt`.
 
 Whichever you pick, the app behaves identically: same password gate, same 5-report
 cap, same hidden scale buttons.
@@ -151,3 +154,11 @@ the same env vars, start command
 - [x] `.env` / secrets git-ignored
 - [x] Password compared in Python on the server — not exposed to frontend JS
 - [x] Run capped at 5 per click; scale buttons hidden
+
+## Phase 2 persistence note
+
+Phase 2 stores indexed PharmaTune evidence and queue state in local SQLite
+(`pharmadrone.db`). This is acceptable for the MVP/local Streamlit workflow, but
+it is not durable production SaaS persistence on free hosted tiers where disk can
+be wiped on restart or redeploy. Download `opportunity_index.csv` and the reports
+ZIP during the session if you need to retain outputs.
