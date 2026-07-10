@@ -277,7 +277,7 @@ def fetch_index_records(conn, include_hidden: bool = False) -> list[dict]:
     where = "" if include_hidden else "WHERE COALESCE(oi.novelty_status,'') NOT IN ('archived','rejected / hidden') AND COALESCE(oi.queue_status,'') NOT IN ('archived','rejected')"
     rows = conn.execute(
         f"""SELECT oi.*,
-                  COALESCE(oe.enrichment_status, 'enrichment not checked') AS enrichment_status,
+                  CASE WHEN oe.enrichment_status='source unavailable' THEN 'external enrichment unavailable' ELSE COALESCE(oe.enrichment_status, 'enrichment not checked') END AS enrichment_status,
                   COALESCE(oe.corroboration_status, 'direct source only') AS corroboration_status,
                   COALESCE(oe.evidence_quality, 'not checked') AS evidence_quality,
                   COALESCE(oe.source_coverage_count, 0) AS source_coverage_count,
@@ -448,7 +448,7 @@ def fetch_enrichment_candidates(conn, limit: int = 5) -> list[dict]:
     rows = conn.execute(
         """SELECT oi.*,
                   COALESCE(oe.last_enrichment_check, '') AS last_enrichment_check,
-                  COALESCE(oe.enrichment_status, 'enrichment not checked') AS enrichment_status
+                  CASE WHEN oe.enrichment_status='source unavailable' THEN 'external enrichment unavailable' ELSE COALESCE(oe.enrichment_status, 'enrichment not checked') END AS enrichment_status
            FROM opportunity_index oi
            LEFT JOIN opportunity_enrichment oe ON oe.stable_lead_id = oi.stable_lead_id
            WHERE COALESCE(oi.novelty_status,'') NOT IN ('archived','rejected / hidden')

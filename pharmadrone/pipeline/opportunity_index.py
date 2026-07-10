@@ -433,6 +433,8 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
             row = {k: rec.get(k, "") for k in fields}
             row["problem_category"] = clean_problem_category(row.get("problem_category")) or row.get("problem_category", "")
             row["source_freshness"] = source_freshness(rec)
+            if row.get("enrichment_status") == "source unavailable":
+                row["enrichment_status"] = "external enrichment unavailable"
             writer.writerow(row)
     return out
 

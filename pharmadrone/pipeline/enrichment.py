@@ -29,7 +29,7 @@ def _lead_evidence(lead: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _safe_status_from_summary(summary: dict[str, Any], web_attempted: bool, web_available: bool) -> str:
     if not web_available and web_attempted:
-        return "source unavailable"
+        return "external enrichment unavailable"
     if summary.get("source_coverage_count", 0) > 0:
         return "checked"
     return "no corroboration found"
@@ -96,7 +96,7 @@ def enrich_one_index_record(conn, row: dict[str, Any], *, run_id: str = "", use_
     if web_attempted and new_web_evidence and summary.get("source_coverage_count", 0) > len(evidence):
         enrichment_status = "partial" if not web_available else "checked"
     if not new_web_evidence and web_attempted and not web_available and not evidence:
-        summary["corroboration_status"] = "source unavailable"
+        summary["corroboration_status"] = "no corroboration found"
     elif not new_web_evidence and web_attempted and not web_available:
         # Keep direct regulatory evidence visible without hiding the source issue.
         summary["corroboration_status"] = summary.get("corroboration_status") or "direct source only"
