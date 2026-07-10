@@ -112,6 +112,14 @@ def _matcher_export_csv(result: dict, mode: str, search_term: str) -> bytes:
             "enrichment status": m.get("enrichment_status") or "",
             "last enrichment check": m.get("last_enrichment_check") or "",
             "source coverage count": m.get("source_coverage_count") or "",
+            "official follow-up status": m.get("official_followup_status") or "",
+            "official follow-up count": m.get("official_followup_count") or "",
+            "label context status": m.get("label_context_status") or "",
+            "clinical trial context status": m.get("clinical_trial_context_status") or "",
+            "literature context status": m.get("literature_context_status") or "",
+            "best evidence tier": m.get("best_evidence_tier") or "",
+            "official source count": m.get("official_source_count") or "",
+            "literature source count": m.get("literature_source_count") or "",
             "safe BD action": m.get("safe_bd_action") or m.get("safe_outreach_angle") or "",
         })
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
@@ -133,6 +141,11 @@ def _matcher_table_rows(result: dict) -> list[dict]:
             "Corroboration": m.get("corroboration_status") or "direct source only",
             "Evidence quality": m.get("evidence_quality") or "not checked",
             "Enrichment": m.get("enrichment_status") or "enrichment not checked",
+            "Official follow-up": m.get("official_followup_status") or "not checked",
+            "Label context": m.get("label_context_status") or "not checked",
+            "Trial context": m.get("clinical_trial_context_status") or "not checked",
+            "Literature context": m.get("literature_context_status") or "not checked",
+            "Best evidence tier": m.get("best_evidence_tier") or m.get("evidence_quality") or "not checked",
             "Source coverage": m.get("source_coverage_count") or 0,
             "Last enrichment": m.get("last_enrichment_check") or "—",
             "Last checked": m.get("last_checked_at") or "—",
@@ -168,6 +181,15 @@ def _render_match_cards(result: dict, mode: str) -> None:
         enrich2.markdown(f"**Evidence quality:** {m.get('evidence_quality') or 'not checked'}")
         enrich3.markdown(f"**Enrichment:** {m.get('enrichment_status') or 'enrichment not checked'}")
         st.caption(f"Source coverage count: {m.get('source_coverage_count') or 0} · Last enrichment check: {m.get('last_enrichment_check') or '—'}")
+        context_bits = [
+            m.get('official_followup_status'),
+            m.get('label_context_status'),
+            m.get('clinical_trial_context_status'),
+            m.get('literature_context_status'),
+        ]
+        context_bits = [str(x) for x in context_bits if x and str(x) not in {'not checked', 'skipped — not trial lead', 'skipped — no product/molecule', 'skipped — not FDA/regulatory lead'}]
+        context_bits.append('no product-specific root cause confirmed')
+        st.caption(' · '.join(context_bits))
 
         st.markdown(f"**Match reason:** {m.get('match_reason') or '—'}")
         if mode == "Problem → Solution Match":
@@ -653,13 +675,15 @@ with tab_results:
             "source_id", "region", "score", "grade", "lead_status", "novelty_status",
             "queue_status", "has_full_report", "corroboration_status", "evidence_quality",
             "enrichment_status", "source_coverage_count", "last_enrichment_check",
-            "first_seen_at", "last_checked_at", "last_updated_at"
+            "official_followup_status", "label_context_status", "clinical_trial_context_status",
+            "literature_context_status", "best_evidence_tier", "official_source_count",
+            "literature_source_count", "first_seen_at", "last_checked_at", "last_updated_at"
         ] if c in preview.columns]
         if show_cols:
             st.dataframe(preview[show_cols], use_container_width=True, hide_index=True)
 
         st.markdown("#### Enrichment queue")
-        st.caption("Capped enrichment checks indexed leads only. It does not rerun discovery and does not change Opportunity Score.")
+        st.caption("Capped enrichment checks indexed leads only. It does not rerun discovery and does not change Opportunity Score. Phase 3B adds official follow-up, label, trial, and literature context where available.")
         ecol1, ecol2 = st.columns([1, 3])
         enrich_clicked = ecol1.button("Enrich indexed leads — next 5")
         use_web_enrich = ecol2.checkbox(

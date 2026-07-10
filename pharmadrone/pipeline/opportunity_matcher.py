@@ -497,6 +497,9 @@ def _parse_opp(row: dict[str, Any]) -> dict[str, Any]:
         "source_coverage_count", "last_enrichment_check", "tier1_count", "tier2_count",
         "tier3_count", "tier4_count", "regulator_confirmed", "company_confirmed",
         "literature_supported", "external_corroboration_found",
+        "official_followup_status", "official_followup_count", "label_context_status",
+        "clinical_trial_context_status", "literature_context_status", "best_evidence_tier",
+        "official_source_count", "literature_source_count",
     ):
         if key in row and row.get(key) not in (None, ""):
             merged[key] = row.get(key)
@@ -948,6 +951,14 @@ def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
         "tier2_count": opp.get("tier2_count") or 0,
         "tier3_count": opp.get("tier3_count") or 0,
         "tier4_count": opp.get("tier4_count") or 0,
+        "official_followup_status": opp.get("official_followup_status") or "not checked",
+        "official_followup_count": opp.get("official_followup_count") or 0,
+        "label_context_status": opp.get("label_context_status") or "not checked",
+        "clinical_trial_context_status": opp.get("clinical_trial_context_status") or "not checked",
+        "literature_context_status": opp.get("literature_context_status") or "not checked",
+        "best_evidence_tier": opp.get("best_evidence_tier") or opp.get("evidence_quality") or "not checked",
+        "official_source_count": opp.get("official_source_count") or 0,
+        "literature_source_count": opp.get("literature_source_count") or 0,
     }
 
 

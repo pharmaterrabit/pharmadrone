@@ -317,3 +317,16 @@ New local MVP capabilities:
 - Normal user-facing reports continue to show clean evidence gaps rather than raw Tavily/API errors.
 
 SQLite remains acceptable for this local/Streamlit MVP. It should not be treated as production SaaS persistence.
+
+## Phase 3B — Official Source Expansion Pack 1
+
+Phase 3B adds a small official/context enrichment layer on top of the existing
+indexed PharmaTune evidence. It enriches existing opportunity records only; it
+does not rerun discovery, change stable lead IDs, change Opportunity Score, or
+require an LLM.
+
+The enrichment queue can now add clean metadata for FDA official follow-up
+searches, FDA drug-label/product context, ClinicalTrials.gov trial context, and
+relevant literature context from the existing literature connectors. FDA labels
+and general literature are treated as context only and must never be interpreted
+as product-specific root-cause proof.

@@ -79,3 +79,62 @@ def lead_web_enrichment_queries(lead: dict[str, Any], *, max_queries: int = 4) -
         if len(out) >= max_queries:
             break
     return out
+
+# --- Phase 3B source-specific enrichment templates ------------------------
+
+def fda_official_followup_queries(lead: dict[str, Any], *, max_queries: int = 2) -> list[str]:
+    company = normalise_query(lead.get("company"))
+    product = normalise_query(lead.get("product") or lead.get("molecule"))
+    molecule = normalise_query(lead.get("molecule"))
+    problem = normalise_query(lead.get("problem_category") or lead.get("problem_signal"))
+    source_id = normalise_query(lead.get("source_id"))
+    queries: list[str] = []
+    if source_id and source_id != "unknown-source":
+        queries.append(compact_terms("FDA warning letter inspection", source_id, company, product, max_chars=170))
+    if company:
+        queries.append(compact_terms("FDA warning letter inspection quality", company, product or molecule, problem, max_chars=170))
+    if product or molecule:
+        queries.append(compact_terms("FDA official recall follow-up", product or molecule, problem, max_chars=170))
+    out: list[str] = []
+    for q in queries:
+        q = sanitize_tavily_query(q, max_chars=170)
+        if q and q.lower() not in {x.lower() for x in out}:
+            out.append(q)
+        if len(out) >= max_queries:
+            break
+    return out
+
+
+def label_context_query(lead: dict[str, Any]) -> str:
+    molecule = normalise_query(lead.get("molecule") or lead.get("generic_name"))
+    product = normalise_query(lead.get("product"))
+    # Prefer the shorter generic/molecule if available; otherwise use product.
+    q = molecule or product
+    if not q:
+        return ""
+    # Avoid huge NDC/package strings in label queries.
+    q = re.sub(r"\b\d{4,}(?:-\d+)*\b", " ", q)
+    q = re.sub(r"\b(capsules?|tablets?|injection|solution|bottle|carton|package|ndc)\b", " ", q, flags=re.I)
+    return normalise_query(q)[:120]
+
+
+def trial_context_query(lead: dict[str, Any]) -> str:
+    source_id = normalise_query(lead.get("source_id"))
+    if re.search(r"\bNCT\d{8}\b", source_id, re.I):
+        return source_id.upper()
+    product = normalise_query(lead.get("product") or lead.get("molecule"))
+    company = normalise_query(lead.get("company"))
+    return compact_terms(product, company, max_chars=140)
+
+
+def literature_context_query(lead: dict[str, Any]) -> str:
+    molecule = normalise_query(lead.get("molecule") or lead.get("generic_name"))
+    product = normalise_query(lead.get("product"))
+    problem = normalise_query(lead.get("problem_category") or lead.get("problem_signal"))
+    term = molecule or product
+    if not term:
+        return ""
+    # Keep query narrow and scientific; literature is context only.
+    if not problem:
+        problem = "formulation pharmaceutical"
+    return compact_terms(term, problem, "formulation", max_chars=160)

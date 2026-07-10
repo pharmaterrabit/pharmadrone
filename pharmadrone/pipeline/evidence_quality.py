@@ -1,4 +1,4 @@
-"""Deterministic evidence quality scoring for Phase 3A.
+"""Deterministic evidence quality scoring for Phase 3A/3B.
 
 Evidence quality is separate from the Opportunity Score. A high-quality source
 can confirm an event, but it does not confirm root cause unless the text directly
@@ -35,7 +35,12 @@ def source_quality_tier(evidence: dict[str, Any]) -> int:
         return 1
     if "openfda" in source_name or "clinicaltrials" in source_name or "regulator" in source_category:
         return 1
-    if any(x in text for x in ("warning letter", "inspection", "form 483", "official company statement")):
+    # FDA/official warning-letter or inspection pages are Tier 1 official follow-up
+    # evidence. Generic web pages only receive Tier 1 if the official/regulatory
+    # context is clear from source/category/URL/text.
+    if any(x in text for x in ("warning letter", "inspection", "form 483", "official company statement")) and (
+        "fda" in text or "regulator" in source_category or "official" in text or "company" in source_category
+    ):
         return 1
     if source_type in {"paper", "patent"} or source_category in {"publication", "patent"}:
         return 2
@@ -63,13 +68,37 @@ def evidence_relevance(evidence: dict[str, Any]) -> str:
 
 def support_flags(evidence: dict[str, Any]) -> dict[str, bool]:
     text = _blob(evidence)
-    supports_event = any(x in text for x in ("recall", "terminated", "withdrawn", "failed", "warning letter", "inspection", "drug alert"))
-    supports_root_cause = any(x in text for x in (
-        "root cause", "cause was", "attributed to", "due to", "inspection finding", "form 483", "warning letter"
-    )) and supports_event
+    source_type = _norm(evidence.get("source_type"))
+    source_name = _norm(evidence.get("source_name"))
+    source_category = _norm(evidence.get("source_category"))
+
+    supports_product_context = source_type == "label" or bool(evidence.get("supports_product_context"))
+    supports_trial_context = source_type == "trial" or bool(evidence.get("supports_trial_context"))
+    supports_official_followup = bool(evidence.get("supports_official_followup")) or (
+        any(x in text for x in ("warning letter", "inspection", "form 483"))
+        and ("fda" in text or "regulator" in source_category or "official" in source_name)
+    )
+    supports_scientific_plausibility = bool(evidence.get("supports_scientific_plausibility")) or source_type == "paper"
+
+    # Label and general literature context must never become product-specific
+    # event/root-cause proof. Trial records confirm trial status, not product
+    # failure, unless the trial record directly says so.
+    if supports_product_context or supports_scientific_plausibility:
+        supports_event = False
+    else:
+        supports_event = any(x in text for x in ("recall", "terminated", "withdrawn", "failed", "warning letter", "inspection", "drug alert"))
+
+    root_cause_language = any(x in text for x in (
+        "root cause", "cause was", "attributed to", "inspection finding", "form 483", "warning letter"
+    ))
+    due_to_language = "due to" in text and ("inspection" in text or "warning letter" in text or "recall" in text)
+    # Only direct regulatory/official event evidence can support root cause.
+    root_cause_source_ok = supports_official_followup or source_type in {"recall", "enforcement"} or "openfda" in source_name
+    supports_root_cause = bool(supports_event and root_cause_source_ok and (root_cause_language or due_to_language))
+
     supports_solution_fit = any(x in text for x in (
         "dissolution testing", "particle size", "solid-state", "polymorph", "formulation", "stability testing", "analytical", "qc", "bioavailability"
-    ))
+    )) or supports_scientific_plausibility
     supports_commercial_relevance = any(x in text for x in (
         "partnership", "license", "licensing", "collaboration", "pipeline", "launch", "shortage", "multiple lots", "ongoing"
     ))
@@ -78,6 +107,10 @@ def support_flags(evidence: dict[str, Any]) -> dict[str, bool]:
         "supports_root_cause": supports_root_cause,
         "supports_solution_fit": supports_solution_fit,
         "supports_commercial_relevance": supports_commercial_relevance,
+        "supports_product_context": supports_product_context,
+        "supports_trial_context": supports_trial_context,
+        "supports_official_followup": supports_official_followup,
+        "supports_scientific_plausibility": supports_scientific_plausibility,
     }
 
 

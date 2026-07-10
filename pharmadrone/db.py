@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS opportunity_enrichment (
     tier3_count INTEGER DEFAULT 0, tier4_count INTEGER DEFAULT 0,
     regulator_confirmed INTEGER DEFAULT 0, company_confirmed INTEGER DEFAULT 0,
     literature_supported INTEGER DEFAULT 0, external_corroboration_found INTEGER DEFAULT 0,
+    official_followup_status TEXT DEFAULT 'not checked',
+    official_followup_count INTEGER DEFAULT 0,
+    label_context_status TEXT DEFAULT 'not checked',
+    clinical_trial_context_status TEXT DEFAULT 'not checked',
+    literature_context_status TEXT DEFAULT 'not checked',
+    best_evidence_tier TEXT DEFAULT 'not checked',
+    official_source_count INTEGER DEFAULT 0,
+    literature_source_count INTEGER DEFAULT 0,
     data_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -78,6 +86,18 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     # Additive migrations for local MVP databases created by older ZIPs.
     _ensure_column(conn, "source_health_events", "query_count", "INTEGER DEFAULT 1")
+    # Phase 3B additive enrichment columns for local MVP databases created by older ZIPs.
+    for column, spec in {
+        "official_followup_status": "TEXT DEFAULT 'not checked'",
+        "official_followup_count": "INTEGER DEFAULT 0",
+        "label_context_status": "TEXT DEFAULT 'not checked'",
+        "clinical_trial_context_status": "TEXT DEFAULT 'not checked'",
+        "literature_context_status": "TEXT DEFAULT 'not checked'",
+        "best_evidence_tier": "TEXT DEFAULT 'not checked'",
+        "official_source_count": "INTEGER DEFAULT 0",
+        "literature_source_count": "INTEGER DEFAULT 0",
+    }.items():
+        _ensure_column(conn, "opportunity_enrichment", column, spec)
     return conn
 
 
@@ -289,7 +309,15 @@ def fetch_index_records(conn, include_hidden: bool = False) -> list[dict]:
                   COALESCE(oe.regulator_confirmed, 0) AS regulator_confirmed,
                   COALESCE(oe.company_confirmed, 0) AS company_confirmed,
                   COALESCE(oe.literature_supported, 0) AS literature_supported,
-                  COALESCE(oe.external_corroboration_found, 0) AS external_corroboration_found
+                  COALESCE(oe.external_corroboration_found, 0) AS external_corroboration_found,
+                  COALESCE(oe.official_followup_status, 'not checked') AS official_followup_status,
+                  COALESCE(oe.official_followup_count, 0) AS official_followup_count,
+                  COALESCE(oe.label_context_status, 'not checked') AS label_context_status,
+                  COALESCE(oe.clinical_trial_context_status, 'not checked') AS clinical_trial_context_status,
+                  COALESCE(oe.literature_context_status, 'not checked') AS literature_context_status,
+                  COALESCE(oe.best_evidence_tier, 'not checked') AS best_evidence_tier,
+                  COALESCE(oe.official_source_count, 0) AS official_source_count,
+                  COALESCE(oe.literature_source_count, 0) AS literature_source_count
            FROM opportunity_index oi
            LEFT JOIN opportunity_enrichment oe ON oe.stable_lead_id = oi.stable_lead_id
            {where}
@@ -418,8 +446,11 @@ def upsert_enrichment(conn, payload: dict) -> None:
         (stable_lead_id, last_enrichment_check, enrichment_status, corroboration_status,
          evidence_quality, source_coverage_count, tier1_count, tier2_count, tier3_count,
          tier4_count, regulator_confirmed, company_confirmed, literature_supported,
-         external_corroboration_found, data_json, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         external_corroboration_found, official_followup_status, official_followup_count,
+         label_context_status, clinical_trial_context_status, literature_context_status,
+         best_evidence_tier, official_source_count, literature_source_count,
+         data_json, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             sid, now, payload.get("enrichment_status") or "checked",
             payload.get("corroboration_status") or "direct source only",
@@ -433,6 +464,14 @@ def upsert_enrichment(conn, payload: dict) -> None:
             int(bool(payload.get("company_confirmed"))),
             int(bool(payload.get("literature_supported"))),
             int(bool(payload.get("external_corroboration_found"))),
+            payload.get("official_followup_status") or "not checked",
+            _int_or_none(payload.get("official_followup_count")) or 0,
+            payload.get("label_context_status") or "not checked",
+            payload.get("clinical_trial_context_status") or "not checked",
+            payload.get("literature_context_status") or "not checked",
+            payload.get("best_evidence_tier") or payload.get("evidence_quality") or "not checked",
+            _int_or_none(payload.get("official_source_count")) or 0,
+            _int_or_none(payload.get("literature_source_count")) or 0,
             payload.get("data_json") or "{}", created_at, now,
         ),
     )

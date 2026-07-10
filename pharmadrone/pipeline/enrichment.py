@@ -11,7 +11,7 @@ from typing import Any
 
 from .. import db, settings
 from ..connectors import tavily_search
-from . import evidence_quality, query_safety, source_health
+from . import evidence_quality, official_enrichment, query_safety, source_health
 
 
 def _load_lead(row: dict[str, Any]) -> dict[str, Any]:
@@ -90,11 +90,22 @@ def enrich_one_index_record(conn, row: dict[str, Any], *, run_id: str = "", use_
             "rejected_count": 0,
         })
 
+    phase3b = official_enrichment.enrich_official_context(
+        lead, conn, run_id=run_id, use_web=use_web, cost=cost
+    )
+    phase3b_evidence = phase3b.get("evidence") or []
+
     combined = _merge_unique_evidence(evidence, new_web_evidence)
+    combined = _merge_unique_evidence(combined, phase3b_evidence)
     summary = evidence_quality.summarise_evidence(combined)
     enrichment_status = _safe_status_from_summary(summary, web_attempted, web_available)
     if web_attempted and new_web_evidence and summary.get("source_coverage_count", 0) > len(evidence):
         enrichment_status = "partial" if not web_available else "checked"
+    if phase3b_evidence and enrichment_status == "external enrichment unavailable":
+        # Web/Tavily may be unavailable while official label/trial/literature
+        # context still enriched the lead. Keep the web limitation visible via
+        # source health, but make the lead-level status less misleading.
+        enrichment_status = "partial"
     if not new_web_evidence and web_attempted and not web_available and not evidence:
         summary["corroboration_status"] = "no corroboration found"
     elif not new_web_evidence and web_attempted and not web_available:
@@ -115,15 +126,26 @@ def enrich_one_index_record(conn, row: dict[str, Any], *, run_id: str = "", use_
         "company_confirmed": int(bool(summary.get("company_confirmed"))),
         "literature_supported": int(bool(summary.get("literature_supported"))),
         "external_corroboration_found": int(bool(summary.get("external_corroboration_found"))),
+        "official_followup_status": phase3b.get("official_followup_status") or "not checked",
+        "official_followup_count": phase3b.get("official_followup_count") or 0,
+        "label_context_status": phase3b.get("label_context_status") or "not checked",
+        "clinical_trial_context_status": phase3b.get("clinical_trial_context_status") or "not checked",
+        "literature_context_status": phase3b.get("literature_context_status") or "not checked",
+        "best_evidence_tier": phase3b.get("best_evidence_tier") or summary.get("evidence_quality") or "not checked",
+        "official_source_count": phase3b.get("official_source_count") or 0,
+        "literature_source_count": phase3b.get("literature_source_count") or 0,
         "data_json": json.dumps({
             "web_attempted": web_attempted,
             "web_available": web_available,
             "new_web_evidence_count": len(new_web_evidence),
+            "phase3b": {k: v for k, v in phase3b.items() if k != "evidence"},
+            "phase3b_evidence_count": len(phase3b_evidence),
+            "no_product_specific_root_cause_confirmed": True,
             "note": "Evidence quality is separate from Opportunity Score. Root cause is not upgraded unless directly supported.",
         }, ensure_ascii=False),
     }
     db.upsert_enrichment(conn, payload)
-    say(f"Enriched {row.get('company') or 'lead'} — {payload['corroboration_status']} · {payload['evidence_quality']}")
+    say(f"Enriched {row.get('company') or 'lead'} — {payload['corroboration_status']} · {payload['evidence_quality']} · {payload.get('official_followup_status', 'not checked')}")
     return payload
 
 
