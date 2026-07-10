@@ -65,6 +65,7 @@ sources:
   clinicaltrials: {enabled: true,  needs_key: false}
   openfda:        {enabled: true,  needs_key: false}
   openfda_enforcement: {enabled: true, needs_key: false}   # recalls / regulatory failure
+  openfda_shortages: {enabled: true, needs_key: false}     # official supply / availability signals
   europepmc:      {enabled: true,  needs_key: false}
   openalex:       {enabled: true,  needs_key: false}
   crossref:       {enabled: true,  needs_key: false}

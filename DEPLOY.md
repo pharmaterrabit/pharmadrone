@@ -162,3 +162,19 @@ Phase 2 stores indexed PharmaTune evidence and queue state in local SQLite
 it is not durable production SaaS persistence on free hosted tiers where disk can
 be wiped on restart or redeploy. Download `opportunity_index.csv` and the reports
 ZIP during the session if you need to retain outputs.
+
+## Checkpoint 5A discovery caps
+
+Checkpoint 5A uses bounded official-source pagination. The defaults are safe for the Streamlit MVP and require no API keys:
+
+```text
+OPENFDA_RECALL_PAGE_SIZE=50
+OPENFDA_RECALL_MAX_PAGES_PER_CATEGORY=3
+OPENFDA_SHORTAGE_PAGE_SIZE=50
+OPENFDA_SHORTAGE_MAX_PAGES=6
+CLINICALTRIALS_PAGE_SIZE=50
+CLINICALTRIALS_MAX_PAGES_PER_TOPIC=2
+MAX_DISCOVERY_RECORDS_PER_SOURCE=300
+```
+
+Keep `MAX_REPORTS_PER_RUN=5`; discovery may index many evidence-backed previews, but full report generation remains capped. Increase source limits only after reviewing runtime and manual validation precision.

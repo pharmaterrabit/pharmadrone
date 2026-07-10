@@ -32,6 +32,11 @@ PROBLEM_KEYWORDS = [
     "packaging defect", "leachable", "extractable", "cold-chain",
     "shelf-life", "delivery failure", "bioequivalence", "reformulation",
     "recall", "dose burden", "adherence burden",
+    "drug shortage", "supply disruption", "manufacturing delay",
+    "availability signal", "discontinuation signal",
+    "failed assay", "assay", "potency", "subpotent", "superpotent",
+    "content uniformity", "failed specifications", "out of specification",
+    "oos", "particulate", "visible particles", "endotoxin",
 ]
 
 FAILURE_EVENT_KEYWORDS = [
@@ -128,6 +133,14 @@ def confirmed_event(cluster: list[dict]) -> str | None:
                 or "withdraw" in str(ent.get("event_type")).lower()
                 or "suspend" in str(ent.get("event_type")).lower()):
             return str(ent.get("event_type"))
+        if stype == "shortage":
+            # A shortage is an official supply/availability signal, not a
+            # product-failure event. Only an explicitly discontinued shortage
+            # record carries a discontinuation event; blank field labels in the
+            # raw text must never trigger event detection.
+            if str(ent.get("event_type") or "").lower() == "discontinuation":
+                return "discontinuation"
+            continue
         if scat in ("regulatory", "company"):
             ev = event_mentioned(e.get("raw_text", "") + " " + e.get("title", ""))
             if ev:
@@ -170,13 +183,38 @@ def _norm(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def _source_event_identity(e: dict) -> tuple[str, str] | None:
+    """Return the strongest official event identity carried by one record.
+
+    Event identity must precede company/product clustering so separate recalls,
+    trials, and shortage records are never collapsed merely because they share a
+    firm or medicine. The stable lead-ID function is intentionally untouched.
+    """
+    ent = e.get("entities") or {}
+    rf = ent.get("recall_fields") or {}
+    source_type = str(e.get("source_type") or "").lower()
+    checks = (
+        ("recall", rf.get("recall_number") or ent.get("recall_number")),
+        ("trial", ent.get("trial_id") or ent.get("nct_id")),
+        ("shortage", ent.get("package_ndc") or ent.get("shortage_key")),
+        ("event", ent.get("source_event_id")),
+    )
+    for kind, value in checks:
+        if value:
+            return kind, str(value)
+    if source_type in {"recall", "trial", "shortage", "enforcement"} and e.get("record_id"):
+        return source_type, str(e.get("record_id"))
+    return None
+
+
 def cluster_key(e: dict) -> str | None:
-    """Cluster key ONLY from a valid target. No valid target -> no key ->
-    the item is not clustered into an opportunity candidate."""
+    """Cluster by official event ID first, then by a valid target fallback."""
+    event_id = _source_event_identity(e)
+    if event_id:
+        return f"{event_id[0]}|{_norm(event_id[1])}"
     tgt = valid_target(e)
     if tgt:
         return f"{tgt['type']}|{_norm(tgt['name'])}"
-    # Weak fallback: a non-blacklisted proper noun in the title.
     guesses = _title_entities(e.get("title", ""))
     if guesses:
         return f"guess|{_norm('-'.join(guesses))}"
@@ -192,10 +230,59 @@ def cluster_evidence(evidence: list[dict]) -> dict[str, list[dict]]:
     return dict(clusters)
 
 
+def _explicit_problem_category(cluster: list[dict]) -> str | None:
+    """Extract a problem only from source-appropriate direct fields.
+
+    Trial titles/topic queries are context, not product-failure proof. For trial
+    records, only whyStopped with an explicit product/formulation term can create
+    a problem category. Shortage records use their cautious official signal
+    category. Recall records use the official FDA reason text.
+    """
+    for e in cluster:
+        ent = e.get("entities") or {}
+        stype = str(e.get("source_type") or "").lower()
+        if stype == "trial":
+            if ent.get("product_problem_supported"):
+                return ent.get("issue_category") or guess_problem_category(ent.get("why_stopped") or "")
+            continue
+        if stype == "shortage":
+            return ent.get("issue_category") or guess_problem_category(ent.get("shortage_reason") or "")
+        if stype == "recall":
+            rf = ent.get("recall_fields") or {}
+            return guess_problem_category(rf.get("reason_for_recall") or ent.get("event_reason") or "")
+        explicit = ent.get("issue_category") or ent.get("event_reason")
+        problem = guess_problem_category(str(explicit or ""))
+        if problem:
+            return problem
+    # Existing official/company web path remains available as a conservative fallback.
+    for e in cluster:
+        if e.get("source_category") in {"regulatory", "company"} and e.get("source_type") not in {"trial", "shortage"}:
+            problem = guess_problem_category((e.get("raw_text") or "") + " " + (e.get("title") or ""))
+            if problem:
+                return problem
+    return None
+
+
+def _product_failure_supported(cluster: list[dict], event: str | None) -> bool:
+    if not event:
+        return False
+    for e in cluster:
+        stype = str(e.get("source_type") or "").lower()
+        ent = e.get("entities") or {}
+        if stype == "recall":
+            return True
+        if stype == "trial" and ent.get("product_problem_supported"):
+            return True
+        if stype == "shortage" and ent.get("quality_problem_supported"):
+            return True
+        if stype not in {"trial", "shortage"} and e.get("source_category") in {"regulatory", "company"}:
+            return True
+    return False
+
+
 def classify_signal_status(cluster: list[dict]) -> str:
     cats = {e.get("source_category") for e in cluster}
-    has_problem = any(guess_problem_category(e.get("raw_text", "") + " "
-                      + e.get("title", "")) for e in cluster)
+    has_problem = bool(_explicit_problem_category(cluster))
     if confirmed_event(cluster) and ("regulatory" in cats or "company" in cats
                                      or "trial" in cats):
         return "confirmed" if has_problem else "indirect"
@@ -296,9 +383,7 @@ def _candidate_from_cluster(key: str, cluster: list[dict], provisional: bool,
     event = cls["event"]  # only a CONFIRMED event, or None
 
     ent = next((e.get("entities") or {} for e in cluster if valid_target(e)), {})
-    combined_text = " ".join((e.get("raw_text", "") + " " + e.get("title", ""))
-                             for e in cluster)
-    problem = guess_problem_category(combined_text)
+    problem = _explicit_problem_category(cluster)
     status = classify_signal_status(cluster)
     region = next((e.get("region_hint") for e in cluster if e.get("region_hint")), None)
     sources = sorted({e.get("source_name", "") for e in cluster})
@@ -311,7 +396,23 @@ def _candidate_from_cluster(key: str, cluster: list[dict], provisional: bool,
         product = tgt["name"] if tgt["type"] != "company" else None
         company = tgt["name"] if tgt["type"] == "company" else company
 
-    is_failure = bool(event)  # ONLY a structurally-confirmed event counts
+    is_failure = _product_failure_supported(cluster, event)
+    source_event = _source_event_identity(cluster[0]) if cluster else None
+    has_trial = any(e.get("source_type") == "trial" for e in cluster)
+    has_shortage = any(e.get("source_type") == "shortage" for e in cluster)
+    if has_trial:
+        fact_event = (f"; trial status ({event}) is confirmed by ClinicalTrials.gov" if event else "")
+        fact_boundary = ("; the stated registry reason supports a product/formulation problem"
+                         if is_failure else "; no product-specific failure reason is established")
+    elif has_shortage:
+        fact_event = "; an official FDA shortage/availability record is confirmed"
+        fact_boundary = ("; the official shortage reason states a manufacturing/quality issue"
+                         if is_failure else "; no formulation root cause is inferred")
+    else:
+        fact_event = (f"; a failure event ({event}) is confirmed by a "
+                      f"{'recall' if event == 'recall' else 'regulatory/company'} source"
+                      if event else "")
+        fact_boundary = ""
 
     opp = {
         "company": company,
@@ -326,9 +427,7 @@ def _candidate_from_cluster(key: str, cluster: list[dict], provisional: bool,
         "valid_target_type": tgt["type"],
         "confirmed_fact": (f"{n_ev} distinct evidence item(s) from "
                           f"{', '.join(sources)} reference this {tgt['type']}"
-                          + (f"; a failure event ({event}) is confirmed by a "
-                             f"{'recall' if event=='recall' else 'regulatory/company/trial'} "
-                             "source" if event else "")
+                          + fact_event + fact_boundary
                           + (f"; problem signal: '{problem}'" if problem else "") + "."),
         "interpretation": "Deterministic clustering (no LLM) — requires human validation.",
         "why_scientific": (f"Sources reference '{problem}'." if problem
@@ -341,8 +440,9 @@ def _candidate_from_cluster(key: str, cluster: list[dict], provisional: bool,
                        "not full LLM synthesis; verify manually before any outreach"]
                       if provisional else []),
         "failure": is_failure,
-        "failure_reason": event,
-        "failure_event_confirmed": bool(event),
+        "failure_reason": event if is_failure else None,
+        "failure_event_confirmed": bool(is_failure),
+        "event_source_id": source_event[1] if source_event else None,
         "discovery_method": "deterministic-cluster",
         "discovery_reason": cls["reason"],
         "provisional": provisional,

@@ -59,6 +59,8 @@ def source_type(opp: dict[str, Any]) -> str:
                 return "FDA recall"
             if stype == "trial":
                 return "ClinicalTrials.gov trial"
+            if stype == "shortage":
+                return "FDA drug shortage"
             return str(stype)
     return str(opp.get("source_type") or "indexed evidence")
 
@@ -74,6 +76,9 @@ def source_id(opp: dict[str, Any]) -> str:
             ent.get("recall_number"),
             ent.get("trial_id"),
             ent.get("nct_id"),
+            ent.get("package_ndc"),
+            ent.get("shortage_key"),
+            ent.get("source_event_id"),
             ent.get("regulatory_id"),
             e.get("record_id"),
         ):
@@ -111,14 +116,24 @@ def clean_problem_category(value: Any) -> str:
         return "impurity issue"
     if "stability" in text or "degradation" in text:
         return "stability issue"
-    if "sterility" in text or "contamination" in text:
-        return "sterility issue"
+    if "sterility" in text or "contamination" in text or "endotoxin" in text:
+        return "sterility/contamination issue"
+    if "particulate" in text or "visible particles" in text or "foreign particles" in text:
+        return "particulate / quality issue"
+    if "assay" in text or "potency" in text or "subpotent" in text or "superpotent" in text or "content uniformity" in text:
+        return "assay/potency issue"
+    if "failed specification" in text or "out of specification" in text or text == "oos":
+        return "quality issue"
     if "bioavailability" in text or "solubility" in text:
         return "bioavailability issue"
     if "packag" in text or "container closure" in text or "leachable" in text or "extractable" in text:
         return "packaging / container-closure issue"
     if "manufactur" in text or "scale-up" in text or "batch" in text or "reproduc" in text:
         return "manufacturing variability"
+    if "discontinu" in text:
+        return "discontinuation signal"
+    if "shortage" in text or "supply" in text or "availability" in text:
+        return "supply / availability signal"
     return raw
 
 
@@ -170,6 +185,10 @@ def evidence_hash(opp: dict[str, Any]) -> str:
             "event_reason": ent.get("event_reason"),
             "trial_id": ent.get("trial_id"),
             "why_stopped": ent.get("why_stopped"),
+            "source_event_id": ent.get("source_event_id"),
+            "package_ndc": ent.get("package_ndc"),
+            "shortage_reason": ent.get("shortage_reason"),
+            "shortage_status": ent.get("shortage_status"),
             "recall_number": rf.get("recall_number"),
             "reason_for_recall": rf.get("reason_for_recall"),
             "status": rf.get("status"),

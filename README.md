@@ -357,3 +357,14 @@ or reports. The CSV includes blank manual-audit fields and stored official-sourc
 URLs where available. Low priority / archive lead classifications are included by
 default for internal validation, while records actually hidden/rejected in the
 workflow remain excluded.
+
+## Checkpoint 5A — bounded discovery-depth expansion
+
+Failure/Rescue Generate now deepens the existing official structured sources without changing scoring or report caps:
+
+- FDA recall events are paginated by explicit quality-problem category and deduplicated by `recall_number`.
+- ClinicalTrials.gov stopped studies are paginated by NCT ID and must contain a usable medicinal intervention; specimen/control-only records are excluded.
+- FDA Drug Shortages adds cautious supply, availability, manufacturing, and discontinuation signals. A shortage is not automatically treated as a formulation failure or confirmed root cause.
+- All discovered valid candidates are indexed before the existing report-generation cap. Full reports remain limited by `MAX_REPORTS_PER_RUN`.
+
+The default source caps are documented in `.env.example`. They can be reduced for constrained deployments, but should not be increased without checking API limits and manual validation precision.

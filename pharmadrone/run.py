@@ -138,7 +138,8 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     evidence, coverage = [], {}
     if mode in ("failure", "test") and fail_on:
         ev_events, cov_events = event_discovery.discover_events(
-            profile, cost, per_source=8 if mode == "failure" else 4, log=say)
+            profile, cost, per_source=8 if mode == "failure" else 4, log=say,
+            expanded=(mode == "failure"))
         say(f"Event-first discovery: {len(ev_events)} event record(s) "
             "(recalls / stopped trials / targeted web).")
         evidence.extend(ev_events)

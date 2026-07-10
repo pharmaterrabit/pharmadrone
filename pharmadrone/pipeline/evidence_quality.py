@@ -31,7 +31,7 @@ def source_quality_tier(evidence: dict[str, Any]) -> int:
     source_name = _norm(evidence.get("source_name"))
     url = _norm(evidence.get("url"))
 
-    if source_type in {"recall", "enforcement", "label", "trial"}:
+    if source_type in {"recall", "enforcement", "label", "trial", "shortage"}:
         return 1
     if "openfda" in source_name or "clinicaltrials" in source_name or "regulator" in source_category:
         return 1
@@ -59,7 +59,7 @@ def source_quality_tier(evidence: dict[str, Any]) -> int:
 
 def evidence_relevance(evidence: dict[str, Any]) -> str:
     text = _blob(evidence)
-    if any(x in text for x in ("recall", "warning letter", "terminated", "withdrawn", "failed dissolution", "failed specification", "sterility", "impurity", "degradation")):
+    if any(x in text for x in ("recall", "shortage", "warning letter", "terminated", "withdrawn", "failed dissolution", "failed specification", "sterility", "impurity", "degradation")):
         return "high"
     if any(x in text for x in ("dissolution", "stability", "bioavailability", "polymorph", "particle size", "formulation", "quality")):
         return "medium"
@@ -86,7 +86,7 @@ def support_flags(evidence: dict[str, Any]) -> dict[str, bool]:
     if supports_product_context or supports_scientific_plausibility:
         supports_event = False
     else:
-        supports_event = any(x in text for x in ("recall", "terminated", "withdrawn", "failed", "warning letter", "inspection", "drug alert"))
+        supports_event = any(x in text for x in ("recall", "shortage", "discontinuation", "terminated", "withdrawn", "failed", "warning letter", "inspection", "drug alert"))
 
     root_cause_language = any(x in text for x in (
         "root cause", "cause was", "attributed to", "inspection finding", "form 483", "warning letter"
