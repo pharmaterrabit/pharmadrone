@@ -12,7 +12,7 @@ import streamlit as st
 from pharmadrone import settings, db, auth
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
-from pharmadrone.pipeline import opportunity_index, enrichment
+from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -233,6 +233,88 @@ def _render_match_cards(result: dict, mode: str) -> None:
                 st.markdown(report_md)
         else:
             st.caption("Full report not generated yet. This is an indexed opportunity preview. Use Continue previous queue or Generate/Refresh to create a full report.")
+        st.divider()
+
+
+def _seller_target_table_rows(result: dict) -> list[dict]:
+    rows = []
+    for m in result.get("matches", []) or []:
+        rows.append({
+            "Target": f"{m.get('target_company') or m.get('company') or 'Unknown'} — {m.get('product') or 'Unknown product'}",
+            "Seller Fit Strength": m.get("fit_strength") or "—",
+            "Risk/readiness": m.get("risk_readiness_label") or "—",
+            "Problem category": m.get("problem_category") or "—",
+            "Opportunity Score": m.get("opportunity_score") or "—",
+            "Grade": m.get("grade") or "—",
+            "Lead status": m.get("lead_status") or "—",
+            "Queue status": m.get("queue_status") or "—",
+            "Full report": "yes" if m.get("has_full_report") else "no",
+            "Evidence quality": m.get("evidence_quality") or "not checked",
+            "Best evidence tier": m.get("best_evidence_tier") or "not checked",
+            "Corroboration": m.get("corroboration_status") or "direct source only",
+            "Official follow-up": m.get("official_followup_status") or "not checked",
+            "Label context": m.get("label_context_status") or "not checked",
+            "Trial context": _status_label(m.get("clinical_trial_context_status")) or "not checked",
+            "Literature context": m.get("literature_context_status") or "not checked",
+            "Source coverage": m.get("source_coverage_count") or 0,
+        })
+    for row in rows:
+        for key in list(row.keys()):
+            if "status" in key.lower() or key in {"Corroboration"}:
+                row[key] = _status_label(row.get(key))
+    return rows
+
+
+def _render_seller_target_cards(result: dict) -> None:
+    for i, m in enumerate(result.get("matches", []) or [], start=1):
+        title = f"{m.get('target_company') or m.get('company') or 'Unknown company'} — {m.get('product') or 'Unknown product'}"
+        st.markdown(f"#### {i}. {title}")
+        a, b, c, d = st.columns(4)
+        a.metric("Seller Fit Strength", m.get("fit_strength") or "—")
+        b.metric("Opportunity Score", str(m.get("opportunity_score") or "—"))
+        c.metric("Grade", str(m.get("grade") or "—"))
+        d.metric("Risk/readiness", m.get("risk_readiness_label") or "—")
+
+        meta1, meta2, meta3, meta4 = st.columns(4)
+        meta1.markdown(f"**Problem category:** {m.get('problem_category') or '—'}")
+        meta2.markdown(f"**Source type:** {m.get('source_type') or '—'}")
+        meta3.markdown(f"**Source ID:** {m.get('source_id') or '—'}")
+        meta4.markdown(f"**Region:** {m.get('region') or '—'}")
+
+        lead1, lead2, lead3 = st.columns(3)
+        lead1.markdown(f"**Lead status:** {m.get('lead_status') or '—'}")
+        lead2.markdown(f"**Queue status:** {m.get('queue_status') or '—'}")
+        lead3.markdown(f"**Full report:** {'yes' if m.get('has_full_report') else 'no — indexed preview'}")
+
+        e1, e2, e3 = st.columns(3)
+        e1.markdown(f"**Evidence quality:** {m.get('evidence_quality') or 'not checked'}")
+        e2.markdown(f"**Best evidence tier:** {m.get('best_evidence_tier') or 'not checked'}")
+        e3.markdown(f"**Corroboration:** {m.get('corroboration_status') or 'direct source only'}")
+        st.caption(
+            f"Official follow-up: {m.get('official_followup_status') or 'not checked'} · "
+            f"Label context: {m.get('label_context_status') or 'not checked'} · "
+            f"Trial context: {_status_label(m.get('clinical_trial_context_status')) or 'not checked'} · "
+            f"Literature context: {m.get('literature_context_status') or 'not checked'} · "
+            f"Source coverage: {m.get('source_coverage_count') or 0}"
+        )
+
+        st.markdown(f"**Why this seller may fit:** {m.get('why_fit') or 'Possible fit; requires validation.'}")
+        st.markdown(f"**What the evidence proves:** {m.get('what_evidence_proves') or 'Public evidence indicates an indexed opportunity signal.'}")
+        st.markdown(f"**What the evidence does not prove:** {m.get('what_evidence_does_not_prove') or 'No product-specific root cause confirmed.'}")
+        st.markdown(f"**Recommended BD angle:** {m.get('recommended_bd_angle') or m.get('safe_bd_angle') or 'Validation-led discussion only.'}")
+        questions = m.get("validation_questions") or []
+        if questions:
+            st.markdown("**Validation questions:**")
+            for q in questions:
+                st.markdown(f"- {q}")
+        st.markdown(f"**Safe outreach wording:** {m.get('safe_outreach_wording') or 'Use possible-fit language and validate before outreach.'}")
+
+        if m.get("has_full_report") and (m.get("stored_report_md") or "").strip():
+            with st.expander("Open full stored report"):
+                st.caption("This is the existing stored report. It is not regenerated by seller-to-target matching.")
+                st.markdown(m.get("stored_report_md"))
+        else:
+            st.caption(seller_target_matcher.PREVIEW_MESSAGE)
         st.divider()
 
 st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
@@ -659,6 +741,119 @@ with tab_profile:
         settings.save_profile(profile)
         st.success("Saved to config/technology_profile.yaml")
 
+    st.divider()
+    st.markdown("### Seller-to-Target Opportunity Workflow")
+    st.caption(
+        "Match a seller/company capability profile against existing indexed PharmaTune evidence only. "
+        "This does not call APIs, rerun discovery, regenerate reports, or change Opportunity Score."
+    )
+    st.info(seller_target_matcher.FIT_NOTE)
+
+    seller_name_for_match = st.text_input(
+        "Seller/company name for target matching",
+        value=sp.get("name", ""),
+        key="seller_target_name",
+    )
+    seller_desc_for_match = st.text_area(
+        "Seller/company capability description",
+        value=sp.get("description", ""),
+        height=90,
+        key="seller_target_description",
+    )
+    cap_default = [
+        "particle engineering",
+        "solubility enhancement",
+        "formulation CDMO",
+    ]
+    capability_categories = st.multiselect(
+        "Technology/service categories",
+        seller_target_matcher.DISPLAY_CATEGORIES,
+        default=[c for c in cap_default if c in seller_target_matcher.DISPLAY_CATEGORIES],
+        help="These categories are mapped deterministically to indexed product/problem signals.",
+    )
+    problem_interest_text = st.text_area(
+        "Problem signals of interest",
+        "dissolution failure\npoor solubility\nlow bioavailability\nformulation challenge",
+        height=110,
+        help="Optional. One per line. These refine the deterministic fit label; they do not create new evidence.",
+    )
+    dosage_options = ["Any", "oral solid", "injectable", "topical", "inhalation", "drug-device"]
+    region_options = ["Any"] + [r["name"] for r in profile.get("regions", [])]
+    f1, f2, f3 = st.columns(3)
+    dosage_focus = f1.multiselect("Dosage-form / modality focus", dosage_options, default=["Any"])
+    region_pref = f2.multiselect("Region preference", region_options, default=["Any"])
+    min_quality = f3.selectbox(
+        "Minimum evidence quality",
+        ["Any", "Tier 1 / high", "Tier 2 / moderate or better", "Tier 3 / limited or better", "Tier 4 / weak or better"],
+        index=0,
+    )
+    cmon, cweak, cmax = st.columns(3)
+    include_monitor_only = cmon.checkbox(
+        "Include monitor-only leads",
+        value=True,
+        help="Old/terminated/one-lot recall leads remain monitor only unless stronger current evidence exists.",
+    )
+    include_weak_fit = cweak.checkbox(
+        "Include weak/background fits",
+        value=False,
+        help="Default focuses on Strong/Moderate seller-fit matches.",
+    )
+    max_targets = cmax.number_input("Maximum targets to show", min_value=1, max_value=50, value=10, step=1)
+
+    if st.button("Find target opportunities", type="primary"):
+        fresh_records, fresh_stats = _load_index_state(include_hidden=False)
+        result = seller_target_matcher.match_seller_to_targets(
+            seller_name_for_match,
+            seller_desc_for_match,
+            capability_categories,
+            fresh_records,
+            problem_signals=problem_interest_text,
+            dosage_focus=dosage_focus,
+            region_preference=region_pref,
+            min_evidence_quality=min_quality,
+            include_monitor_only=include_monitor_only,
+            max_targets=int(max_targets),
+            include_weak=include_weak_fit,
+        )
+        st.session_state["seller_target_result"] = {
+            "result": result,
+            "stats": fresh_stats,
+        }
+
+    cached_seller_result = st.session_state.get("seller_target_result")
+    if cached_seller_result:
+        result = cached_seller_result.get("result") or {}
+        stats = cached_seller_result.get("stats") or {}
+        if stats:
+            st.caption(_index_summary_text(stats))
+        if result.get("status") == "ok":
+            st.success(result.get("message"))
+            st.markdown(f"**{seller_target_matcher.MATCH_SCOPE_LABEL}**")
+            st.caption(result.get("fit_note") or seller_target_matcher.FIT_NOTE)
+            cols = st.columns(4)
+            cols[0].metric("Targets shown", len(result.get("matches", []) or []))
+            cols[1].metric("Weak/background hidden", result.get("hidden_weak_count", 0))
+            cols[2].metric("Monitor-only hidden", result.get("hidden_monitor_count", 0))
+            cols[3].metric("Quality/region hidden", (result.get("hidden_quality_count", 0) or 0) + (result.get("hidden_region_count", 0) or 0))
+            rows = _seller_target_table_rows(result)
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇ Download seller target matches (.csv)",
+                    seller_target_matcher.export_seller_target_matches_csv(result),
+                    file_name="seller_target_matches.csv",
+                    mime="text/csv",
+                )
+            _render_seller_target_cards(result)
+        elif result.get("status") == "empty":
+            st.info(result.get("message"))
+        else:
+            st.warning(result.get("message") or seller_target_matcher.NO_TARGETS_MESSAGE)
+            if result.get("hidden_monitor_count"):
+                st.caption("Some potential historical/monitor-only signals were hidden by your filters.")
+            if result.get("hidden_weak_count"):
+                st.caption("Some weak/background fits were hidden by your filters.")
+
 # ==========================================================================
 # TAB 4 — RESULTS & EXPORT
 # ==========================================================================
@@ -716,6 +911,9 @@ with tab_results:
                 opportunity_index.export_index_csv(conn_e, settings.REPORTS_DIR)
                 conn_e.close()
             st.success(result_e.get("message", "Enrichment completed."))
+            # Avoid stale enrichment labels in cached matcher/seller cards after the enrichment queue updates SQLite.
+            st.session_state.pop("opportunity_matcher_result", None)
+            st.session_state.pop("seller_target_result", None)
             if logs_e:
                 with st.expander("Developer/debug: enrichment log", expanded=False):
                     st.code("\n".join(logs_e[-30:]))

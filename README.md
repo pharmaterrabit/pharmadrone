@@ -330,3 +330,11 @@ searches, FDA drug-label/product context, ClinicalTrials.gov trial context, and
 relevant literature context from the existing literature connectors. FDA labels
 and general literature are treated as context only and must never be interpreted
 as product-specific root-cause proof.
+
+## Phase 3C — Seller-to-Target Opportunity Workflow
+
+Phase 3C adds a seller-facing workflow inside the Technology Profile tab. A user can describe a technology/service provider profile, select capability categories such as particle engineering, solubility enhancement, formulation CDMO, analytical/QC testing, or sterile manufacturing support, and match that profile against the existing indexed PharmaTune opportunity records.
+
+This workflow is deterministic and read-only. It uses the local `opportunity_index` plus enrichment metadata only. It does not call external APIs, rerun discovery, regenerate reports, require an LLM, change stable lead IDs, or modify the stored Opportunity Score. Seller Fit Strength is displayed separately as a capability-match label: Strong fit, Moderate fit, or Weak/background fit.
+
+Seller-to-target cards preserve evidence discipline: public evidence may indicate a possible fit, but it does not prove that a target company needs the seller's technology, does not confirm product-specific root cause unless directly stated, and does not convert label or literature context into defect evidence.
