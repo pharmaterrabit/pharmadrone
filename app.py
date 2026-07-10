@@ -187,7 +187,7 @@ def _render_match_cards(result: dict, mode: str) -> None:
             m.get('clinical_trial_context_status'),
             m.get('literature_context_status'),
         ]
-        context_bits = [str(x) for x in context_bits if x and str(x) not in {'not checked', 'skipped — not trial lead', 'skipped — no product/molecule', 'skipped — not FDA/regulatory lead'}]
+        context_bits = [str(x) for x in context_bits if x and str(x) not in {'not checked', 'skipped - not trial lead', 'skipped - no product/molecule', 'skipped - not FDA/regulatory lead'}]
         context_bits.append('no product-specific root cause confirmed')
         st.caption(' · '.join(context_bits))
 

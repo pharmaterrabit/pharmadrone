@@ -155,7 +155,7 @@ def enrich_fda_official_followup(lead: dict[str, Any], conn, *, run_id: str = ""
         _record_health(conn, run_id=run_id, stable_lead_id=stable_id,
                        source_name="FDA official follow-up", source_type="regulatory",
                        status="skipped", failure_reason="not FDA/regulatory lead")
-        return {"status": "skipped — not FDA/regulatory lead", "count": 0, "evidence": []}
+        return {"status": "skipped - not FDA/regulatory lead", "count": 0, "evidence": []}
 
     if not use_web or not settings.env("TAVILY_API_KEY"):
         _record_health(conn, run_id=run_id, stable_lead_id=stable_id,
@@ -215,7 +215,7 @@ def enrich_fda_label_context(lead: dict[str, Any], conn, *, run_id: str = "") ->
         _record_health(conn, run_id=run_id, stable_lead_id=stable_id,
                        source_name="openFDA (Drug Label)", source_type="regulatory",
                        status="skipped", failure_reason="no product/molecule available")
-        return {"status": "skipped — no product/molecule", "evidence": []}
+        return {"status": "skipped - no product/molecule", "evidence": []}
     res = openfda.search(query, max_results=3)
     matches = [r for r in (res.records or []) if _label_match(r, lead)] if res.ok else []
     for rec in matches:
@@ -253,7 +253,7 @@ def enrich_clinical_trial_context(lead: dict[str, Any], conn, *, run_id: str = "
         _record_health(conn, run_id=run_id, stable_lead_id=stable_id,
                        source_name="ClinicalTrials.gov", source_type="clinical trial registry",
                        status="skipped", failure_reason="not trial lead")
-        return {"status": "skipped — not trial lead", "evidence": []}
+        return {"status": "skipped - not trial lead", "evidence": []}
     nct = _nct_id(lead)
     query = nct or query_safety.trial_context_query(lead)
     if not query:
@@ -380,7 +380,7 @@ def compact_context_label(enriched: dict[str, Any]) -> str:
     parts = []
     for key in ("official_followup_status", "label_context_status", "clinical_trial_context_status", "literature_context_status"):
         value = enriched.get(key)
-        if value and value not in {"not checked", "skipped — not trial lead", "skipped — no product/molecule", "skipped — not FDA/regulatory lead"}:
+        if value and value not in {"not checked", "skipped - not trial lead", "skipped - no product/molecule", "skipped - not FDA/regulatory lead"}:
             parts.append(str(value))
     parts.append("no product-specific root cause confirmed")
     return " · ".join(parts)

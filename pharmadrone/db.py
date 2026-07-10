@@ -101,6 +101,33 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+
+_ASCII_SKIP_LABELS = {
+    "skipped - not trial lead",
+    "skipped - no product/molecule",
+    "skipped - not FDA/regulatory lead",
+}
+
+
+def _clean_status_label(value):
+    """Return ASCII-safe status labels for UI/export compatibility."""
+    if value is None:
+        return value
+    text = str(value)
+    # Normalise common dash mojibake from CSV/spreadsheet rendering paths.
+    text = text.replace("\u2014", "-").replace("\u2013", "-").replace("\u201a\u00c4\u00ee", "-")
+    text = " ".join(text.split())
+    if text in _ASCII_SKIP_LABELS:
+        return text
+    return text
+
+
+def _clean_status_fields(row: dict) -> dict:
+    for key in list(row.keys()):
+        if key.endswith("_status") or key in {"enrichment_status", "corroboration_status"}:
+            row[key] = _clean_status_label(row.get(key))
+    return row
+
 def _ensure_column(conn, table: str, column: str, spec: str) -> None:
     try:
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -166,7 +193,7 @@ def save_rejected(conn, company, product, reason, ev_count, data) -> None:
 
 def fetch_all(conn, table: str) -> list[dict]:
     rows = conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
-    return [dict(r) for r in rows]
+    return [_clean_status_fields(dict(r)) for r in rows]
 
 
 def _now_iso() -> str:
@@ -325,7 +352,7 @@ def fetch_index_records(conn, include_hidden: bool = False) -> list[dict]:
            {where}
            ORDER BY oi.has_full_report DESC, COALESCE(oi.queue_rank, 999999), oi.last_checked_at DESC"""
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_clean_status_fields(dict(r)) for r in rows]
 
 
 def fetch_waiting_index_records(conn, limit: int = 5) -> list[dict]:
@@ -443,6 +470,15 @@ def upsert_enrichment(conn, payload: dict) -> None:
         (sid,),
     ).fetchone()
     created_at = dict(existing).get("created_at") if existing else now
+    # Store ASCII-safe status labels to avoid CSV mojibake in spreadsheet apps.
+    clean_payload_statuses = dict(payload)
+    for _status_key in (
+        "enrichment_status", "corroboration_status", "official_followup_status",
+        "label_context_status", "clinical_trial_context_status", "literature_context_status",
+    ):
+        if _status_key in clean_payload_statuses:
+            clean_payload_statuses[_status_key] = _clean_status_label(clean_payload_statuses.get(_status_key))
+    payload = clean_payload_statuses
     conn.execute(
         """INSERT OR REPLACE INTO opportunity_enrichment
         (stable_lead_id, last_enrichment_check, enrichment_status, corroboration_status,

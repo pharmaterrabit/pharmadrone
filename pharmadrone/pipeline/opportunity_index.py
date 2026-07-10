@@ -412,6 +412,16 @@ def backfill_generated_opportunities(conn) -> dict[str, int]:
     return counts
 
 
+
+
+def _ascii_status_label(value: Any) -> Any:
+    if value is None:
+        return value
+    text = str(value)
+    text = text.replace("\u2014", "-").replace("\u2013", "-").replace("\u201a\u00c4\u00ee", "-")
+    return " ".join(text.split())
+
+
 def export_index_csv(conn, reports_dir: Path) -> Path:
     records = db.fetch_index_records(conn, include_hidden=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -434,6 +444,9 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
         writer.writeheader()
         for rec in records:
             row = {k: rec.get(k, "") for k in fields}
+            for _k in tuple(row.keys()):
+                if _k.endswith("_status") or _k in {"enrichment_status", "corroboration_status"}:
+                    row[_k] = _ascii_status_label(row[_k])
             row["problem_category"] = clean_problem_category(row.get("problem_category")) or row.get("problem_category", "")
             row["source_freshness"] = source_freshness(rec)
             if row.get("enrichment_status") == "source unavailable":
