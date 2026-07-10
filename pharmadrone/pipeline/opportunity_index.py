@@ -95,10 +95,37 @@ def molecule(opp: dict[str, Any]) -> str:
     return ""
 
 
+def clean_problem_category(value: Any) -> str:
+    """Return user-facing problem category labels without truncated stems.
+
+    Discovery can intentionally use broad stems such as ``impurit`` for recall
+    search recall, but the persistent index/CSV should show clean categories.
+    """
+    raw = str(value or "").strip()
+    text = _norm(raw)
+    if not text:
+        return ""
+    if "dissolution" in text:
+        return "dissolution failure"
+    if "impurit" in text or "nitrosamine" in text or "related substance" in text:
+        return "impurity issue"
+    if "stability" in text or "degradation" in text:
+        return "stability issue"
+    if "sterility" in text or "contamination" in text:
+        return "sterility issue"
+    if "bioavailability" in text or "solubility" in text:
+        return "bioavailability issue"
+    if "packag" in text or "container closure" in text or "leachable" in text or "extractable" in text:
+        return "packaging / container-closure issue"
+    if "manufactur" in text or "scale-up" in text or "batch" in text or "reproduc" in text:
+        return "manufacturing variability"
+    return raw
+
+
 def problem_category(opp: dict[str, Any]) -> str:
     for key in ("problem_category", "problem_signal", "failure_signal", "event_reason", "failure_reason"):
         if opp.get(key):
-            return str(opp[key])
+            return clean_problem_category(opp[key])
     # Look at recall/event reasons only as a fallback.
     blob = []
     for e in _evidence_iter(opp):
@@ -108,18 +135,8 @@ def problem_category(opp: dict[str, Any]) -> str:
             rf.get("reason_for_recall"), ent.get("event_reason"), e.get("supports"),
             e.get("english_summary"), e.get("title"),
         ) if x)
-    text = _norm(" ".join(blob))
-    if "dissolution" in text:
-        return "dissolution failure"
-    if "stability" in text or "degradation" in text:
-        return "stability issue"
-    if "impurit" in text or "nitrosamine" in text:
-        return "impurity issue"
-    if "sterility" in text or "contamination" in text:
-        return "sterility issue"
-    if "bioavailability" in text or "solubility" in text:
-        return "bioavailability issue"
-    return "unspecified product/problem signal"
+    category = clean_problem_category(" ".join(blob))
+    return category or "unspecified product/problem signal"
 
 
 def canonical_key(opp: dict[str, Any]) -> str:
@@ -192,16 +209,86 @@ def _normalise_lead_status(value: Any) -> str:
     return "needs validation"
 
 
-def lead_status(opp: dict[str, Any]) -> str:
-    for key in ("lead_status", "lead_classification", "next_action"):
-        if opp.get(key):
-            status = _normalise_lead_status(opp.get(key))
-            if status != "needs validation" or key != "next_action":
-                return status
+def _stored_report_lead_status(opp: dict[str, Any]) -> str | None:
     report = str(opp.get("report_md") or "")
-    m = re.search(r"Lead classification:\s*\*\*([^*]+)\*\*", report, flags=re.I)
-    if m:
-        return _normalise_lead_status(m.group(1))
+    if not report.strip():
+        return None
+    for pattern in (
+        r"\*\*Lead classification:\*\*\s*\*\*([^*]+)\*\*",
+        r"Lead classification:\*{0,2}\s*\*\*([^*]+)\*\*",
+        r"Lead classification:\*{0,2}\s*([^\n—-]+)",
+        r"\*\*Lead status:\*\*\s*\*\*([^*]+)\*\*",
+        r"Lead status:\*{0,2}\s*\*\*([^*]+)\*\*",
+        r"Lead status:\*{0,2}\s*([^\n—-]+)",
+    ):
+        m = re.search(pattern, report, flags=re.I)
+        if m:
+            return _normalise_lead_status(m.group(1))
+    return None
+
+
+def _status_text_blob(opp: dict[str, Any]) -> str:
+    parts = [_stringify(opp.get(k)) for k in (
+        "status", "lead_status", "lead_classification", "signal_status",
+        "problem_signal", "problem_category", "event_reason", "failure_reason",
+        "report_md",
+    )]
+    for e in _evidence_iter(opp):
+        ent = e.get("entities") or {}
+        rf = ent.get("recall_fields") or {}
+        parts.extend(_stringify(x) for x in (
+            e.get("title"), e.get("supports"), e.get("english_summary"), e.get("raw_text"),
+            ent.get("event_type"), ent.get("event_reason"),
+            rf.get("status"), rf.get("classification"), rf.get("product_quantity"),
+            rf.get("distribution_pattern"), rf.get("reason_for_recall"),
+        ))
+    return _norm(" ".join(parts))
+
+
+def _recall_status_meta(opp: dict[str, Any]) -> dict[str, bool]:
+    blob = _status_text_blob(opp)
+    terminated = any(x in blob for x in (
+        "terminated", "recall terminated", "completed", "status terminated"
+    ))
+    lot_specific = any(x in blob for x in (
+        "one lot", "single lot", "one batch", "single batch", "lot #",
+        "lot number", "lot numbers", " lot ", " lot:"
+    ))
+    root_confirmed = any(x in blob for x in (
+        "confirmed root cause", "root cause confirmed", "confirmed underlying root cause"
+    )) and "not publicly confirmed" not in blob
+    repeated_or_current = any(x in blob for x in (
+        "repeated", "recurring", "multiple lots", "multiple batches", "ongoing",
+        "active recall", "not terminated"
+    )) and not terminated
+    return {
+        "terminated": terminated,
+        "lot_specific": lot_specific,
+        "root_confirmed": root_confirmed,
+        "repeated_or_current": repeated_or_current,
+    }
+
+
+def lead_status(opp: dict[str, Any]) -> str:
+    # Report classification is the source of truth for generated leads. This keeps
+    # Opportunity Matcher cards, reports, and opportunity_index.csv aligned.
+    report_status = _stored_report_lead_status(opp)
+    if report_status:
+        return report_status
+
+    explicit_status = None
+    for key in ("lead_status", "lead_classification"):
+        if opp.get(key):
+            explicit_status = _normalise_lead_status(opp.get(key))
+            break
+
+    meta = _recall_status_meta(opp)
+    if meta["terminated"] and meta["lot_specific"] and not meta["root_confirmed"]:
+        return "monitor only"
+    if explicit_status:
+        return explicit_status
+    if _norm(opp.get("next_action")):
+        return _normalise_lead_status(opp.get("next_action"))
     if _norm(opp.get("signal_status")) in {"indirect", "needsverification", "needs verification"}:
         return "monitor only"
     if bool(opp.get("failure_event_confirmed")) and (opp.get("score") or 0) >= 50:
@@ -342,6 +429,7 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
         writer.writeheader()
         for rec in records:
             row = {k: rec.get(k, "") for k in fields}
+            row["problem_category"] = clean_problem_category(row.get("problem_category")) or row.get("problem_category", "")
             row["source_freshness"] = source_freshness(rec)
             writer.writerow(row)
     return out

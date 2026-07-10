@@ -499,6 +499,25 @@ def _parse_opp(row: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+
+
+def _clean_problem_category_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    text = _norm(raw)
+    if not text:
+        return ""
+    if "impurit" in text or "nitrosamine" in text or "related substance" in text:
+        return "impurity issue"
+    if "dissolution" in text:
+        return "dissolution failure"
+    if "stability" in text or "degradation" in text:
+        return "stability issue"
+    if "sterility" in text or "contamination" in text:
+        return "sterility issue"
+    if "bioavailability" in text or "solubility" in text:
+        return "bioavailability issue"
+    return raw
+
 def prepare_existing_opportunities(
     opportunity_rows: list[dict[str, Any]] | None,
     evidence_rows: list[dict[str, Any]] | None = None,
@@ -518,6 +537,8 @@ def prepare_existing_opportunities(
         if not isinstance(evidence, list):
             evidence = []
         opp["evidence"] = evidence
+        if opp.get("problem_category"):
+            opp["problem_category"] = _clean_problem_category_label(opp.get("problem_category"))
         records.append(opp)
     return records
 
@@ -944,10 +965,12 @@ def _stored_report_lead_status(opp: dict[str, Any]) -> str | None:
     if not report:
         return None
     patterns = (
-        r"Lead classification:\s*\*\*([^*]+)\*\*",
-        r"Lead classification:\s*([^\n—-]+)",
-        r"Lead status:\s*\*\*([^*]+)\*\*",
-        r"Lead status:\s*([^\n—-]+)",
+        r"\*\*Lead classification:\*\*\s*\*\*([^*]+)\*\*",
+        r"Lead classification:\*{0,2}\s*\*\*([^*]+)\*\*",
+        r"Lead classification:\*{0,2}\s*([^\n—-]+)",
+        r"\*\*Lead status:\*\*\s*\*\*([^*]+)\*\*",
+        r"Lead status:\*{0,2}\s*\*\*([^*]+)\*\*",
+        r"Lead status:\*{0,2}\s*([^\n—-]+)",
     )
     for pat in patterns:
         m = re.search(pat, report, flags=re.I)

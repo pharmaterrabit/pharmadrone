@@ -175,13 +175,13 @@ def _render_match_cards(result: dict, mode: str) -> None:
             if m.get("match_terms"):
                 st.caption("Matched terms: " + _as_text(m.get("match_terms")))
 
-        with st.expander("Open full stored report"):
-            report_md = m.get("stored_report_md") or ""
-            if report_md.strip():
+        report_md = m.get("stored_report_md") or ""
+        if m.get("has_full_report") and report_md.strip():
+            with st.expander("Open full stored report"):
                 st.caption("Score note: matcher cards show the stored Opportunity Score used for ranking. The report may also include a separate Root-Cause/Solution-Fit overall score.")
                 st.markdown(report_md)
-            else:
-                st.caption("Full report not generated yet. This is an indexed opportunity preview. Use Continue previous queue or Generate/Refresh to create full reports for selected/top leads.")
+        else:
+            st.caption("Full report not generated yet. This is an indexed opportunity preview. Use Continue previous queue or Generate/Refresh to create a full report.")
         st.divider()
 
 st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
@@ -252,8 +252,8 @@ with tab_gen:
     continue_requested = False
     if index_stats_now.get("waiting_queue", 0):
         continue_requested = st.button(
-            f"Continue previous queue ({index_stats_now.get('waiting_queue', 0)} waiting)",
-            help="Generate reports from waiting indexed opportunity records only. No new source search is run.",
+            f"Continue previous queue — generate next {MAX_PER_RUN} reports",
+            help=f"Generate up to {MAX_PER_RUN} reports from waiting indexed opportunity records only. No new source search is run. {index_stats_now.get('waiting_queue', 0)} waiting.",
         )
 
     if ALLOW_SCALE:
@@ -630,6 +630,8 @@ with tab_results:
         st.info(_index_summary_text(idx_stats))
         st.caption("SQLite persistence is suitable for this local/Streamlit MVP, but it is not production SaaS persistence.")
         preview = pd.DataFrame(idx_records)
+        if "problem_category" in preview.columns:
+            preview["problem_category"] = preview["problem_category"].apply(opportunity_index.clean_problem_category)
         show_cols = [c for c in [
             "stable_lead_id", "company", "product", "problem_category", "source_type",
             "source_id", "region", "score", "grade", "lead_status", "novelty_status",
