@@ -72,6 +72,9 @@ def events_from_coverage(coverage: dict[str, dict[str, Any]], *, run_id: str | N
         warnings = cov.get("warnings") or []
         queries = int(cov.get("queries") or 0)
         evidence = int(cov.get("evidence") or cov.get("evidence_items") or 0)
+        indexed = int(cov.get("indexed_leads") or cov.get("accepted_count") or 0)
+        source_rejected = int(cov.get("source_records_rejected") or cov.get("source_rejected") or 0)
+        candidate_rejected = int(cov.get("candidate_records_rejected") or 0)
         failed = int(cov.get("failed") or 0)
         ok = int(cov.get("ok") or cov.get("succeeded") or 0)
         status = cov.get("status") or classify_status(ok=(failed == 0), count=evidence, error=(errors[0] if errors else None), skipped=(queries == 0))
@@ -86,8 +89,10 @@ def events_from_coverage(coverage: dict[str, dict[str, Any]], *, run_id: str | N
             "status": status,
             "failure_reason": failure_reason,
             "retrieved_count": evidence,
-            "accepted_count": evidence,
-            "rejected_count": int(cov.get("rejected", 0) or 0),
+            # In Checkpoint 5A.1 accepted means an indexed lead, not merely a
+            # retrieved evidence item or one of the top generated reports.
+            "accepted_count": indexed,
+            "rejected_count": source_rejected + candidate_rejected,
             "created_at": utc_now_iso(),
             "query_count": queries,
             "queries": queries,

@@ -197,7 +197,11 @@ def _record_text(opp: dict[str, Any]) -> str:
             parts.extend([e.get("title"), e.get("supports"), e.get("english_summary")])
             ent = e.get("entities") or {}
             rf = ent.get("recall_fields") or {}
-            parts.extend([ent.get("event_reason"), ent.get("dosage_form"), rf.get("reason_for_recall"), rf.get("product_description")])
+            parts.extend([
+                ent.get("event_reason"), ent.get("dosage_form"),
+                ent.get("trial_relevance_context"), ent.get("discovery_topic"),
+                rf.get("reason_for_recall"), rf.get("product_description"),
+            ])
     return _norm(" ".join(_as_text(x) for x in parts if x))
 
 

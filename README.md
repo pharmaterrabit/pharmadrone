@@ -368,3 +368,21 @@ Failure/Rescue Generate now deepens the existing official structured sources wit
 - All discovered valid candidates are indexed before the existing report-generation cap. Full reports remain limited by `MAX_REPORTS_PER_RUN`.
 
 The default source caps are documented in `.env.example`. They can be reduced for constrained deployments, but should not be increased without checking API limits and manual validation precision.
+
+## Checkpoint 5A.1 — corrected discovery-depth diagnostics
+
+Checkpoint 5A.1 fixes the gap between retrieved source evidence and the source
+counts shown to users. Source coverage now reports separate counts for raw API
+results, evidence surviving connector gates, candidates created/rejected,
+indexed leads, and generated full reports. A source can therefore contribute
+indexed queue records even when none of its records appears in the top five
+reports.
+
+The FDA recall connector now uses bounded atomic taxonomy queries plus a bounded
+recent-recall sweep when exact problem queries are sparse. Results are merged by
+FDA recall number, while distinct official recall events remain separate. The
+ClinicalTrials.gov connector retains only usable medicinal interventional
+records and records explicit exclusion reasons for specimen, placebo-only,
+standard-of-care, and diagnostic/control records. FDA shortages remain cautious
+supply, availability, manufacturing-quality, or discontinuation signals and do
+not establish a formulation root cause or customer need.

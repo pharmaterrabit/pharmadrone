@@ -46,6 +46,7 @@ class ConnectorResult:
     error: str | None = None
     records: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    stats: dict = field(default_factory=dict)
 
 
 def today() -> str:

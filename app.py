@@ -481,10 +481,14 @@ with tab_gen:
                    "coverage.")
         cov_df = pd.DataFrame([
             {"Source": s, "Status": d.get("status", "—"),
-             "Evidence items": d["evidence_items"],
-             "Accepted leads citing": d["accepted_leads_citing"],
-             "Queries": d["queries"], "Succeeded": d.get("succeeded", 0),
-             "Failed": d["failed"]}
+             "Raw source results": d.get("raw_results", d.get("evidence_items", 0)),
+             "Evidence items": d.get("evidence_items", 0),
+             "Candidates created": d.get("candidate_records_created", 0),
+             "Candidates rejected": d.get("candidate_records_rejected", 0),
+             "Indexed leads": d.get("indexed_leads", 0),
+             "Full reports citing": d.get("full_reports_citing", d.get("accepted_leads_citing", 0)),
+             "Queries": d.get("queries", 0), "Succeeded": d.get("succeeded", 0),
+             "Failed": d.get("failed", 0)}
             for s, d in cov.items()])
         st.dataframe(cov_df, use_container_width=True, hide_index=True)
 
@@ -525,6 +529,39 @@ with tab_gen:
   - rejected (too little evidence): {dbg.get('scoring', {}).get('rejected_low_evidence', 0)}
   - rejected (grade D): {dbg.get('scoring', {}).get('rejected_grade_d', 0)}
 """)
+            source_pipeline = dbg.get("source_candidate_pipeline", {}) or {}
+            if source_pipeline:
+                st.markdown("**Source → candidate → index diagnostics:**")
+                source_rows = []
+                for source_name, values in source_pipeline.items():
+                    source_rows.append({
+                        "Source": source_name,
+                        "Raw source results": values.get("raw_source_results", values.get("raw_evidence", 0)),
+                        "Evidence after source gates": values.get("raw_evidence", 0),
+                        "Rejected at source gate": values.get("source_records_rejected", 0),
+                        "Candidates created": values.get("candidate_records_created", 0),
+                        "Candidates rejected": values.get("candidate_records_rejected", 0),
+                        "Indexed leads": values.get("indexed_leads", 0),
+                    })
+                st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
+                with st.expander("Candidate rejection reasons by source", expanded=False):
+                    rejection_rows = []
+                    for source_name, values in source_pipeline.items():
+                        for reason, count in (values.get("source_rejection_reasons") or {}).items():
+                            rejection_rows.append({
+                                "Source": source_name, "Stage": "source gate",
+                                "Reason": reason, "Count": count,
+                            })
+                        for reason, count in (values.get("candidate_rejection_reasons") or {}).items():
+                            rejection_rows.append({
+                                "Source": source_name, "Stage": "candidate construction",
+                                "Reason": reason, "Count": count,
+                            })
+                    if rejection_rows:
+                        st.dataframe(pd.DataFrame(rejection_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No candidate-construction rejections recorded for this run.")
+
             examples = disc.get('discarded_examples', [])
             if examples:
                 st.markdown("**Discarded clusters (why they are NOT reports):**")

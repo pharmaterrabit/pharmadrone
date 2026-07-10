@@ -244,6 +244,9 @@ def _explicit_problem_category(cluster: list[dict]) -> str | None:
         if stype == "trial":
             if ent.get("product_problem_supported"):
                 return ent.get("issue_category") or guess_problem_category(ent.get("why_stopped") or "")
+            # Keep the product-problem category empty when the registry does not
+            # directly state a product/formulation reason. Technical discovery
+            # context is stored separately for seller-fit matching and auditing.
             continue
         if stype == "shortage":
             return ent.get("issue_category") or guess_problem_category(ent.get("shortage_reason") or "")
@@ -451,6 +454,32 @@ def _candidate_from_cluster(key: str, cluster: list[dict], provisional: bool,
     return opp
 
 
+def _cluster_source_name(cluster: list[dict]) -> str:
+    """Return a stable primary source label for candidate-pipeline diagnostics."""
+    if not cluster:
+        return "unknown source"
+    priorities = ("recall", "shortage", "trial", "company", "web", "paper")
+    for stype in priorities:
+        for e in cluster:
+            if str(e.get("source_type") or "").lower() == stype and e.get("source_name"):
+                return str(e.get("source_name"))
+    return str(cluster[0].get("source_name") or "unknown source")
+
+
+def _bump_source_breakdown(by_source: dict, source: str, field: str,
+                           reason: str | None = None, amount: int = 1) -> None:
+    row = by_source.setdefault(source, {
+        "clusters": 0,
+        "candidate_records_created": 0,
+        "candidate_records_rejected": 0,
+        "rejection_reasons": {},
+    })
+    row[field] = int(row.get(field, 0)) + int(amount)
+    if reason:
+        reasons = row.setdefault("rejection_reasons", {})
+        reasons[reason] = int(reasons.get(reason, 0)) + int(amount)
+
+
 def discover_candidates(evidence: list[dict], min_cluster_evidence: int = 1
                         ) -> tuple[list[dict], dict]:
     """First-pass deterministic candidates (no LLM). Returns (candidates, breakdown).
@@ -464,7 +493,7 @@ def discover_candidates(evidence: list[dict], min_cluster_evidence: int = 1
     out = []
     breakdown = {"valid_bd_opportunity": 0, "weak_academic_cluster": 0,
                  "rejected_generic_literature": 0, "unclustered_generic": 0,
-                 "discarded_examples": []}
+                 "discarded_examples": [], "by_source": {}}
 
     # Evidence that produced NO cluster key at all (no valid target and no
     # non-blacklisted proper noun) is generic literature — count it so it is
@@ -474,6 +503,11 @@ def discover_candidates(evidence: list[dict], min_cluster_evidence: int = 1
         if e.get("url") not in clustered_urls:
             breakdown["unclustered_generic"] += 1
             breakdown["rejected_generic_literature"] += 1
+            source = str(e.get("source_name") or "unknown source")
+            _bump_source_breakdown(
+                breakdown["by_source"], source, "candidate_records_rejected",
+                "no valid target / no cluster key",
+            )
             if len(breakdown["discarded_examples"]) < 8:
                 breakdown["discarded_examples"].append({
                     "class": "rejected_generic_literature",
@@ -484,7 +518,13 @@ def discover_candidates(evidence: list[dict], min_cluster_evidence: int = 1
                 })
 
     for key, cluster in clusters.items():
+        source = _cluster_source_name(cluster)
+        _bump_source_breakdown(breakdown["by_source"], source, "clusters")
         if len(cluster) < min_cluster_evidence:
+            _bump_source_breakdown(
+                breakdown["by_source"], source, "candidate_records_rejected",
+                f"cluster evidence below minimum ({len(cluster)} < {min_cluster_evidence})",
+            )
             continue
         cls = classify_cluster(cluster)
         breakdown[cls["class"]] += 1
@@ -493,13 +533,25 @@ def discover_candidates(evidence: list[dict], min_cluster_evidence: int = 1
                                            classification=cls)
             if cand:
                 out.append(cand)
-        elif len(breakdown["discarded_examples"]) < 8:
-            breakdown["discarded_examples"].append({
-                "class": cls["class"],
-                "title": (cluster[0].get("title") or "")[:80],
-                "sources": cls["source_categories"],
-                "reason": cls["reason"],
-            })
+                _bump_source_breakdown(
+                    breakdown["by_source"], source, "candidate_records_created")
+            else:
+                _bump_source_breakdown(
+                    breakdown["by_source"], source, "candidate_records_rejected",
+                    "valid cluster did not produce candidate",
+                )
+        else:
+            _bump_source_breakdown(
+                breakdown["by_source"], source, "candidate_records_rejected",
+                cls["reason"],
+            )
+            if len(breakdown["discarded_examples"]) < 8:
+                breakdown["discarded_examples"].append({
+                    "class": cls["class"],
+                    "title": (cluster[0].get("title") or "")[:80],
+                    "sources": cls["source_categories"],
+                    "reason": cls["reason"],
+                })
     return out, breakdown
 
 

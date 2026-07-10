@@ -6,6 +6,7 @@ supply, manufacturing, discontinuation, or availability signal.
 """
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 from urllib.parse import quote
 
@@ -132,6 +133,8 @@ def discover_shortages(*, max_results: int = 300, page_size: int = 50,
 
     unique: dict[str, dict] = {}
     pages_run = 0
+    raw_results = 0
+    rejected = Counter()
     try:
         for page in range(max_pages):
             remaining = max_results - len(unique)
@@ -147,22 +150,51 @@ def discover_shortages(*, max_results: int = 300, page_size: int = 50,
                 raise
             pages_run += 1
             rows = data.get("results", []) or []
+            raw_results += len(rows)
             if not rows:
                 break
             before = len(unique)
             for row in rows:
+                if not _clean(row.get("package_ndc")) and not _clean(row.get("generic_name") or row.get("proprietary_name")):
+                    rejected["missing package NDC and product name"] += 1
+                    continue
+                if not _clean(row.get("company_name")) and not _clean(row.get("generic_name") or row.get("proprietary_name")):
+                    rejected["missing company and product"] += 1
+                    continue
                 unique.setdefault(_stable_key(row), row)
                 if len(unique) >= max_results:
                     break
             if len(rows) < limit or len(unique) == before:
                 break
     except Exception as exc:
-        return ConnectorResult(NAME, "drug shortages", ok=False, error=describe_error(exc))
+        return ConnectorResult(
+            NAME, "drug shortages", ok=False, error=describe_error(exc),
+            stats={
+                "query_count": 1, "successful_queries": 0, "failed_queries": 1,
+                "raw_results": raw_results,
+                "records_rejected": sum(rejected.values()),
+                "rejection_reasons": dict(rejected),
+            },
+        )
 
     records = _parse(list(unique.values()))
     return ConnectorResult(
         NAME, "drug shortages", ok=True, count=len(records), records=records,
-        warnings=[f"bounded pagination: {pages_run} page(s), {len(records)} unique shortage record(s)"],
+        warnings=[
+            f"bounded pagination: {pages_run} page(s), {len(records)} unique shortage record(s), "
+            f"{sum(rejected.values())} source record(s) rejected"
+        ],
+        stats={
+            "query_count": 1,
+            "successful_queries": 1,
+            "failed_queries": 0,
+            "raw_results": raw_results,
+            "unique_records": len(records),
+            "records_rejected": sum(rejected.values()),
+            "rejection_reasons": dict(rejected),
+            "pages_run": pages_run,
+            "source_event_ids": [r.get("record_id") for r in records],
+        },
     )
 
 

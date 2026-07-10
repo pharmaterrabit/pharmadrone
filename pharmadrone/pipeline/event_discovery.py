@@ -13,16 +13,24 @@ from ..connectors import (
 
 TRIAL_STOP_TOPICS = [
     "bioavailability formulation",
+    "relative bioavailability",
     "bioequivalence pharmacokinetics",
+    "pharmacokinetic bridging",
     "food effect oral formulation",
     "solubility dissolution",
+    "oral drug delivery formulation",
     "modified release formulation",
     "extended release formulation",
     "delayed release formulation",
+    "formulation optimization",
+    "reformulation drug product",
     "topical formulation drug delivery",
     "transdermal drug delivery",
     "inhaled formulation",
     "injectable formulation",
+    "long acting injectable formulation",
+    "pediatric formulation",
+    "fixed dose combination formulation",
     "formulation comparison",
 ]
 
@@ -63,9 +71,9 @@ def _event_identity(rec: dict) -> str:
     source_name = str(rec.get("source_name") or "").lower()
     for prefix, value in (
         ("recall", rf.get("recall_number")),
-        ("event", ent.get("source_event_id")),
         ("trial", ent.get("trial_id") or ent.get("nct_id")),
         ("shortage", ent.get("package_ndc") or ent.get("shortage_key")),
+        ("event", ent.get("source_event_id")),
         (source_type or source_name or "record", rec.get("record_id")),
     ):
         if value:
@@ -103,22 +111,18 @@ def discover_events(profile: dict, cost, per_source: int = 8, log=None,
         if expanded:
             page_size = _int_env("OPENFDA_RECALL_PAGE_SIZE", 50, maximum=100)
             max_pages = _int_env("OPENFDA_RECALL_MAX_PAGES_PER_CATEGORY", 3, maximum=10)
-            seen = 0
-            for category, terms in openfda_enforcement.RECALL_REASON_CATEGORIES.items():
-                remaining = max_per_source - seen
-                if remaining <= 0:
-                    break
-                res = openfda_enforcement.discover_category(
-                    category, terms, page_size=page_size, max_pages=max_pages,
-                    max_results=min(remaining, page_size * max_pages),
-                )
-                _absorb(coverage["openFDA (Enforcement/Recalls)"], res, evidence,
-                        region="United States", say=say)
-                if res.ok:
-                    seen = len({
-                        _event_identity(x) for x in evidence
-                        if x.get("source_name") == openfda_enforcement.NAME
-                    })
+            res = openfda_enforcement.discover_taxonomy(
+                page_size=page_size,
+                max_pages=max_pages,
+                max_results=max_per_source,
+            )
+            _absorb(coverage["openFDA (Enforcement/Recalls)"], res, evidence,
+                    region="United States", say=say)
+            coverage["openFDA (Enforcement/Recalls)"]["settings"] = {
+                "OPENFDA_RECALL_PAGE_SIZE": page_size,
+                "OPENFDA_RECALL_MAX_PAGES_PER_CATEGORY": max_pages,
+                "MAX_DISCOVERY_RECORDS_PER_SOURCE": max_per_source,
+            }
         else:
             for term in list(openfda_enforcement.RECALL_REASON_TERMS)[:8]:
                 res = openfda_enforcement.discover_events(term, max_results=per_source)
@@ -174,13 +178,26 @@ def discover_events(profile: dict, cost, per_source: int = 8, log=None,
 
 
 def _blank():
-    return {"queries": 0, "ok": 0, "failed": 0, "evidence": 0, "errors": [], "warnings": []}
+    return {
+        "queries": 0, "ok": 0, "failed": 0, "evidence": 0,
+        "raw_results": 0, "source_rejected": 0,
+        "rejection_reasons": {}, "connector_stats": [],
+        "errors": [], "warnings": [], "settings": {},
+    }
 
 
 def _absorb(cov, res, evidence, region=None, say=None, query_text=None):
-    cov["queries"] += 1
+    stats = getattr(res, "stats", {}) or {}
+    cov["queries"] += int(stats.get("query_count") or 1)
+    cov["raw_results"] += int(stats.get("raw_results") or res.count or 0)
+    cov["source_rejected"] += int(stats.get("records_rejected") or 0)
+    for reason, count in (stats.get("rejection_reasons") or {}).items():
+        cov["rejection_reasons"][reason] = cov["rejection_reasons"].get(reason, 0) + int(count or 0)
+    if stats:
+        cov.setdefault("connector_stats", []).append(stats)
     if res.ok:
-        cov["ok"] += 1
+        cov["ok"] += int(stats.get("successful_queries") or 1)
+        cov["failed"] += int(stats.get("failed_queries") or 0)
         cov["evidence"] += res.count
         cov.setdefault("warnings", []).extend(getattr(res, "warnings", []) or [])
         for rec in res.records:
@@ -188,7 +205,7 @@ def _absorb(cov, res, evidence, region=None, say=None, query_text=None):
             rec["query_text"] = rec.get("query_text") or query_text or res.query
         evidence.extend(res.records)
     else:
-        cov["failed"] += 1
+        cov["failed"] += int(stats.get("failed_queries") or stats.get("query_count") or 1)
         msg = f"{res.source} failed on '{str(res.query)[:40]}': {res.error}"
         cov["errors"].append(msg)
         cov.setdefault("warnings", []).extend(getattr(res, "warnings", []) or [])

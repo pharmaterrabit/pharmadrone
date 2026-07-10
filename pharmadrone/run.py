@@ -55,22 +55,52 @@ def _source_status(cov: dict) -> str:
     return "available"
 
 
-def _coverage_summary(coverage: dict, accepted: list[dict]) -> dict:
-    """Per-source: raw evidence retrieved + how many ACCEPTED leads cite it."""
-    leads_by_source = Counter()
-    for opp in accepted:
-        cited = {e.get("source_name") for e in opp.get("evidence", [])}
-        for s in cited:
-            leads_by_source[s] += 1
+def _candidate_counts_by_source(candidates: list[dict]) -> Counter:
+    counts = Counter()
+    for opp in candidates or []:
+        cited = {e.get("source_name") for e in opp.get("evidence", []) if e.get("source_name")}
+        for source in cited:
+            counts[source] += 1
+    return counts
+
+
+def _coverage_summary(coverage: dict, accepted: list[dict], *,
+                      indexed_candidates: list[dict] | None = None,
+                      discovery_by_source: dict | None = None) -> dict:
+    """Per-source retrieval, candidate, index, and full-report diagnostics.
+
+    ``accepted_leads_citing`` is retained for backward compatibility but now has
+    the clearer alias ``full_reports_citing``. Indexed leads are counted before
+    the report/scoring cap, which prevents trial/shortage sources from appearing
+    to have produced zero leads merely because the top five reports were recalls.
+    """
+    full_reports_by_source = _candidate_counts_by_source(accepted)
+    indexed_by_source = _candidate_counts_by_source(indexed_candidates or [])
+    discovery_by_source = discovery_by_source or {}
     summary = {}
-    for source, cov in coverage.items():
+    all_sources = set(coverage) | set(discovery_by_source) | set(indexed_by_source)
+    for source in sorted(all_sources):
+        cov = coverage.get(source, {})
+        disc = discovery_by_source.get(source, {}) or {}
+        connector_reasons = dict(cov.get("rejection_reasons", {}) or {})
+        candidate_reasons = dict(disc.get("rejection_reasons", {}) or {})
         summary[source] = {
             "status": _source_status(cov),
             "queries": cov.get("queries", 0),
             "succeeded": cov.get("ok", 0),
             "failed": cov.get("failed", 0),
+            "raw_results": cov.get("raw_results", cov.get("evidence", 0)),
             "evidence_items": cov.get("evidence", 0),
-            "accepted_leads_citing": leads_by_source.get(source, 0),
+            "source_records_rejected": cov.get("source_rejected", 0),
+            "candidate_records_created": disc.get("candidate_records_created", 0),
+            "candidate_records_rejected": disc.get("candidate_records_rejected", 0),
+            "indexed_leads": indexed_by_source.get(source, 0),
+            "full_reports_citing": full_reports_by_source.get(source, 0),
+            "accepted_leads_citing": full_reports_by_source.get(source, 0),
+            "source_rejection_reasons": connector_reasons,
+            "candidate_rejection_reasons": candidate_reasons,
+            "settings": cov.get("settings", {}),
+            "connector_stats": cov.get("connector_stats", []),
             "errors": cov.get("errors", []),
             "warnings": cov.get("warnings", []),
         }
@@ -235,6 +265,24 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     # previews and queue metadata without generating extra reports.
     total_candidates = len(candidates)
     ranked_all = sorted(candidates, key=discover.prerank_score, reverse=True)
+    discovery_by_source = (disc_breakdown.get("by_source") or {})
+    indexed_by_source = _candidate_counts_by_source(ranked_all)
+    raw_by_source = Counter(
+        e.get("source_name") or "unknown source" for e in evidence
+    )
+    debug["source_candidate_pipeline"] = {
+        source: {
+            "raw_source_results": int((coverage.get(source) or {}).get("raw_results", raw_by_source.get(source, 0))),
+            "raw_evidence": int(raw_by_source.get(source, 0)),
+            "source_records_rejected": int((coverage.get(source) or {}).get("source_rejected", 0)),
+            "source_rejection_reasons": dict((coverage.get(source) or {}).get("rejection_reasons", {}) or {}),
+            "candidate_records_created": int((discovery_by_source.get(source) or {}).get("candidate_records_created", 0)),
+            "candidate_records_rejected": int((discovery_by_source.get(source) or {}).get("candidate_records_rejected", 0)),
+            "candidate_rejection_reasons": dict((discovery_by_source.get(source) or {}).get("rejection_reasons", {}) or {}),
+            "indexed_leads": int(indexed_by_source.get(source, 0)),
+        }
+        for source in sorted(set(raw_by_source) | set(discovery_by_source) | set(indexed_by_source) | set(coverage))
+    }
     try:
         conn_index = db.connect(settings.DB_PATH)
         opportunity_index.upsert_index_records(
@@ -432,7 +480,11 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
         f"{idx_stats_final['waiting_queue']} waiting in queue · "
         f"{idx_stats_final['updated_count']} updated since last indexing.")
 
-    cov_summary = _coverage_summary(coverage, accepted)
+    cov_summary = _coverage_summary(
+        coverage, accepted,
+        indexed_candidates=ranked_all,
+        discovery_by_source=disc_breakdown.get("by_source", {}),
+    )
     try:
         conn_sh = db.connect(settings.DB_PATH)
         db.save_source_health_events(
@@ -450,9 +502,11 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     say("\n── Source coverage summary ──")
     for src, s in cov_summary.items():
         flag = f"  ✗ {len(s['errors'])} error(s)" if s["failed"] else ""
-        say(f"  {src:<22} status={s.get('status','n/a'):<28} evidence={s['evidence_items']:<4} "
-            f"leads_citing={s['accepted_leads_citing']:<3}"
-            f" queries={s['queries']}{flag}")
+        say(f"  {src:<30} status={s.get('status','n/a'):<28} evidence={s['evidence_items']:<4} "
+            f"candidates={s.get('candidate_records_created', 0):<4} "
+            f"indexed={s.get('indexed_leads', 0):<4} "
+            f"full_reports={s.get('full_reports_citing', 0):<3} "
+            f"queries={s['queries']}{flag}")
     say(f"\nDone. Est. cost ${cost.total_usd} (${cost.per_report_usd}/report). "
         f"Output in ./reports")
     return accepted, rejected, cost, cov_summary, debug
