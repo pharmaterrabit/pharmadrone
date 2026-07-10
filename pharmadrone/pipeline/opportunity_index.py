@@ -415,11 +415,10 @@ def backfill_generated_opportunities(conn) -> dict[str, int]:
 
 
 def _ascii_status_label(value: Any) -> Any:
-    if value is None:
-        return value
-    text = str(value)
-    text = text.replace("\u2014", "-").replace("\u2013", "-").replace("\u201a\u00c4\u00ee", "-")
-    return " ".join(text.split())
+    # Single status-label normalizer lives in db.py; this alias keeps the export
+    # path backward-compatible while ensuring old stored mojibake labels are
+    # fixed at CSV generation time.
+    return db.normalize_status_label(value)
 
 
 def export_index_csv(conn, reports_dir: Path) -> Path:

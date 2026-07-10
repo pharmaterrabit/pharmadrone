@@ -79,6 +79,11 @@ def _as_text(value) -> str:
     return str(value)
 
 
+def _status_label(value) -> str:
+    cleaned = db.normalize_status_label(value)
+    return "" if cleaned is None else str(cleaned)
+
+
 def _matcher_export_csv(result: dict, mode: str, search_term: str) -> bytes:
     """CSV export for the currently displayed matcher results only."""
     rows = []
@@ -115,13 +120,17 @@ def _matcher_export_csv(result: dict, mode: str, search_term: str) -> bytes:
             "official follow-up status": m.get("official_followup_status") or "",
             "official follow-up count": m.get("official_followup_count") or "",
             "label context status": m.get("label_context_status") or "",
-            "clinical trial context status": m.get("clinical_trial_context_status") or "",
+            "clinical trial context status": _status_label(m.get("clinical_trial_context_status")),
             "literature context status": m.get("literature_context_status") or "",
             "best evidence tier": m.get("best_evidence_tier") or "",
             "official source count": m.get("official_source_count") or "",
             "literature source count": m.get("literature_source_count") or "",
             "safe BD action": m.get("safe_bd_action") or m.get("safe_outreach_angle") or "",
         })
+    for row in rows:
+        for key in list(row.keys()):
+            if "status" in key.lower() or key.lower() in {"corroboration", "enrichment"}:
+                row[key] = _status_label(row.get(key))
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
 
 
@@ -143,7 +152,7 @@ def _matcher_table_rows(result: dict) -> list[dict]:
             "Enrichment": m.get("enrichment_status") or "enrichment not checked",
             "Official follow-up": m.get("official_followup_status") or "not checked",
             "Label context": m.get("label_context_status") or "not checked",
-            "Trial context": m.get("clinical_trial_context_status") or "not checked",
+            "Trial context": _status_label(m.get("clinical_trial_context_status")) or "not checked",
             "Literature context": m.get("literature_context_status") or "not checked",
             "Best evidence tier": m.get("best_evidence_tier") or m.get("evidence_quality") or "not checked",
             "Source coverage": m.get("source_coverage_count") or 0,
@@ -151,6 +160,10 @@ def _matcher_table_rows(result: dict) -> list[dict]:
             "Last checked": m.get("last_checked_at") or "—",
             "Match reason": m.get("match_reason"),
         })
+    for row in rows:
+        for key in list(row.keys()):
+            if "status" in key.lower() or key in {"Corroboration", "Enrichment"}:
+                row[key] = _status_label(row.get(key))
     return rows
 
 
@@ -184,7 +197,7 @@ def _render_match_cards(result: dict, mode: str) -> None:
         context_bits = [
             m.get('official_followup_status'),
             m.get('label_context_status'),
-            m.get('clinical_trial_context_status'),
+            _status_label(m.get('clinical_trial_context_status')),
             m.get('literature_context_status'),
         ]
         context_bits = [str(x) for x in context_bits if x and str(x) not in {'not checked', 'skipped - not trial lead', 'skipped - no product/molecule', 'skipped - not FDA/regulatory lead'}]
@@ -670,6 +683,8 @@ with tab_results:
         preview = pd.DataFrame(idx_records)
         if "problem_category" in preview.columns:
             preview["problem_category"] = preview["problem_category"].apply(opportunity_index.clean_problem_category)
+        for _status_col in [c for c in preview.columns if c.endswith("_status") or c in {"enrichment_status", "corroboration_status"}]:
+            preview[_status_col] = preview[_status_col].apply(_status_label)
         show_cols = [c for c in [
             "stable_lead_id", "company", "product", "problem_category", "source_type",
             "source_id", "region", "score", "grade", "lead_status", "novelty_status",

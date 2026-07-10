@@ -109,23 +109,58 @@ _ASCII_SKIP_LABELS = {
 }
 
 
-def _clean_status_label(value):
-    """Return ASCII-safe status labels for UI/export compatibility."""
+def normalize_status_label(value):
+    """Return ASCII-safe status labels for UI/export compatibility.
+
+    Some existing local SQLite rows may contain an em dash/en dash, or mojibake
+    produced when UTF-8 em dash text was opened by spreadsheet tools. Normalise
+    these labels at read/export time so CSV output is stable and ASCII-safe.
+    """
     if value is None:
         return value
     text = str(value)
-    # Normalise common dash mojibake from CSV/spreadsheet rendering paths.
-    text = text.replace("\u2014", "-").replace("\u2013", "-").replace("\u201a\u00c4\u00ee", "-")
+
+    # Common dash variants and mojibake variants seen in CSV/spreadsheet paths.
+    replacements = {
+        "\u2014": "-",  # em dash
+        "\u2013": "-",  # en dash
+        "\u2212": "-",  # minus sign
+        "\u2010": "-",  # hyphen
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2012": "-",  # figure dash
+        "\u2015": "-",  # horizontal bar
+        "\u00e2\u20ac\u201d": "-",  # â€”
+        "\u00e2\u20ac\u201c": "-",  # â€“
+        "\u201a\u00c4\u00ee": "-",  # ‚Äî
+        "\u201a\u00c4\u00ec": "-",  # ‚Äì
+        "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u0153": "-",
+        "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u009d": "-",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
     text = " ".join(text.split())
-    if text in _ASCII_SKIP_LABELS:
-        return text
+
+    # Robust canonical mapping for old/bad stored variants, regardless of the
+    # punctuation between "skipped" and "not trial lead".
+    lowered = text.lower()
+    if "skipped" in lowered and "not trial lead" in lowered:
+        return "skipped - not trial lead"
+    if "skipped" in lowered and "no product/molecule" in lowered:
+        return "skipped - no product/molecule"
+    if "skipped" in lowered and "not fda/regulatory lead" in lowered:
+        return "skipped - not FDA/regulatory lead"
     return text
+
+
+# Backward-compatible private alias used by older helper code.
+def _clean_status_label(value):
+    return normalize_status_label(value)
 
 
 def _clean_status_fields(row: dict) -> dict:
     for key in list(row.keys()):
         if key.endswith("_status") or key in {"enrichment_status", "corroboration_status"}:
-            row[key] = _clean_status_label(row.get(key))
+            row[key] = normalize_status_label(row.get(key))
     return row
 
 def _ensure_column(conn, table: str, column: str, spec: str) -> None:
@@ -518,7 +553,11 @@ def upsert_enrichment(conn, payload: dict) -> None:
 
 def fetch_enrichment_map(conn) -> dict[str, dict]:
     rows = conn.execute("SELECT * FROM opportunity_enrichment").fetchall()
-    return {dict(r)["stable_lead_id"]: dict(r) for r in rows}
+    cleaned = []
+    for r in rows:
+        row = _clean_status_fields(dict(r))
+        cleaned.append(row)
+    return {r["stable_lead_id"]: r for r in cleaned}
 
 
 def fetch_enrichment_candidates(conn, limit: int = 5) -> list[dict]:
