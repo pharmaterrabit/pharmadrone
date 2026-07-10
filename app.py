@@ -12,7 +12,7 @@ import streamlit as st
 from pharmadrone import settings, db, auth
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
-from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study
+from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -915,6 +915,7 @@ with tab_results:
             st.session_state.pop("opportunity_matcher_result", None)
             st.session_state.pop("seller_target_result", None)
             st.session_state.pop("pilot_case_study_result", None)
+            st.session_state.pop("validation_study_result", None)
             if logs_e:
                 with st.expander("Developer/debug: enrichment log", expanded=False):
                     st.code("\n".join(logs_e[-30:]))
@@ -1082,6 +1083,188 @@ with tab_results:
                 st.caption(str(limitation))
     elif not idx_stats.get("indexed_total", 0):
         st.caption("Run Generate first to create indexed PharmaTune evidence before building the pilot case study.")
+
+    st.divider()
+    st.markdown("### 100-target validation study")
+    st.caption(
+        "Build an internal, audit-ready validation set from existing indexed/enriched PharmaTune evidence only. "
+        "This workflow does not call APIs or an LLM and does not change Opportunity Scores, stable lead IDs, queues, enrichment, or reports."
+    )
+
+    validation_region_options = sorted({
+        str(r.get("region") or "").strip()
+        for r in idx_records
+        if str(r.get("region") or "").strip()
+    })
+    validation_problem_options = list(dict.fromkeys(
+        list(validation_study.DEFAULT_PROBLEM_SIGNALS)
+        + list(profile.get("problem_signals", []) or [])
+    ))
+    validation_capability_options = list(seller_target_matcher.DISPLAY_CATEGORIES)
+
+    with st.form("validation_study_form"):
+        validation_title = st.text_input(
+            "Validation study title",
+            value=validation_study.DEFAULT_VALIDATION_TITLE,
+        )
+        validation_seller_profile = st.text_area(
+            "Seller / service profile",
+            value=validation_study.DEFAULT_SELLER_SERVICE_PROFILE,
+            height=80,
+        )
+        validation_capabilities = st.multiselect(
+            "Capability categories",
+            validation_capability_options,
+            default=[x for x in validation_study.DEFAULT_CAPABILITIES if x in validation_capability_options],
+        )
+        validation_problem_signals = st.multiselect(
+            "Problem signals of interest",
+            validation_problem_options,
+            default=[x for x in validation_study.DEFAULT_PROBLEM_SIGNALS if x in validation_problem_options],
+        )
+        validation_regions = st.multiselect(
+            "Region filter",
+            validation_region_options,
+            default=[],
+            help="Leave blank to include all indexed regions.",
+        )
+        vf1, vf2, vf3 = st.columns(3)
+        validation_include_monitor = vf1.checkbox("Include monitor-only leads", value=True)
+        validation_include_previews = vf2.checkbox("Include preview-only records", value=True)
+        validation_include_low_priority = vf3.checkbox(
+            "Include low priority / archive leads",
+            value=True,
+            help="Recommended for internal validation so weak/background classifications can be audited. Truly hidden/rejected workflow records remain excluded.",
+        )
+        vf4, vf5, vf6 = st.columns(3)
+        validation_min_quality = vf4.selectbox(
+            "Minimum evidence quality",
+            validation_study.MIN_EVIDENCE_OPTIONS,
+            index=0,
+        )
+        validation_prefer_unique = vf5.checkbox("Prefer unique companies", value=True)
+        validation_require_report = vf6.checkbox("Require full report", value=False)
+        vf7, vf8 = st.columns(2)
+        validation_require_enrichment = vf7.checkbox("Require enrichment", value=False)
+        validation_max_targets = vf8.number_input(
+            "Maximum targets",
+            min_value=1,
+            max_value=100,
+            value=100,
+            step=1,
+        )
+        build_validation_clicked = st.form_submit_button("Build 100-target validation set", type="primary")
+
+    if build_validation_clicked:
+        with st.spinner("Building deterministic validation set from indexed evidence…"):
+            try:
+                conn_v = db.connect(settings.DB_PATH)
+                opportunity_index.backfill_generated_opportunities(conn_v)
+                fresh_validation_records = db.fetch_index_records(conn_v, include_hidden=False)
+                conn_v.close()
+            except Exception:
+                fresh_validation_records = []
+            st.session_state["validation_study_result"] = validation_study.build_validation_study(
+                fresh_validation_records,
+                validation_title=validation_title,
+                seller_service_profile=validation_seller_profile,
+                capability_categories=validation_capabilities,
+                problem_signals=validation_problem_signals,
+                region_filter=validation_regions,
+                include_monitor_only=validation_include_monitor,
+                include_preview_only=validation_include_previews,
+                include_low_priority_archive=validation_include_low_priority,
+                minimum_evidence_quality=validation_min_quality,
+                maximum_targets=int(validation_max_targets),
+                prefer_unique_companies=validation_prefer_unique,
+                require_full_report=validation_require_report,
+                require_enrichment=validation_require_enrichment,
+            )
+
+    validation_result = st.session_state.get("validation_study_result")
+    if validation_result:
+        validation_profile = validation_result.get("validation_profile", {}) or {}
+        if validation_result.get("status") == "ok":
+            st.success(validation_result.get("message") or "Validation set built.")
+        elif validation_result.get("status") == "empty":
+            st.info(validation_result.get("message") or "No indexed evidence is available.")
+        else:
+            st.warning(validation_result.get("message") or "No eligible validation records were found.")
+
+        validation_warning = validation_result.get("warning") or ""
+        if validation_warning:
+            st.warning(validation_warning)
+
+        vm = validation_result.get("metrics", {}) or {}
+        v1, v2, v3, v4, v5 = st.columns(5)
+        v1.metric("Indexed reviewed", vm.get("total_indexed_records_reviewed", 0))
+        v2.metric("Eligible records", vm.get("eligible_records_available", 0))
+        v3.metric("Selected", vm.get("total_selected", 0))
+        v4.metric("Unique companies", vm.get("unique_companies_selected", 0))
+        v5.metric("Manual audits required", vm.get("number_requiring_manual_audit", 0))
+
+        v6, v7, v8, v9, v10 = st.columns(5)
+        v6.metric("Full reports", vm.get("full_reports_count", 0))
+        v7.metric("Preview-only", vm.get("preview_only_count", 0))
+        v8.metric("Enriched", vm.get("enriched_count", 0))
+        v9.metric("Tier 1 / high", vm.get("tier1_high_count", 0))
+        v10.metric("Official URLs", vm.get("number_with_official_source_urls_available", 0))
+
+        with st.expander("Validation profile, filters, and distributions", expanded=False):
+            st.markdown(f"**Title:** {validation_profile.get('validation_title') or validation_study.DEFAULT_VALIDATION_TITLE}")
+            st.markdown(f"**Seller/service profile:** {validation_profile.get('seller_service_profile') or '—'}")
+            st.markdown(f"**Capabilities:** {_as_text(validation_profile.get('capability_categories')) or '—'}")
+            st.markdown(f"**Problem signals:** {_as_text(validation_profile.get('problem_signals')) or '—'}")
+            st.markdown(f"**Regions:** {_as_text(validation_profile.get('region_filter')) or 'All regions'}")
+            st.markdown(
+                f"**Filters:** monitor-only = {'included' if validation_profile.get('include_monitor_only') else 'excluded'} · "
+                f"previews = {'included' if validation_profile.get('include_preview_only') else 'excluded'} · "
+                f"low priority/archive = {'included' if validation_profile.get('include_low_priority_archive') else 'excluded'} · "
+                f"minimum evidence = {validation_profile.get('minimum_evidence_quality') or 'Any'} · "
+                f"prefer unique companies = {'yes' if validation_profile.get('prefer_unique_companies') else 'no'} · "
+                f"require full report = {'yes' if validation_profile.get('require_full_report') else 'no'} · "
+                f"require enrichment = {'yes' if validation_profile.get('require_enrichment') else 'no'}"
+            )
+            st.markdown(f"**Evidence quality:** {_as_text(vm.get('evidence_strength_distribution'))}")
+            st.markdown(f"**Readiness:** {_as_text(vm.get('readiness_distribution'))}")
+            st.markdown(f"**Seller fit:** {_as_text(vm.get('seller_fit_distribution'))}")
+            st.markdown(f"**Source types:** {_as_text(vm.get('source_type_breakdown'))}")
+            st.markdown(f"**Problem categories:** {_as_text(vm.get('problem_category_breakdown'))}")
+            st.caption(validation_result.get("method_note") or "")
+
+        validation_rows = validation_result.get("rows", []) or []
+        if validation_rows:
+            validation_preview = pd.DataFrame(validation_rows)
+            validation_cols = [c for c in [
+                "validation_rank", "target_company", "product", "molecule", "problem_category",
+                "source_type", "source_id", "region", "opportunity_score", "grade",
+                "lead_status", "queue_status", "evidence_quality", "best_evidence_tier",
+                "seller_fit_strength", "has_full_report", "source_coverage_count",
+                "official_source_url", "safe_bd_angle", "validation_questions"
+            ] if c in validation_preview.columns]
+            st.dataframe(validation_preview[validation_cols], use_container_width=True, hide_index=True)
+
+            vd1, vd2 = st.columns(2)
+            vd1.download_button(
+                "⬇ Download pharmatune_100_target_validation_study.csv",
+                validation_study.export_validation_csv(validation_result),
+                file_name="pharmatune_100_target_validation_study.csv",
+                mime="text/csv",
+            )
+            vd2.download_button(
+                "⬇ Download pharmatune_100_target_validation_study_summary.md",
+                validation_study.export_validation_markdown(validation_result),
+                file_name="pharmatune_100_target_validation_study_summary.md",
+                mime="text/markdown",
+            )
+
+        validation_limitations = validation_result.get("limitations", []) or []
+        if validation_limitations:
+            st.warning("Validation limitations:\n- " + "\n- ".join(str(x) for x in validation_limitations))
+    elif not idx_stats.get("indexed_total", 0):
+        st.caption("Run Generate first to create indexed PharmaTune evidence before building the validation study.")
+    else:
+        st.caption(f"{idx_stats.get('indexed_total', 0)} indexed opportunity records are currently available for validation filtering.")
 
     st.divider()
     st.markdown("### Generated full reports")

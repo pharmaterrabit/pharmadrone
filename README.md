@@ -342,3 +342,18 @@ Seller-to-target cards preserve evidence discipline: public evidence may indicat
 ## Checkpoint 3: 20-company pilot case study
 
 The Results & Export tab can build a configurable, deterministic pilot set of up to 20 existing indexed/enriched opportunity records. Users can edit the case-study title, objective, seller/service profile, capabilities, problem signals, region, evidence threshold, monitor/preview filters, and target limit. The pilot uses the current opportunity index and seller-to-target matching only; it makes no API or LLM calls, does not modify Opportunity Scores or stable lead IDs, and exports both CSV and Markdown summary files with the selected lens, filters, and explicit evidence/readiness limitations.
+
+## Checkpoint 4: 100-target validation study
+
+The Results & Export tab can build an internal, audit-ready validation set of up
+to 100 existing indexed/enriched opportunities. The workflow is configurable by
+seller/service profile, capabilities, problem signals, region, evidence quality,
+monitor/preview/low-priority filters, full-report and enrichment requirements,
+and unique-company preference.
+
+Checkpoint 4 is read-only: it calls no APIs or LLMs, invents no records, and does
+not change Opportunity Scores, stable lead IDs, discovery, queues, enrichment,
+or reports. The CSV includes blank manual-audit fields and stored official-source
+URLs where available. Low priority / archive lead classifications are included by
+default for internal validation, while records actually hidden/rejected in the
+workflow remain excluded.
