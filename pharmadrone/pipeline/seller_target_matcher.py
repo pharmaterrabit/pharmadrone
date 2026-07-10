@@ -22,7 +22,8 @@ NO_TARGETS_MESSAGE = (
 )
 EMPTY_INDEX_MESSAGE = "Run Generate first to create indexed PharmaTune evidence, then use seller-to-target matching."
 FIT_NOTE = (
-    "Seller Fit Strength is a deterministic capability-match label only. It does not replace or modify the stored Opportunity Score."
+    "Seller Fit Strength reflects technical/capability fit only, not commercial readiness. "
+    "It is a deterministic capability-match label and does not replace or modify the stored Opportunity Score."
 )
 PREVIEW_MESSAGE = (
     "Full report not generated yet. This is an indexed opportunity preview. Use Continue previous queue or Generate/Refresh to create a full report."
@@ -361,6 +362,54 @@ def _risk_readiness(record: dict[str, Any], fit_strength: str) -> str:
     return "needs validation"
 
 
+def _is_not_checked_label(value: Any) -> bool:
+    label = _norm(value or "not checked")
+    return label in {"", "not checked", "unchecked", "unknown", "not available"}
+
+
+def _max_fit_strength(record: dict[str, Any]) -> str:
+    """Return the strongest allowed seller-fit label for the evidence maturity.
+
+    This is a display-only trust cap. It does not change matching, queue status,
+    enrichment, Opportunity Score, or any stored lead classification.
+    """
+    coverage = int(record.get("source_coverage_count") or 0)
+    has_report = bool(int(record.get("has_full_report") or 0))
+    lead_status = _lead_status(record)
+    evidence_quality = record.get("evidence_quality") or "not checked"
+    best_tier = record.get("best_evidence_tier") or "not checked"
+    evidence_rank = _evidence_rank(record)
+    cap = FIT_STRONG
+
+    if not has_report and _is_not_checked_label(evidence_quality):
+        cap = FIT_MODERATE
+
+    if coverage == 0 and _is_not_checked_label(best_tier):
+        cap = FIT_MODERATE
+
+    if lead_status == "monitor only" and evidence_rank > 2:
+        cap = FIT_MODERATE
+
+    if lead_status == "low priority / archive":
+        # Low-priority/archive leads should never be presented as a strong seller target.
+        # If they also lack evidence maturity, keep them as weak/background only.
+        if evidence_rank > 2 or (coverage == 0 and _is_not_checked_label(best_tier)):
+            cap = FIT_WEAK
+        else:
+            cap = FIT_MODERATE
+
+    return cap
+
+
+def _apply_fit_cap(strength: str, cap: str) -> str:
+    order = {FIT_WEAK: 0, FIT_MODERATE: 1, FIT_STRONG: 2}
+    if not strength:
+        return strength
+    if order.get(strength, 0) > order.get(cap, 2):
+        return cap
+    return strength
+
+
 def _fit_strength(raw_score: int, record: dict[str, Any]) -> str:
     if raw_score <= 0:
         return ""
@@ -380,10 +429,12 @@ def _fit_strength(raw_score: int, record: dict[str, Any]) -> str:
     if lead_status == "monitor only":
         adjusted -= 2
     if adjusted >= 8:
-        return FIT_STRONG
-    if adjusted >= 4:
-        return FIT_MODERATE
-    return FIT_WEAK
+        strength = FIT_STRONG
+    elif adjusted >= 4:
+        strength = FIT_MODERATE
+    else:
+        strength = FIT_WEAK
+    return _apply_fit_cap(strength, _max_fit_strength(record))
 
 
 def _evidence_proves(record: dict[str, Any]) -> str:
