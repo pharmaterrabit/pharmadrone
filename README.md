@@ -338,3 +338,7 @@ Phase 3C adds a seller-facing workflow inside the Technology Profile tab. A user
 This workflow is deterministic and read-only. It uses the local `opportunity_index` plus enrichment metadata only. It does not call external APIs, rerun discovery, regenerate reports, require an LLM, change stable lead IDs, or modify the stored Opportunity Score. Seller Fit Strength is displayed separately as a capability-match label: Strong fit, Moderate fit, or Weak/background fit. It reflects technical/capability fit only, not commercial readiness.
 
 Seller-to-target cards preserve evidence discipline: public evidence may indicate a possible fit, but it does not prove that a target company needs the seller's technology, does not confirm product-specific root cause unless directly stated, and does not convert label or literature context into defect evidence.
+
+## Checkpoint 3: 20-company pilot case study
+
+The Results & Export tab can build a configurable, deterministic pilot set of up to 20 existing indexed/enriched opportunity records. Users can edit the case-study title, objective, seller/service profile, capabilities, problem signals, region, evidence threshold, monitor/preview filters, and target limit. The pilot uses the current opportunity index and seller-to-target matching only; it makes no API or LLM calls, does not modify Opportunity Scores or stable lead IDs, and exports both CSV and Markdown summary files with the selected lens, filters, and explicit evidence/readiness limitations.

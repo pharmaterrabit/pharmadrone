@@ -12,7 +12,7 @@ import streamlit as st
 from pharmadrone import settings, db, auth
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
-from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher
+from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -914,11 +914,174 @@ with tab_results:
             # Avoid stale enrichment labels in cached matcher/seller cards after the enrichment queue updates SQLite.
             st.session_state.pop("opportunity_matcher_result", None)
             st.session_state.pop("seller_target_result", None)
+            st.session_state.pop("pilot_case_study_result", None)
             if logs_e:
                 with st.expander("Developer/debug: enrichment log", expanded=False):
                     st.code("\n".join(logs_e[-30:]))
     else:
         st.caption("No indexed opportunity records yet.")
+
+    st.divider()
+    st.markdown("### 20-company pilot case study")
+    st.caption(
+        "Build a configurable, deterministic pilot from currently indexed/enriched PharmaTune evidence only. "
+        "This workflow does not call APIs or an LLM and does not change Opportunity Scores or stable lead IDs."
+    )
+
+    pilot_region_options = sorted({
+        str(r.get("region") or "").strip()
+        for r in idx_records
+        if str(r.get("region") or "").strip()
+    })
+    pilot_problem_options = list(dict.fromkeys(
+        list(pilot_case_study.DEFAULT_PROBLEM_SIGNALS)
+        + list(profile.get("problem_signals", []) or [])
+    ))
+    pilot_capability_options = list(seller_target_matcher.DISPLAY_CATEGORIES)
+
+    with st.form("pilot_case_study_form"):
+        st.markdown("#### Case-study lens / seller profile")
+        pilot_title = st.text_input(
+            "Case study title",
+            value=pilot_case_study.DEFAULT_CASE_STUDY_TITLE,
+        )
+        pilot_objective = st.text_area(
+            "Case study objective",
+            value=pilot_case_study.DEFAULT_CASE_STUDY_OBJECTIVE,
+            height=110,
+        )
+        pilot_seller_profile = st.text_input(
+            "Seller / technology / service profile",
+            value=pilot_case_study.DEFAULT_SELLER_SERVICE_PROFILE,
+        )
+        pilot_capabilities = st.multiselect(
+            "Capability categories",
+            pilot_capability_options,
+            default=[x for x in pilot_case_study.DEFAULT_CAPABILITIES if x in pilot_capability_options],
+        )
+        pilot_problem_signals = st.multiselect(
+            "Problem signals of interest",
+            pilot_problem_options,
+            default=[x for x in pilot_case_study.DEFAULT_PROBLEM_SIGNALS if x in pilot_problem_options],
+        )
+        pf1, pf2 = st.columns(2)
+        pilot_regions = pf1.multiselect(
+            "Region filter",
+            pilot_region_options,
+            default=[],
+            help="Leave blank to use all indexed regions.",
+        )
+        pilot_min_quality = pf2.selectbox(
+            "Minimum evidence quality",
+            ["Any", "Tier 1 / high", "Tier 2 / moderate", "Tier 3 / limited", "Tier 4 / weak"],
+            index=0,
+        )
+        pf3, pf4, pf5 = st.columns(3)
+        pilot_include_monitor = pf3.checkbox("Include monitor-only leads", value=True)
+        pilot_include_previews = pf4.checkbox("Include preview-only records", value=True)
+        pilot_max_targets = pf5.number_input(
+            "Maximum targets",
+            min_value=1,
+            max_value=20,
+            value=20,
+            step=1,
+        )
+        build_pilot_clicked = st.form_submit_button("Build 20-company pilot set", type="primary")
+
+    if build_pilot_clicked:
+        fresh_pilot_records, _ = _load_index_state(include_hidden=False)
+        with st.spinner("Building the pilot set from indexed evidence…"):
+            st.session_state["pilot_case_study_result"] = pilot_case_study.build_pilot_case_study(
+                fresh_pilot_records,
+                limit=int(pilot_max_targets),
+                case_study_title=pilot_title,
+                case_study_objective=pilot_objective,
+                seller_service_profile=pilot_seller_profile,
+                capability_categories=pilot_capabilities,
+                problem_signals=pilot_problem_signals,
+                region_filter=pilot_regions,
+                include_monitor_only=pilot_include_monitor,
+                include_preview_only=pilot_include_previews,
+                minimum_evidence_quality=pilot_min_quality,
+            )
+
+    pilot_result = st.session_state.get("pilot_case_study_result")
+    if pilot_result:
+        if pilot_result.get("status") == "ok":
+            st.success(pilot_result.get("message") or "Pilot set built.")
+            pilot_profile = pilot_result.get("case_study_profile", {}) or {}
+            st.markdown(f"#### {pilot_profile.get('case_study_title') or pilot_case_study.DEFAULT_CASE_STUDY_TITLE}")
+            st.caption(pilot_profile.get("case_study_objective") or pilot_case_study.DEFAULT_CASE_STUDY_OBJECTIVE)
+            with st.expander("Selected case-study profile and filters", expanded=False):
+                st.markdown(f"**Seller/service profile:** {pilot_profile.get('seller_service_profile') or '—'}")
+                st.markdown(f"**Capabilities:** {_as_text(pilot_profile.get('capability_categories')) or '—'}")
+                st.markdown(f"**Problem signals:** {_as_text(pilot_profile.get('problem_signals')) or '—'}")
+                st.markdown(f"**Regions:** {_as_text(pilot_profile.get('region_filter')) or 'All regions'}")
+                st.markdown(
+                    f"**Filters:** include monitor-only = {'yes' if pilot_profile.get('include_monitor_only') else 'no'} · "
+                    f"include previews = {'yes' if pilot_profile.get('include_preview_only') else 'no'} · "
+                    f"minimum evidence = {pilot_profile.get('minimum_evidence_quality') or 'Any'} · "
+                    f"maximum targets = {pilot_profile.get('maximum_targets') or 20}"
+                )
+                st.caption("Targets were selected from indexed public evidence and are possible BD targets requiring validation, not confirmed customer needs.")
+            pm = pilot_result.get("metrics", {}) or {}
+            p1, p2, p3, p4, p5 = st.columns(5)
+            p1.metric("Indexed reviewed", pm.get("total_indexed_records_reviewed", 0))
+            p2.metric("Selected targets", pm.get("target_opportunities_selected", 0))
+            p3.metric("Full reports", pm.get("full_reports_count", 0))
+            p4.metric("Preview-only", pm.get("preview_only_count", 0))
+            p5.metric("Enriched", pm.get("enriched_count", 0))
+
+            p6, p7, p8, p9, p10 = st.columns(5)
+            p6.metric("Tier 1 / high", pm.get("tier1_high_count", 0))
+            p7.metric("Tier 2", pm.get("tier2_count", 0))
+            p8.metric("Monitor only", pm.get("monitor_only_count", 0))
+            p9.metric("Strong fit", pm.get("strong_fit_count", 0))
+            p10.metric("Average score", pm.get("average_opportunity_score") if pm.get("average_opportunity_score") is not None else "—")
+
+            with st.expander("Pilot distributions and method", expanded=False):
+                st.markdown(f"**Evidence strength:** {_as_text(pm.get('evidence_strength_distribution'))}")
+                st.markdown(f"**Readiness:** {_as_text(pm.get('readiness_distribution'))}")
+                st.markdown(f"**Seller fit:** {_as_text(pm.get('seller_fit_distribution'))}")
+                st.markdown(f"**Source types:** {_as_text(pm.get('source_type_breakdown'))}")
+                st.markdown(f"**Problem categories:** {_as_text(pm.get('problem_category_breakdown'))}")
+                st.caption(pilot_result.get("method_note") or "")
+
+            pilot_rows = pilot_result.get("rows", []) or []
+            pilot_preview = pd.DataFrame(pilot_rows)
+            pilot_cols = [c for c in [
+                "pilot_rank", "target_company", "product", "molecule", "problem_category",
+                "source_type", "source_id", "region", "opportunity_score", "grade",
+                "lead_status", "queue_status", "evidence_quality", "best_evidence_tier",
+                "seller_fit_strength", "has_full_report", "source_coverage_count",
+                "safe_bd_angle", "validation_questions"
+            ] if c in pilot_preview.columns]
+            if pilot_cols:
+                st.dataframe(pilot_preview[pilot_cols], use_container_width=True, hide_index=True)
+
+            limitations = pilot_result.get("limitations", []) or []
+            if limitations:
+                st.warning("Pilot limitations:\n- " + "\n- ".join(str(x) for x in limitations))
+
+            pd1, pd2 = st.columns(2)
+            pd1.download_button(
+                "⬇ Download pilot_20_company_case_study.csv",
+                pilot_case_study.export_pilot_csv(pilot_result),
+                file_name="pilot_20_company_case_study.csv",
+                mime="text/csv",
+            )
+            pd2.download_button(
+                "⬇ Download pilot_20_company_case_study_summary.md",
+                pilot_case_study.export_pilot_markdown(pilot_result),
+                file_name="pilot_20_company_case_study_summary.md",
+                mime="text/markdown",
+            )
+        else:
+            st.warning(pilot_result.get("message") or "No eligible pilot opportunities were found.")
+            for limitation in pilot_result.get("limitations", []) or []:
+                st.caption(str(limitation))
+    elif not idx_stats.get("indexed_total", 0):
+        st.caption("Run Generate first to create indexed PharmaTune evidence before building the pilot case study.")
 
     st.divider()
     st.markdown("### Generated full reports")
