@@ -408,3 +408,8 @@ Checkpoint 6A.2 tightens only deterministic precision annotations. ClinicalTrial
 ## Checkpoint 6A.3
 
 ClinicalTrials Tier A now requires a coded, attributable structured-registry evidence trace. Company-role diagnostics distinguish identity mismatches from normal sponsor/contract-manufacturer relationships, and audited source-ID corrections are applied deterministically in validation/export paths.
+
+
+## Checkpoint 6A.4
+
+ClinicalTrials Tier-A traces now export the actual sentence or match-centred context supporting the signal code, with code-specific validation and deterministic de-duplication. Multi-formulation registry titles such as Asasantin ER are recognised, source-ID audit corrections preserve the D-0202-2025 attribution warning, and company roles are bound to exact named entities so Actavis Elizabeth LLC is not confused with Actavis, Inc. Opportunity Scores, stable lead IDs, discovery, queues, enrichment and reports are unchanged.
