@@ -106,9 +106,40 @@ def source_problem_text(record: dict[str, Any]) -> str:
 
 
 def _trial_blob(record: dict[str, Any]) -> str:
+    """Broad internal trial text, including stored discovery context."""
     vals = [source_problem_text(record), record.get("product"), record.get("molecule"), record.get("problem_category")]
     for ent in _entities(record):
         vals.extend([ent.get("intervention_names"), ent.get("intervention_type"), ent.get("conditions"), ent.get("why_stopped")])
+    return _norm(" ".join(str(x) for x in vals if x))
+
+
+def _trial_registry_blob(record: dict[str, Any]) -> str:
+    """Registry facts only; excludes query/discovery-topic labels.
+
+    This prevents a search topic such as ``bioequivalence`` from becoming
+    evidence that the study itself is a bioequivalence/formulation study.
+    """
+    vals: list[Any] = [record.get("product"), record.get("molecule")]
+    for e in _evidence(record):
+        vals.extend([e.get("title"), e.get("raw_text"), e.get("english_summary")])
+        ent = e.get("entities") or {}
+        if isinstance(ent, dict):
+            vals.extend([
+                ent.get("intervention_names"), ent.get("intervention_type"),
+                ent.get("conditions"), ent.get("why_stopped"), ent.get("phase"),
+                ent.get("overall_status"), ent.get("study_type"),
+            ])
+    data = _load(record.get("data_json"))
+    if isinstance(data, dict):
+        # Only known registry-fact keys are collected. Deliberately exclude
+        # discovery_topic and trial_relevance_context.
+        for d in _walk_dicts(data):
+            vals.extend([
+                d.get("title"), d.get("briefTitle"), d.get("officialTitle"),
+                d.get("briefSummary"), d.get("detailedDescription"),
+                d.get("intervention_names"), d.get("intervention_type"),
+                d.get("conditions"), d.get("why_stopped"), d.get("phase"),
+            ])
     return _norm(" ".join(str(x) for x in vals if x))
 
 
@@ -168,61 +199,179 @@ def classify_problem(record: dict[str, Any]) -> tuple[str, str]:
 
 
 _D_FATAL = (
-    "hygiene kit", "toothbrush", "oral care kit", "oral-care kit", "dental hygiene", "dental kit",
-    "sample kit", "biospecimen", "specimen collection", "blood sample", "serum", "plasma", "tissue", "biopsy",
-    "diagnostic test", "diagnostic-only", "standard of care", "no intervention",
+    "hygiene kit", "hygiene product", "toothbrush", "oral care kit", "oral-care kit",
+    "oral hygiene", "dental hygiene", "dental kit", "dental sample", "dental product",
+    "sample kit", "sample box", "sample boxes", "carifree",
+    "biospecimen", "specimen collection", "blood sample", "serum", "plasma",
+    "tissue", "biopsy", "diagnostic test", "diagnostic-only", "standard of care",
+    "no intervention",
 )
+
+
+
+def _seller_allows_api_scope(seller_profile: str) -> bool:
+    profile = _norm(seller_profile)
+    return any(x in profile for x in (
+        "api work", "api services", "api development", "drug substance",
+        "raw material", "raw-material", "excipient", "bulk pharmaceutical",
+    ))
 
 
 def product_type_diagnostics(record: dict[str, Any], seller_profile: str = "") -> tuple[str, bool, str]:
     blob = _trial_blob(record)
+    registry_blob = _trial_registry_blob(record) if _is_trial(record) else blob
     product = _norm(record.get("product"))
-    fatal = [x for x in _D_FATAL if x in blob]
-    # Placebo-only is fatal; active product + comparator placebo is a caveat only.
-    placebo = "placebo" in blob
+    fatal: list[str] = []
+
+    if any(x in blob for x in (
+        "carifree", "dental hygiene", "dental sample", "dental kit",
+        "dental product", "oral care kit", "oral-care kit", "oral hygiene",
+        "toothbrush", "hygiene kit", "hygiene product", "sample box",
+        "sample boxes", "sample kit",
+    )):
+        fatal.append("dental hygiene/sample kit")
+    if any(x in blob for x in (
+        "biospecimen", "specimen collection", "blood sample", "serum",
+        "plasma", "tissue", "biopsy",
+    )):
+        fatal.append("specimen/sample-only record")
+    if any(x in blob for x in ("diagnostic test", "diagnostic-only")):
+        fatal.append("diagnostic-only record")
+    if any(x in blob for x in ("standard of care", "no intervention")):
+        fatal.append("standard-care/no-intervention record")
+
+    # Placebo-only is fatal; named active product plus a placebo comparator is
+    # retained with a caveat.
+    placebo = "placebo" in registry_blob
     active_tokens = [x for x in product.split() if x not in {"placebo", "matching", "control", "comparator"}]
-    if placebo and (product in {"placebo", "matching placebo", "placebo control", "placebo comparator"} or not active_tokens):
+    if placebo and (
+        product in {"placebo", "matching placebo", "placebo control", "placebo comparator"}
+        or not active_tokens
+    ):
         fatal.append("placebo-only intervention")
+
     warnings: list[str] = []
-    if placebo and not fatal:
+    if placebo and not any("placebo-only" in x for x in fatal):
         warnings.append("placebo comparator present; active intervention retained")
-    if any(x in blob for x in ("dietary supplement", "nutraceutical", "red ginseng", "herbal supplement")):
+
+    if any(x in blob for x in (
+        "dietary supplement", "nutraceutical", "red ginseng", "herbal supplement",
+    )):
         warnings.append("dietary supplement / nutraceutical context")
-    if any(x in blob for x in ("bulk drug substance", "bulk api", "active pharmaceutical ingredient", " api ")) and not any(x in _norm(seller_profile) for x in ("api", "raw material", "particle")):
-        warnings.append("bulk raw material / API-only context")
-    vague = product in {"", "drug", "study drug", "investigational product", "intervention", "treatment"}
-    if _is_trial(record) and vague:
+
+    # Raw-material/API status is based on product/source wording, not a generic
+    # mention of an active ingredient elsewhere in the record. Particle
+    # engineering alone does not opt a seller into API/raw-material records.
+    product_source_blob = _norm(" ".join([
+        str(record.get("product") or ""), str(record.get("molecule") or ""),
+        source_problem_text(record),
+    ]))
+    api_context = any(x in product_source_blob for x in (
+        "bulk pharmaceutical chemical", "bulk pharmaceutical ingredient",
+        "bulk drug substance", "bulk raw material", "api-only",
+        "active pharmaceutical ingredient", "pharmaceutical excipient",
+    ))
+    if api_context and not _seller_allows_api_scope(seller_profile):
+        warnings.append("bulk raw material / API / excipient context")
+
+    vague_exact = {
+        "", "drug", "study drug", "investigational product", "intervention",
+        "treatment", "study medication", "investigational drug",
+    }
+    vague_pattern = bool(re.search(
+        r"^(administration of )?(investigation|investigational|study) of .{0,35}drug$",
+        product,
+    )) or any(x in product for x in (
+        "administration of investigation of",
+        "administration of investigational",
+        "investigation of eurofarma drug",
+        "unnamed investigational drug",
+    ))
+    if _is_trial(record) and (product in vague_exact or vague_pattern):
         fatal.append("vague intervention")
     elif not product and not _is_shortage(record):
         fatal.append("non-product record / missing product")
-    if "unapproved drug" in blob:
-        warnings.append("unapproved-drug concern; internal validation only")
-    return "; ".join(dict.fromkeys(fatal + warnings)), bool(fatal), "; ".join(dict.fromkeys(fatal))
+
+    unapproved = any(x in blob for x in (
+        "unapproved drug", "unapproved new drug", "unapproved product",
+        "marketed without an approved", "without an approved nda",
+        "without approved nda", "without an approved application",
+        "regulatory status concern",
+    ))
+    if unapproved:
+        warnings.append("unapproved-product / regulatory-status concern; internal validation only")
+
+    fatal = list(dict.fromkeys(fatal))
+    warnings = list(dict.fromkeys(warnings))
+    all_labels = fatal + warnings
+    return "; ".join(all_labels), bool(fatal), "; ".join(fatal)
+
 
 
 def company_diagnostics(record: dict[str, Any]) -> tuple[str, str, bool, str]:
     target = _first(record.get("target_company"), record.get("company"))
     source = ""
-    product_text = _norm(record.get("product"))
     role_notes: list[str] = []
     for ent in _entities(record):
         rf = ent.get("recall_fields") or {}
-        source = source or _first(rf.get("recalling_firm"), ent.get("sponsor"), ent.get("company"), ent.get("company_name"))
+        source = source or _first(
+            rf.get("recalling_firm"), ent.get("sponsor"), ent.get("company"),
+            ent.get("company_name"), ent.get("manufacturer_name"),
+        )
     source = source or target
-    blob = _norm(source_problem_text(record) + " " + str(record.get("product") or ""))
+    raw_blob = source_problem_text(record) + " " + str(record.get("product") or "")
+    blob = _norm(raw_blob)
     role_terms = []
-    for term in ("distributed by", "distributor", "repackaged by", "repackager", "relabeler", "packaged by", "packager"):
+    for term in (
+        "distributed by", "distributor", "repackaged by", "repackager",
+        "relabeler", "packaged by", "packager", "manufactured by", "manufacturer",
+    ):
         if term in blob:
             role_terms.append(term)
     if role_terms:
-        role_notes.append("source/target may be " + ", ".join(dict.fromkeys(role_terms)) + " rather than technical manufacturer/sponsor")
+        role_notes.append(
+            "source/target company role requires validation: "
+            + ", ".join(dict.fromkeys(role_terms))
+        )
+
+    named_owners: list[str] = []
+    for pat in (
+        r"manufactured by\s*[:\-]?\s*([^.;|]{3,100})",
+        r"manufacturer\s*[:\-]\s*([^.;|]{3,100})",
+        r"distributed by\s*[:\-]?\s*([^.;|]{3,100})",
+    ):
+        for match in re.findall(pat, raw_blob, flags=re.I):
+            clean = re.sub(r"\s+", " ", match).strip(" ,:-")
+            if clean and clean not in named_owners:
+                named_owners.append(clean)
+    if named_owners:
+        role_notes.append("named manufacturer/distributor in source text: " + "; ".join(named_owners[:3]))
+
     mismatch = bool(source and target and _norm(source) != _norm(target))
+    named_mismatch = any(
+        _norm(owner) not in {_norm(target), _norm(source)}
+        and _norm(target) not in _norm(owner)
+        and _norm(owner) not in _norm(target)
+        for owner in named_owners
+    )
     warning = ""
     if mismatch:
-        warning = f"FDA/registry source company '{source}' differs from PharmaTune target company '{target}'"
+        warning = (
+            f"official source company/manufacturer '{source}' differs from "
+            f"PharmaTune target company '{target}'"
+        )
+    elif named_mismatch:
+        warning = (
+            "source text names a manufacturer/distributor that differs from the "
+            "PharmaTune target company; technical owner requires validation"
+        )
     elif role_terms:
-        warning = "company role may be distributor/repackager/relabeler/packager; technical owner requires validation"
+        warning = (
+            "company role may be distributor/repackager/relabeler/packager rather "
+            "than technical manufacturer/sponsor; product owner requires validation"
+        )
     return source, "; ".join(role_notes), bool(warning), warning
+
 
 
 def extract_stored_official_url(record: dict[str, Any]) -> str:
@@ -268,7 +417,7 @@ def _official(url: str) -> bool:
 def verification_diagnostics(record: dict[str, Any], official_url: str) -> tuple[str, str, str]:
     existing = _norm(record.get("source_id_verification_status"))
     if existing in _VERIFIED:
-        return existing, _first(record.get("verification_method"), "stored manual/previous verification"), _first(record.get("source_id_verification_note"), "Existing verification status retained.")
+        return existing, _first(record.get("verification_method"), "stored structured/previous verification; manual audit status separate"), _first(record.get("source_id_verification_note"), "Existing structured-source verification retained; this does not imply human audit.")
     source_id = str(record.get("source_id") or "").strip()
     if not official_url:
         return "not_verified", "no stored official URL", "No official source URL was stored for deterministic verification."
@@ -289,38 +438,97 @@ def verification_diagnostics(record: dict[str, Any], official_url: str) -> tuple
         sid_parts = {sid, sid.replace('"', ''), sid.replace("-", "")}
         url_compact = decoded.replace("-", "")
         if any(x and (x in decoded or x.replace("-", "") in url_compact) for x in sid_parts):
-            return "verified_direct", "official URL contains source ID", "Stored official URL directly resolves the indexed source identifier."
+            return "verified_direct", "structured official-source URL contains source ID (not a human audit)", "The structured official-source URL matches the indexed source identifier; manual audit remains pending."
         return "official_url_present_not_checked", "stored official URL; ID not embedded", "Official URL is present but the source ID was not deterministically matched in the URL."
     return "official_url_present_not_checked", "stored official URL", "Official URL is present; source identifier requires manual confirmation."
 
+def _explicit_trial_a_reason(blob: str) -> str:
+    patterns: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("formulation comparison", (
+            "formulation comparison", "comparison of formulations",
+            "comparison of two formulations", "compare two formulations",
+            "comparing two formulations", "different formulations",
+            "two formulations of", "formulations of asasantin",
+        )),
+        ("relative bioavailability", (
+            "relative bioavailability", "comparative bioavailability",
+            "bioavailability comparison",
+        )),
+        ("food-effect / fed-fasted PK", (
+            "food effect", "food-effect", "fed/fasted", "fed versus fasted",
+            "fed vs fasted", "fasted and fed", "effect of food",
+        )),
+        ("bioequivalence", ("bioequivalence", "bio-equivalence")),
+        ("dosage-form comparison", (
+            "tablet vs capsule", "tablet versus capsule", "capsule vs tablet",
+            "capsule versus tablet", "dosage form comparison",
+            "oral suspension", "prefilled syringe vs vial",
+            "prefilled syringe versus vial", "syringe vs vial",
+            "syringe versus vial",
+        )),
+        ("modified/release-delivery comparison", (
+            "modified release", "modified-release", "targeted release",
+            "targeted-release", "extended release versus", "immediate release versus",
+            "extended-release versus", "immediate-release versus",
+        )),
+        ("drug-delivery/formulation development", (
+            "oral insulin", "transdermal delivery", "topical delivery",
+            "inhaled delivery", "inhalation delivery", "cyclodextrin",
+        )),
+    )
+    for label, terms in patterns:
+        if any(term in blob for term in terms):
+            return label
+    return ""
+
+
 def classify_signal(record: dict[str, Any], seller_profile: str = "") -> tuple[str, str, str]:
     broad, specific = classify_problem(record)
-    blob = _trial_blob(record)
+    broad_blob = _trial_blob(record)
     warning, fatal, fatal_reason = product_type_diagnostics(record, seller_profile)
     if fatal:
         return SIGNAL_D, "unsuitable / remove", fatal_reason or warning
 
     if _is_trial(record):
-        high = (
-            "formulation comparison", "relative bioavailability", "food effect", "fed/fasted", "fed versus fasted",
-            "bioequivalence", "modified release", "targeted release", "tablet vs capsule", "tablet versus capsule",
-            "oral suspension", "topical", "transdermal", "inhaled", "inhalation", "dosage form comparison",
-            "prefilled syringe", "syringe vs vial", "syringe versus vial", "oral insulin", "cyclodextrin",
+        registry_blob = _trial_registry_blob(record)
+        explicit_a = _explicit_trial_a_reason(registry_blob)
+        if explicit_a:
+            return SIGNAL_A, "strong explicit formulation / PK / delivery signal", explicit_a
+
+        # PK/development context is Tier B, but not automatically external-ready.
+        # Discovery-topic labels cannot promote a study to Tier A.
+        dev = (
+            "pharmacokinetic", "pharmacokinetics", "bioavailability",
+            "drug delivery", "formulation", "absorption", "bridging",
         )
-        if any(x in blob for x in high):
-            return SIGNAL_A, "strong formulation / PK / delivery signal", specific
-        dev = ("pharmacokinetic", "bioavailability", "drug delivery", "formulation", "absorption", "bridging")
-        if any(x in blob for x in dev):
+        if any(x in registry_blob for x in dev):
+            if any(x in registry_blob for x in (
+                "dose escalation", "maximum tolerated dose", "oncology",
+                "tumor", "tumour", "cancer", "carboplatin", "etoposide",
+            )):
+                return (
+                    SIGNAL_B,
+                    "development / PK context; not a specific formulation-performance signal",
+                    "oncology/combination or dose-development trial with PK context only",
+                )
             return SIGNAL_B, "development / PK / bioavailability context", specific
-        # Ordinary efficacy/dose-escalation trials are real but weak for this seller lens.
-        if any(x in blob for x in ("dose escalation", "efficacy", "oncology", "maximum tolerated dose", "tumor", "cancer")):
-            return SIGNAL_C, "weak/general clinical-development signal", "ordinary efficacy/dose-escalation trial without specific formulation/PK/delivery signal"
+
+        if any(x in registry_blob for x in (
+            "dose escalation", "efficacy", "oncology", "maximum tolerated dose",
+            "tumor", "tumour", "cancer",
+        )):
+            return (
+                SIGNAL_C, "weak/general clinical-development signal",
+                "ordinary efficacy/dose-escalation trial without explicit formulation, bioavailability, food-effect, dosage-form, delivery, or product-performance signal",
+            )
         return SIGNAL_C, "weak/general trial signal", specific
 
     strong_broad = {
-        "dissolution failure", "impurity issue", "assay/potency issue", "particulate / precipitation issue",
-        "particle-size issue", "stability issue", "delivery-system issue", "sterility/contamination issue",
-        "formulation / delivery context", "bioavailability / PK context",
+        "dissolution failure", "impurity issue", "assay/potency issue",
+        "particulate / precipitation issue", "particle-size issue",
+        "stability issue", "delivery-system issue",
+        "sterility/contamination issue", "formulation / delivery context",
+        "bioavailability / PK context",
     }
     if broad in strong_broad:
         return SIGNAL_A, "strong product / formulation signal", specific
@@ -331,6 +539,7 @@ def classify_signal(record: dict[str, Any], seller_profile: str = "") -> tuple[s
     if _is_recall(record):
         return SIGNAL_C, "general regulatory recall signal", specific
     return SIGNAL_C, "weak/general signal", specific
+
 
 
 def annotate_record(record: dict[str, Any], *, seller_profile: str = "", official_source_url: str = "") -> dict[str, Any]:
@@ -344,6 +553,7 @@ def annotate_record(record: dict[str, Any], *, seller_profile: str = "", officia
     verification, method, verification_note = verification_diagnostics(out, url)
     fit = _norm(out.get("seller_fit_strength") or out.get("fit_strength"))
     fit_specific = fit in {"strong fit", "moderate fit"} and "weak" not in fit
+    strong_b = tier == SIGNAL_B and signal_type.startswith("strong ")
     if not fit and seller_profile:
         profile = _norm(seller_profile)
         seller_relevant = {
@@ -361,11 +571,17 @@ def annotate_record(record: dict[str, Any], *, seller_profile: str = "", officia
     exclusion: list[str] = []
     if verification not in _VERIFIED:
         exclusion.append("source ID is not directly/secondarily verified")
-    if tier not in {SIGNAL_A, SIGNAL_B}:
+    if tier == SIGNAL_B and not strong_b:
+        exclusion.append("signal tier B is contextual and not a strong external-use B signal")
+    elif tier not in {SIGNAL_A, SIGNAL_B}:
         exclusion.append(f"signal tier {tier} is not A/strong B")
     if product_fatal:
         exclusion.append(product_exclusion or "unsuitable product/intervention type")
-    if product_warning and any(x in _norm(product_warning) for x in ("supplement", "nutraceutical", "bulk raw", "unapproved")):
+    if product_warning and any(x in _norm(product_warning) for x in (
+        "supplement", "nutraceutical", "bulk raw", "api / excipient",
+        "unapproved", "regulatory-status", "dental", "hygiene", "sample",
+        "vague intervention",
+    )):
         exclusion.append(product_warning)
     if company_warning_bool:
         exclusion.append(company_warning)
@@ -392,6 +608,9 @@ def annotate_record(record: dict[str, Any], *, seller_profile: str = "", officia
         "product_type_warning": product_warning,
         "official_source_url": url,
         "official_source_verified": verification in _VERIFIED,
+        "source_record_present": bool(url) or bool(out.get("source_id")) or _is_trial(out) or _is_recall(out) or _is_shortage(out),
+        "source_id_verified_by_structured_source": verification in _VERIFIED,
+        "manual_audit_status": _first(out.get("manual_verdict"), "pending manual audit"),
         "verification_method": method,
         "source_id_verification_status": verification,
         "source_id_verification_note": verification_note,

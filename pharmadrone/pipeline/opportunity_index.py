@@ -463,7 +463,8 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
         "product_owner_warning", "product_type_warning",
         "source_id_verification_status", "verification_method",
         "source_id_verification_note", "official_source_verified",
-        "external_case_study_eligible", "exclusion_reason",
+        "source_record_present", "source_id_verified_by_structured_source",
+        "manual_audit_status", "external_case_study_eligible", "exclusion_reason",
         "clinical_trial_signal_reason", "official_source_url",
     ]
     with out.open("w", newline="", encoding="utf-8") as f:

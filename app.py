@@ -970,7 +970,9 @@ with tab_results:
             "official_followup_status", "label_context_status", "clinical_trial_context_status",
             "literature_context_status", "best_evidence_tier", "official_source_count",
             "literature_source_count", "signal_tier", "signal_type", "specific_problem_subcategory",
-            "source_id_verification_status", "company_match_warning", "product_type_warning",
+            "source_id_verification_status", "source_record_present",
+            "source_id_verified_by_structured_source", "manual_audit_status",
+            "company_match_warning", "product_type_warning",
             "external_case_study_eligible", "exclusion_reason",
             "first_seen_at", "last_checked_at", "last_updated_at"
         ] if c in preview.columns]
@@ -1297,8 +1299,13 @@ with tab_results:
         v11.metric("Official URLs", vm.get("number_with_official_source_urls_available", 0))
         v12, v13, v14 = st.columns(3)
         v12.metric("External-case-study eligible", vm.get("external_case_study_eligible_count", 0))
-        v13.metric("Source IDs verified", vm.get("source_id_verified_count", 0))
+        v13.metric("Structured source-ID matches", vm.get("source_id_verified_by_structured_source_count", vm.get("source_id_verified_count", 0)))
         v14.metric("Company warnings", vm.get("company_match_warning_count", 0))
+        st.caption(
+            f"Structured source records present: {vm.get('source_record_present_count', 0)} · "
+            f"Manual audits completed: {vm.get('manual_audit_completed_count', 0)}. "
+            "Structured source-ID matching is deterministic and does not imply human verification."
+        )
         if vm.get("not_checked_count", 0):
             st.caption(
                 f"{vm.get('not_checked_count', 0)} selected record(s) have enrichment/evidence quality not checked. "
