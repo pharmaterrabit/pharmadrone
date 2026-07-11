@@ -15,7 +15,7 @@ st.set_page_config(page_title="PharmaDrone", layout="wide")
 from pharmadrone import settings, db, auth, CHECKPOINT
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
-from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study, precision_validation
+from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study, precision_validation, human_audit
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -1383,6 +1383,363 @@ with tab_results:
         st.caption("Run Generate first to create indexed PharmaTune evidence before building the validation study.")
     else:
         st.caption(f"{idx_stats.get('indexed_total', 0)} indexed opportunity records are currently available for validation filtering.")
+
+
+    st.divider()
+    st.markdown("### Human Validation Queue")
+    st.caption(
+        "Review immutable source records, PharmaTune deterministic interpretation, and human decisions as three separate layers. "
+        "Audit versions and corrections are append-only and stored separately from the opportunity index."
+    )
+
+    try:
+        conn_a = db.connect(settings.DB_PATH)
+        human_audit.ensure_schema(conn_a)
+        audit_batch = human_audit.latest_benchmark_batch(conn_a)
+        conn_a.close()
+    except Exception:
+        audit_batch = None
+
+    au1, au2 = st.columns([2, 1])
+    golden_upload = au1.file_uploader(
+        "Import frozen Checkpoint 6A.5.2 100-target CSV",
+        type=["csv"],
+        help="The imported CSV is stored as an immutable audit-queue snapshot. It does not overwrite indexed evidence or deterministic outputs.",
+        key="audit_golden_upload",
+    )
+    if au2.button("Import golden audit queue", disabled=golden_upload is None):
+        try:
+            conn_a = db.connect(settings.DB_PATH)
+            result_import = human_audit.import_benchmark_csv(
+                conn_a, golden_upload.getvalue(), filename=golden_upload.name
+            )
+            conn_a.close()
+            st.success(
+                f"Golden benchmark imported: {result_import.get('row_count', 0)} immutable row(s) · "
+                f"SHA-256 {result_import.get('sha256', '')[:16]}…"
+            )
+            st.session_state.pop("audit_selected_key", None)
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Golden benchmark import failed: {exc}")
+
+    if audit_batch:
+        st.caption(
+            f"Frozen benchmark available: {audit_batch.get('filename')} · {audit_batch.get('row_count', 0)} rows · "
+            f"SHA-256 {str(audit_batch.get('sha256') or '')[:16]}…"
+        )
+        audit_source_mode = st.radio(
+            "Audit queue source",
+            ["Frozen 100-target benchmark", "Current opportunity index"],
+            horizontal=True,
+            key="audit_queue_source_mode",
+        )
+    else:
+        st.info(
+            "The frozen 100-target CSV is not bundled with the deployment ZIP. Upload it above to preserve it as the golden audit queue. "
+            "Until then, the workspace uses current indexed records."
+        )
+        audit_source_mode = "Current opportunity index"
+
+    try:
+        conn_a = db.connect(settings.DB_PATH)
+        human_audit.ensure_schema(conn_a)
+        if audit_source_mode == "Frozen 100-target benchmark" and audit_batch:
+            audit_base_records = human_audit.benchmark_rows(conn_a, audit_batch.get("batch_id"))
+        else:
+            current_audit_index = db.fetch_index_records(conn_a, include_hidden=False)
+            audit_base_records = human_audit.prepare_index_records(
+                current_audit_index,
+                seller_profile=(
+                    "Specialist formulation / drug-product technology provider particle engineering "
+                    "solubility enhancement formulation CDMO dissolution testing analytical/QC testing "
+                    "stability troubleshooting impurity investigation"
+                ),
+            )
+        latest_audits = human_audit.latest_audit_map(conn_a)
+        audit_records = human_audit.merge_queue_with_audits(audit_base_records, latest_audits)
+        conn_a.close()
+    except Exception as exc:
+        audit_records = []
+        st.error(f"Human audit registry could not be loaded: {exc}")
+
+    if audit_records:
+        audit_status_options = ["All", *human_audit.AUDIT_STATUSES]
+        tier_options = ["All"] + sorted({str(r.get("signal_tier") or "") for r in audit_records if r.get("signal_tier")})
+        source_options = ["All"] + sorted({str(r.get("source_type") or "") for r in audit_records if r.get("source_type")})
+        fit_options = ["All"] + sorted({str(r.get("seller_fit_strength") or "") for r in audit_records if r.get("seller_fit_strength")})
+        region_options = ["All"] + sorted({str(r.get("region") or "") for r in audit_records if r.get("region")})
+
+        with st.expander("Audit queue filters", expanded=True):
+            af1, af2, af3, af4 = st.columns(4)
+            audit_status_filter = af1.multiselect("Audit status", audit_status_options, default=["All"])
+            audit_external_filter = af2.selectbox("External eligibility", ["All", "Eligible only", "Not eligible only"])
+            audit_tier_filter = af3.multiselect("Signal tier", tier_options, default=["All"])
+            audit_source_filter = af4.multiselect("Source type", source_options, default=["All"])
+            af5, af6, af7, af8 = st.columns(4)
+            audit_warning_filter = af5.selectbox("Company warning", ["All", "Warnings only", "No warnings only"])
+            audit_fit_filter = af6.multiselect("Seller fit", fit_options, default=["All"])
+            audit_region_filter = af7.multiselect("Region", region_options, default=["All"])
+            audit_report_filter = af8.selectbox("Report availability", ["All", "Full reports only", "Previews only"])
+            af9, af10, af11 = st.columns(3)
+            audit_source_id_filter = af9.text_input("Source ID contains")
+            audit_company_filter = af10.text_input("Company contains")
+            audit_product_filter = af11.text_input("Product contains")
+
+        filtered_audits = human_audit.filter_queue(audit_records, {
+            "audit_status": audit_status_filter,
+            "external_eligibility": audit_external_filter,
+            "signal_tier": audit_tier_filter,
+            "source_type": audit_source_filter,
+            "company_warning": audit_warning_filter,
+            "seller_fit": audit_fit_filter,
+            "region": audit_region_filter,
+            "report_availability": audit_report_filter,
+            "source_id": audit_source_id_filter,
+            "company": audit_company_filter,
+            "product": audit_product_filter,
+        })
+
+        audit_metrics = human_audit.audit_metrics(audit_records)
+        am1, am2, am3, am4, am5 = st.columns(5)
+        am1.metric("Pending audits", audit_metrics.get("pending_audits", 0))
+        am2.metric("Audits completed", audit_metrics.get("audits_completed", 0))
+        am3.metric("Internal approved", audit_metrics.get("approved_for_internal_use", 0))
+        am4.metric("External approved", audit_metrics.get("approved_for_external_use", 0))
+        am5.metric("Outreach approved", audit_metrics.get("approved_for_outreach", 0))
+        am6, am7, am8, am9, am10 = st.columns(5)
+        am6.metric("Approved with caution", audit_metrics.get("approved_with_caution", 0))
+        am7.metric("Rejected", audit_metrics.get("rejected", 0))
+        am8.metric("Correction required", audit_metrics.get("correction_required", 0))
+        am9.metric("Unresolved company warnings", audit_metrics.get("unresolved_company_warnings", 0))
+        am10.metric("Completion", f"{audit_metrics.get('audit_completion_percentage', 0)}%")
+        st.caption(
+            f"Current relevance unknown: {audit_metrics.get('current_relevance_unknown', 0)} · "
+            "Deterministic source matching does not count as a completed human audit."
+        )
+
+        queue_df = pd.DataFrame(filtered_audits)
+        queue_cols = [c for c in [
+            "audit_status", "source_type", "source_id", "target_company", "company", "product",
+            "signal_tier", "external_case_study_eligible", "company_match_warning",
+            "seller_fit_strength", "region", "has_full_report", "reviewer_name", "reviewed_at",
+        ] if c in queue_df.columns]
+        if queue_cols:
+            st.dataframe(queue_df[queue_cols], use_container_width=True, hide_index=True)
+        st.caption(f"{len(filtered_audits)} record(s) shown from {len(audit_records)} audit-queue record(s).")
+
+        if filtered_audits:
+            audit_labels = {
+                f"{r.get('source_id') or r.get('stable_lead_id')} · {r.get('target_company') or r.get('company')} · {r.get('product')}": r
+                for r in filtered_audits
+            }
+            selected_label = st.selectbox("Select opportunity for human review", list(audit_labels.keys()))
+            selected_audit_record = audit_labels[selected_label]
+            selected_key = selected_audit_record.get("audit_key") or human_audit.audit_key(selected_audit_record)
+            official_url = selected_audit_record.get("official_source_url") or selected_audit_record.get("supporting_source_url") or ""
+            if official_url:
+                st.link_button("Open official source", official_url)
+
+            layer_a, layer_b, layer_c = st.tabs([
+                "A. Original source record", "B. PharmaTune interpretation", "C. Human audit decision"
+            ])
+            with layer_a:
+                st.markdown("#### Immutable original/source layer")
+                source_view = {
+                    "source_type": selected_audit_record.get("source_type"),
+                    "source_id": selected_audit_record.get("source_id"),
+                    "official_source_url": official_url,
+                    "source_company": selected_audit_record.get("source_company"),
+                    "target_company": selected_audit_record.get("target_company") or selected_audit_record.get("company"),
+                    "product": selected_audit_record.get("product"),
+                    "source_problem_text": selected_audit_record.get("source_problem_text"),
+                    "stable_lead_id": selected_audit_record.get("stable_lead_id"),
+                    "original_row_hash": selected_audit_record.get("original_row_hash"),
+                }
+                st.json(source_view)
+                with st.expander("Original immutable snapshot / stored source data", expanded=False):
+                    raw_snapshot = selected_audit_record.get("data_json") or selected_audit_record
+                    if isinstance(raw_snapshot, str):
+                        try:
+                            raw_snapshot = _json.loads(raw_snapshot)
+                        except Exception:
+                            pass
+                    st.json(raw_snapshot)
+
+            with layer_b:
+                st.markdown("#### Frozen deterministic interpretation")
+                interpretation_view = {
+                    "signal_tier": selected_audit_record.get("signal_tier"),
+                    "signal_type": selected_audit_record.get("signal_type"),
+                    "broad_problem_category": selected_audit_record.get("broad_problem_category"),
+                    "specific_problem_subcategory": selected_audit_record.get("specific_problem_subcategory"),
+                    "clinical_trial_signal_code": selected_audit_record.get("clinical_trial_signal_code"),
+                    "clinical_trial_signal_reason": selected_audit_record.get("clinical_trial_signal_reason"),
+                    "clinical_trial_evidence_field": selected_audit_record.get("clinical_trial_evidence_field"),
+                    "clinical_trial_evidence_text": selected_audit_record.get("clinical_trial_evidence_text"),
+                    "seller_fit_strength": selected_audit_record.get("seller_fit_strength"),
+                    "why_fit": selected_audit_record.get("why_fit"),
+                    "external_case_study_eligible": selected_audit_record.get("external_case_study_eligible"),
+                    "company_role_note": selected_audit_record.get("company_role_note"),
+                    "company_match_warning": selected_audit_record.get("company_match_warning"),
+                    "product_type_warning": selected_audit_record.get("product_type_warning"),
+                    "exclusion_reason": selected_audit_record.get("exclusion_reason"),
+                    "what_evidence_proves": selected_audit_record.get("what_evidence_proves"),
+                    "what_evidence_does_not_prove": selected_audit_record.get("what_evidence_does_not_prove"),
+                }
+                st.json(interpretation_view)
+                st.caption("This deterministic layer remains frozen. Human corrections are stored separately and never overwrite it.")
+
+            with layer_c:
+                st.markdown("#### Append-only human decision")
+                try:
+                    conn_hist = db.connect(settings.DB_PATH)
+                    human_audit.ensure_schema(conn_hist)
+                    selected_history = human_audit.audit_history(conn_hist, selected_key)
+                    selected_corrections = human_audit.correction_history(conn_hist, selected_key)
+                    conn_hist.close()
+                except Exception:
+                    selected_history, selected_corrections = [], []
+                latest_selected = selected_history[0] if selected_history else {}
+                if selected_history:
+                    st.info(
+                        f"Latest audit version {latest_selected.get('audit_version')} · "
+                        f"{latest_selected.get('audit_status')} · {latest_selected.get('reviewer_name') or 'unknown reviewer'}"
+                    )
+                with st.form(f"human_audit_form_{selected_key}"):
+                    action = st.selectbox("Audit action", human_audit.AUDIT_ACTIONS)
+                    ac1, ac2 = st.columns(2)
+                    reviewer_name = ac1.text_input("Reviewer name", value=latest_selected.get("reviewer_name") or "")
+                    current_relevance_status = ac2.selectbox(
+                        "Current relevance",
+                        human_audit.CURRENT_RELEVANCE_OPTIONS,
+                        index=human_audit.CURRENT_RELEVANCE_OPTIONS.index(latest_selected.get("current_relevance_status"))
+                        if latest_selected.get("current_relevance_status") in human_audit.CURRENT_RELEVANCE_OPTIONS else 0,
+                    )
+                    audit_decision = st.text_area("Audit decision", value=latest_selected.get("audit_decision") or "")
+                    audit_notes = st.text_area("Internal audit notes", value=latest_selected.get("audit_notes") or "")
+                    st.markdown("**Mandatory validation checks**")
+                    ck1, ck2, ck3 = st.columns(3)
+                    evidence_checked = ck1.checkbox("Official source checked", value=bool(latest_selected.get("evidence_checked")))
+                    company_identity_checked = ck2.checkbox("Company identity/role checked", value=bool(latest_selected.get("company_identity_checked")))
+                    product_identity_checked = ck3.checkbox("Product identity checked", value=bool(latest_selected.get("product_identity_checked")))
+                    ck4, ck5, ck6, ck7 = st.columns(4)
+                    problem_signal_checked = ck4.checkbox("Signal classification checked", value=bool(latest_selected.get("problem_signal_checked")))
+                    evidence_supports_problem = ck5.checkbox("Evidence supports stated problem", value=bool(latest_selected.get("evidence_supports_problem")))
+                    technical_fit_checked = ck6.checkbox("Technical fit checked", value=bool(latest_selected.get("technical_fit_checked")))
+                    current_relevance_checked = ck7.checkbox("Current relevance checked", value=bool(latest_selected.get("current_relevance_checked")))
+                    ck8, ck9, ck10 = st.columns(3)
+                    target_company_site_checked = ck8.checkbox("Correct target company/site checked", value=bool(latest_selected.get("target_company_site_checked")))
+                    outreach_wording_reviewed = ck9.checkbox("Outreach wording reviewed", value=bool(latest_selected.get("outreach_wording_reviewed")))
+                    unresolved_warnings_acknowledged = ck10.checkbox("Material warnings acknowledged", value=bool(latest_selected.get("unresolved_warnings_acknowledged")))
+                    company_warning_resolved = st.checkbox(
+                        "Company/distributor warning explicitly resolved",
+                        value=bool(latest_selected.get("company_warning_resolved")),
+                        help="Required before external approval when the deterministic record has an unresolved company or distributor-only warning.",
+                    )
+                    st.markdown("**Correction record, when applicable**")
+                    co1, co2 = st.columns(2)
+                    correction_type = co1.selectbox("Correction type", human_audit.CORRECTION_TYPES)
+                    original_value = co2.text_input("Original value")
+                    corrected_value = st.text_input("Corrected value")
+                    correction_reason = st.text_area("Correction reason")
+                    supporting_source_url = st.text_input("Supporting evidence URL", value=official_url)
+                    save_audit_clicked = st.form_submit_button("Save new audit version", type="primary")
+
+                if save_audit_clicked:
+                    payload = {
+                        "action": action,
+                        "audit_decision": audit_decision,
+                        "reviewer_name": reviewer_name,
+                        "audit_notes": audit_notes,
+                        "evidence_checked": evidence_checked,
+                        "company_identity_checked": company_identity_checked,
+                        "product_identity_checked": product_identity_checked,
+                        "problem_signal_checked": problem_signal_checked,
+                        "evidence_supports_problem": evidence_supports_problem,
+                        "technical_fit_checked": technical_fit_checked,
+                        "current_relevance_checked": current_relevance_checked,
+                        "target_company_site_checked": target_company_site_checked,
+                        "outreach_wording_reviewed": outreach_wording_reviewed,
+                        "unresolved_warnings_acknowledged": unresolved_warnings_acknowledged,
+                        "company_warning_resolved": company_warning_resolved,
+                        "current_relevance_status": current_relevance_status,
+                        "correction_type": correction_type,
+                        "original_value": original_value,
+                        "corrected_value": corrected_value,
+                        "correction_reason": correction_reason,
+                        "supporting_source_url": supporting_source_url,
+                    }
+                    try:
+                        conn_save = db.connect(settings.DB_PATH)
+                        saved_audit = human_audit.save_audit_version(conn_save, selected_audit_record, payload)
+                        conn_save.close()
+                        st.success(
+                            f"Audit version {saved_audit.get('audit_version')} saved as {saved_audit.get('audit_status')}. "
+                            "Original evidence and deterministic interpretation were not changed."
+                        )
+                        st.rerun()
+                    except human_audit.AuditValidationError as exc:
+                        st.error(str(exc))
+                    except Exception as exc:
+                        st.error(f"Audit could not be saved: {exc}")
+
+                if selected_history:
+                    with st.expander("Version history", expanded=False):
+                        st.dataframe(pd.DataFrame(selected_history), use_container_width=True, hide_index=True)
+                if selected_corrections:
+                    with st.expander("Correction history", expanded=False):
+                        st.dataframe(pd.DataFrame(selected_corrections), use_container_width=True, hide_index=True)
+
+        try:
+            conn_exports = db.connect(settings.DB_PATH)
+            human_audit.ensure_schema(conn_exports)
+            export_history_bytes = human_audit.export_history(conn_exports)
+            export_corrections_bytes = human_audit.export_correction_history(conn_exports)
+            conn_exports.close()
+        except Exception:
+            export_history_bytes = b""
+            export_corrections_bytes = b""
+        ex1, ex2, ex3 = st.columns(3)
+        ex1.download_button(
+            "⬇ Full internal audit export",
+            human_audit.export_full_internal(audit_records),
+            file_name="pharmatune_human_audit_internal.csv",
+            mime="text/csv",
+        )
+        ex2.download_button(
+            "⬇ External-case-study approved",
+            human_audit.export_external_approved(audit_records),
+            file_name="pharmatune_external_case_study_approved.csv",
+            mime="text/csv",
+        )
+        ex3.download_button(
+            "⬇ Outreach-approved",
+            human_audit.export_outreach_approved(audit_records),
+            file_name="pharmatune_outreach_approved.csv",
+            mime="text/csv",
+        )
+        ex4, ex5, ex6 = st.columns(3)
+        ex4.download_button(
+            "⬇ Rejected / correction required",
+            human_audit.export_rejected_or_correction(audit_records),
+            file_name="pharmatune_rejected_or_correction_required.csv",
+            mime="text/csv",
+        )
+        ex5.download_button(
+            "⬇ Audit version history",
+            export_history_bytes,
+            file_name="pharmatune_audit_change_history.csv",
+            mime="text/csv",
+        )
+        ex6.download_button(
+            "⬇ Correction history",
+            export_corrections_bytes,
+            file_name="pharmatune_audit_correction_history.csv",
+            mime="text/csv",
+        )
+    else:
+        st.caption("No records are available for the Human Validation Queue. Import the frozen benchmark or run Generate first.")
 
     st.divider()
     st.markdown("### Generated full reports")

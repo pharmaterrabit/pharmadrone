@@ -433,3 +433,17 @@ Production validation/export parity correction:
 
 Checkpoint 6A.5.2 corrects production validation/export parity for the sparse legacy indexed record NCT00990444. The general combined-field delivery classifier still runs first; when the older index row lacks the retained registry fields, a deterministic source-ID-keyed audited ClinicalTrials.gov trace restores the oral-insulin limitation and dextran-matrix solution at read/export time. Scores, stable IDs, discovery, queues, enrichment, reports and seller matching are unchanged.
 
+
+## Checkpoint 6B — Human Validation and Audit Workflow
+
+Checkpoint 6B adds a separate, append-only human audit registry without modifying the frozen Checkpoint 6A.5.2 deterministic engine. The Results & Export tab now contains a **Human Validation Queue** with:
+
+- immutable source/benchmark snapshots;
+- a separate PharmaTune deterministic interpretation layer;
+- versioned human decisions and correction history;
+- mandatory external-use and outreach approval gates;
+- source-ID/company/product/signal filters and audit metrics;
+- internal, external-approved, outreach-approved, rejected/correction and change-history CSV exports;
+- optional import of the frozen Checkpoint 6A.5.2 100-target validation CSV as the golden audit queue.
+
+SQLite audit tables are separate from `opportunity_index`, `opportunities`, `evidence`, enrichment and source-health tables. Every save creates a new audit version; previous decisions are never silently overwritten. The three frozen manual corrections for D-0202-2025, D-0386-2024 and NCT00990444 are seeded as historical audit corrections, without granting automatic external or outreach approval.

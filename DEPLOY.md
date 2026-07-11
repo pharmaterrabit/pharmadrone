@@ -178,3 +178,7 @@ MAX_DISCOVERY_RECORDS_PER_SOURCE=300
 ```
 
 Keep `MAX_REPORTS_PER_RUN=5`; discovery may index many evidence-backed previews, but full report generation remains capped. Increase source limits only after reviewing runtime and manual validation precision.
+
+## Checkpoint 6B audit persistence
+
+The human audit registry uses separate SQLite tables in `pharmadrone.db`. Audit versions persist across app/process restarts while the same filesystem/database is retained. Streamlit Community Cloud and similar free hosts may reset local disk during redeploys or infrastructure replacement, so regularly download the internal audit and change-history exports. Production multi-user persistence will require a durable managed database in a later checkpoint.
