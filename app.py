@@ -482,6 +482,8 @@ with tab_gen:
         cov_df = pd.DataFrame([
             {"Source": s, "Status": d.get("status", "—"),
              "Raw source results": d.get("raw_results", d.get("evidence_items", 0)),
+             "Taxonomy raw": d.get("taxonomy_raw_results", 0),
+             "Fallback/sweep raw": d.get("fallback_sweep_raw_results") or d.get("newest_sweep_raw_results", 0),
              "Evidence items": d.get("evidence_items", 0),
              "Candidates created": d.get("candidate_records_created", 0),
              "Candidates rejected": d.get("candidate_records_rejected", 0),
@@ -529,6 +531,19 @@ with tab_gen:
   - rejected (too little evidence): {dbg.get('scoring', {}).get('rejected_low_evidence', 0)}
   - rejected (grade D): {dbg.get('scoring', {}).get('rejected_grade_d', 0)}
 """)
+            effective_settings = dbg.get("effective_discovery_settings", {}) or {}
+            if effective_settings:
+                st.markdown("**Effective discovery settings used in this run:**")
+                setting_rows = []
+                for source_name, source_settings in effective_settings.items():
+                    for setting_name, setting_value in (source_settings or {}).items():
+                        setting_rows.append({
+                            "Source": source_name,
+                            "Setting": setting_name,
+                            "Effective value": setting_value,
+                        })
+                st.dataframe(pd.DataFrame(setting_rows), use_container_width=True, hide_index=True)
+
             source_pipeline = dbg.get("source_candidate_pipeline", {}) or {}
             if source_pipeline:
                 st.markdown("**Source → candidate → index diagnostics:**")
@@ -537,6 +552,13 @@ with tab_gen:
                     source_rows.append({
                         "Source": source_name,
                         "Raw source results": values.get("raw_source_results", values.get("raw_evidence", 0)),
+                        "Taxonomy raw": values.get("taxonomy_raw_results", 0),
+                        "Fallback/sweep raw": values.get("fallback_sweep_raw_results") or values.get("newest_sweep_raw_results", 0),
+                        "Taxonomy accepted": values.get("taxonomy_accepted_unique", 0),
+                        "Fallback/sweep accepted": values.get("fallback_sweep_accepted_unique") or values.get("newest_sweep_accepted_unique", 0),
+                        "Taxonomy rejected": values.get("taxonomy_records_rejected", 0),
+                        "Fallback/sweep rejected": values.get("fallback_sweep_records_rejected", 0),
+                        "API total available": values.get("api_total_available") if values.get("api_total_available") is not None else "—",
                         "Evidence after source gates": values.get("raw_evidence", 0),
                         "Rejected at source gate": values.get("source_records_rejected", 0),
                         "Candidates created": values.get("candidate_records_created", 0),
@@ -1091,7 +1113,7 @@ with tab_results:
                 "pilot_rank", "target_company", "product", "molecule", "problem_category",
                 "source_type", "source_id", "region", "opportunity_score", "grade",
                 "lead_status", "queue_status", "evidence_quality", "best_evidence_tier",
-                "seller_fit_strength", "has_full_report", "source_coverage_count",
+                "direct_source_evidence_status", "seller_fit_strength", "has_full_report", "source_coverage_count",
                 "safe_bd_angle", "validation_questions"
             ] if c in pilot_preview.columns]
             if pilot_cols:
@@ -1240,12 +1262,18 @@ with tab_results:
         v4.metric("Unique companies", vm.get("unique_companies_selected", 0))
         v5.metric("Manual audits required", vm.get("number_requiring_manual_audit", 0))
 
-        v6, v7, v8, v9, v10 = st.columns(5)
+        v6, v7, v8, v9, v10, v11 = st.columns(6)
         v6.metric("Full reports", vm.get("full_reports_count", 0))
         v7.metric("Preview-only", vm.get("preview_only_count", 0))
         v8.metric("Enriched", vm.get("enriched_count", 0))
         v9.metric("Tier 1 / high", vm.get("tier1_high_count", 0))
-        v10.metric("Official URLs", vm.get("number_with_official_source_urls_available", 0))
+        v10.metric("Official direct source", vm.get("official_direct_source_records_available", 0))
+        v11.metric("Official URLs", vm.get("number_with_official_source_urls_available", 0))
+        if vm.get("not_checked_count", 0):
+            st.caption(
+                f"{vm.get('not_checked_count', 0)} selected record(s) have enrichment/evidence quality not checked. "
+                "This is separate from official direct-source availability."
+            )
 
         with st.expander("Validation profile, filters, and distributions", expanded=False):
             st.markdown(f"**Title:** {validation_profile.get('validation_title') or validation_study.DEFAULT_VALIDATION_TITLE}")
