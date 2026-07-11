@@ -30,6 +30,8 @@ TRIAL_TIER_A_SIGNAL_CODES = {
     "release_profile_comparison",
     "delivery_device_comparison",
     "dosage_form_or_route_comparison",
+    "explicit_delivery_optimization",
+    # Backward-compatible validation alias for any previously stored trace.
     "delivery_optimisation",
 }
 
@@ -485,6 +487,99 @@ def _comparison_pair(text: str, left: tuple[str, ...], right: tuple[str, ...]) -
     return bool(_comparison_pair_match(text, left, right))
 
 
+_DOSAGE_FORM_TERMS = (
+    "tablet", "tablets", "capsule", "capsules", "suspension", "solution",
+    "liquid", "gel", "syrup", "granules", "powder", "film", "patch",
+    "injection", "injectable", "vial", "syringe",
+)
+
+
+def _distinct_dosage_forms(text: str) -> set[str]:
+    normalized = _norm(text)
+    groups = {
+        "tablet": ("tablet", "tablets"),
+        "capsule": ("capsule", "capsules"),
+        "suspension": ("suspension",),
+        "solution": ("solution",),
+        "liquid": ("liquid", "liquid formulation", "liquid dosage form"),
+        "gel": ("gel",),
+        "syrup": ("syrup",),
+        "granules": ("granules",),
+        "powder": ("powder",),
+        "film": ("film",),
+        "patch": ("patch",),
+        "injection": ("injection", "injectable"),
+        "vial": ("vial", "vials"),
+        "syringe": ("syringe", "prefilled syringe", "pre-filled syringe"),
+    }
+    return {name for name, terms in groups.items() if any(term in normalized for term in terms)}
+
+
+def _formulation_comparison_evidence_valid(evidence_text: str) -> bool:
+    """Require visible evidence of more than one formulation/presentation.
+
+    A single isolated 'test formulation' or 'prototype formulation' is not a
+    comparison.  Counted/multiple formulations, named test/reference pairs, or
+    two dosage forms joined by explicit comparative/BE language are accepted.
+    """
+    text = _norm(evidence_text)
+    if not text:
+        return False
+    if re.search(
+        r"\b(?:two|three|multiple|several|different)\s+(?:new\s+)?(?:[a-z0-9-]+\s+){0,3}formulations?\b|"
+        r"\bformulations?\s+(?:a\s*[/,]\s*b(?:\s*[/,]\s*c)?|a\s+and\s+b|1\s+and\s+2)\b",
+        text,
+    ):
+        return True
+    comparison_language = bool(re.search(
+        r"\b(?:versus|vs\.?|compare(?:s|d)?(?:\s+(?:with|to))?|comparison\s+(?:of|between|with)|"
+        r"comparative|bioequivalence|bioequivalent|relative bioavailability)\b",
+        text,
+    ))
+    test_reference_pair = (
+        "test formulation" in text and "reference formulation" in text
+    ) or bool(re.search(
+        r"\b(?:prototype|test|reference)\s+(?:tablet|capsule|liquid|suspension|solution|gel)\s+formulations?\b",
+        text,
+    ))
+    dosage_forms = _distinct_dosage_forms(text)
+    if comparison_language and len(dosage_forms) >= 2:
+        return True
+    if comparison_language and test_reference_pair and text.count("formulation") >= 2:
+        return True
+    return False
+
+
+def _explicit_delivery_evidence_valid(evidence_text: str) -> bool:
+    """Validate an explicit limitation plus a named delivery solution."""
+    text = _norm(evidence_text)
+    if not text:
+        return False
+    limitation = bool(re.search(
+        r"\b(?:poor|low|limited|negligible)\s+(?:oral\s+)?(?:bioavailability|absorption)\b|"
+        r"\bcannot\s+be\s+(?:administered|given)\s+orally\b|"
+        r"\brequires?\s+(?:injection|parenteral administration)\b|"
+        r"\bcurrently\s+(?:administered|given)\s+(?:by\s+)?injection\b|"
+        r"\bdelivery\s+(?:barrier|limitation|challenge)\b",
+        text,
+    ))
+    named_approach = bool(re.search(
+        r"\b(?:dextran|polymer|lipid|nanoparticle|microparticle)\s+(?:matrix|carrier|delivery system)\b|"
+        r"\binsulin(?:-in-|\s+in\s+(?:a\s+)?)dextran\s+matrix\b|"
+        r"\bgastro[- ]resistant\s+formulations?\b|"
+        r"\benteric[- ]coated\s+(?:formulation|tablet|capsule)s?\b|"
+        r"\b(?:transdermal|inhaled|inhalation|buccal|sublingual)\s+(?:formulation|delivery|device|system)\b|"
+        r"\bnamed\s+(?:formulation|matrix|device|delivery system)\b",
+        text,
+    ))
+    intent = bool(re.search(
+        r"\b(?:oral administration|oral delivery|non[- ]injection|alternative to parenteral|"
+        r"overcome|improve|enhance|increase|enable|allow)\b",
+        text,
+    ))
+    return limitation and named_approach and intent
+
+
 def _trial_signal_evidence_valid(code: str, evidence_text: str) -> bool:
     """Validate that the exported snippet itself supports its signal code."""
     text = _norm(evidence_text)
@@ -499,18 +594,7 @@ def _trial_signal_evidence_valid(code: str, evidence_text: str) -> bool:
             x in text for x in ("modified release", "modified-release", "targeted release", "targeted-release", "extended release", "extended-release", "delayed release", "delayed-release")
         )
     if code == "formulation_comparison":
-        explicit_multi = bool(re.search(
-            r"\b(?:two|three|multiple|several|different|alternative|new)\s+(?:new\s+)?(?:drug\s+)?formulations?\b|"
-            r"\bformulations?\s+(?:a\s*[/,]\s*b(?:\s*[/,]\s*c)?|a\s+and\s+b|one\s+and\s+two)\b|"
-            r"\b(?:prototype|reference|test)\s+formulations?\b",
-            text,
-        ))
-        explicit_compare = bool(re.search(
-            r"\b(?:compare|comparison|comparative|versus|vs\.)\b.{0,120}\b(?:formulation|dosage form|delivery system|route)\b|"
-            r"\b(?:formulation|dosage form|delivery system|route)s?\b.{0,120}\b(?:compare|comparison|comparative|versus|vs\.)\b",
-            text,
-        ))
-        return explicit_multi or explicit_compare
+        return _formulation_comparison_evidence_valid(evidence_text)
     if code == "liquid_formulation_pk":
         return any(x in text for x in ("liquid formulation", "oral liquid formulation", "liquid dosage form")) and any(
             x in text for x in ("pharmacokinetic", "pharmacokinetics", "food effect", "fed", "fasted", "bioavailability", "compare", "comparison")
@@ -529,10 +613,10 @@ def _trial_signal_evidence_valid(code: str, evidence_text: str) -> bool:
             text,
         ))
     if code == "dosage_form_or_route_comparison":
-        routes = {x for x in ("oral", "intravenous", "subcutaneous", "intramuscular", "topical", "transdermal", "inhaled", "inhalation") if x in text}
-        return len(routes) >= 2 and any(x in text for x in ("versus", " vs ", "compared", "comparison", "and"))
-    if code == "delivery_optimisation":
-        return any(x in text for x in ("oral insulin delivery", "transdermal delivery", "inhaled delivery", "inhalation delivery", "delivery optimisation", "delivery optimization"))
+        routes = {x for x in ("oral", "parenteral", "intravenous", "subcutaneous", "intramuscular", "topical", "transdermal", "inhaled", "inhalation") if x in text}
+        return len(routes) >= 2 and any(x in text for x in ("versus", " vs ", "compared", "comparison", "alternative to", "rather than"))
+    if code in {"explicit_delivery_optimization", "delivery_optimisation"}:
+        return _explicit_delivery_evidence_valid(evidence_text)
     return False
 
 
@@ -585,6 +669,59 @@ def _multi_formulation_reason(record: dict[str, Any], match: re.Match[str]) -> s
     return f"explicit comparison of {count} formulations"
 
 
+def _combined_span_match(text: str, left_pattern: str, right_pattern: str, max_gap: int = 650) -> re.Match[str] | None:
+    """Return a span containing both attributable concepts in either order."""
+    pattern = re.compile(
+        rf"(?:{left_pattern}).{{0,{max_gap}}}(?:{right_pattern})|"
+        rf"(?:{right_pattern}).{{0,{max_gap}}}(?:{left_pattern})",
+        flags=re.I,
+    )
+    return pattern.search(text)
+
+
+def _explicit_delivery_match(text: str) -> re.Match[str] | None:
+    limitation = (
+        r"\b(?:poor|low|limited|negligible)\s+(?:oral\s+)?(?:bioavailability|absorption)\b|"
+        r"\bcannot\s+be\s+(?:administered|given)\s+orally\b|"
+        r"\brequires?\s+(?:injection|parenteral administration)\b|"
+        r"\bcurrently\s+(?:administered|given)\s+(?:by\s+)?injection\b|"
+        r"\bdelivery\s+(?:barrier|limitation|challenge)\b"
+    )
+    approach = (
+        r"\b(?:insulin(?:-in-|\s+in\s+(?:a\s+)?)dextran\s+matrix|dextran\s+matrix)\b"
+        r"[^.;]{0,220}\b(?:oral administration|oral delivery|non[- ]injection|overcome|improve|enhance|enable|allow)\b|"
+        r"\b(?:oral administration|oral delivery|non[- ]injection|overcome|improve|enhance|enable|allow)\b"
+        r"[^.;]{0,220}\b(?:dextran|polymer|lipid|nanoparticle|microparticle)\s+(?:matrix|carrier|delivery system)\b|"
+        r"\b(?:transdermal|inhaled|inhalation|buccal|sublingual)\s+(?:formulation|delivery|device|system)\b"
+    )
+    return _combined_span_match(text, limitation, approach)
+
+
+def _formulation_comparison_match(text: str) -> re.Match[str] | None:
+    patterns = (
+        r"\bcompare(?:s|d)?\s+(?:the\s+)?(?:prototype|test|reference)?\s*"
+        r"(?:tablet|capsule|liquid|suspension|solution|gel)\s+formulations?\s+(?:with|to)\s+(?:the\s+)?"
+        r"(?:prototype|test|reference)?\s*(?:tablet|capsule|liquid|suspension|solution|gel)\s+formulations?\b",
+        r"\b(?:two|three|multiple|several|different)\s+(?:new\s+)?(?:[a-z0-9-]+\s+){0,3}formulations?\b(?:\s+of\s+[^.;,:]{2,100})?",
+        r"\bformulations?\s+(?:a\s*[/,]\s*b(?:\s*[/,]\s*c)?|a\s+and\s+b|1\s+and\s+2)\b",
+        r"\b(?:prototype|test|reference)\s+(?:tablet|capsule|liquid|suspension|solution|gel)\s+formulations?\b"
+        r"[^.;]{0,200}\b(?:versus|vs\.?|compare(?:s|d)?\s+(?:with|to)|bioequivalence|relative bioavailability)\b"
+        r"[^.;]{0,200}\b(?:tablet|capsule|liquid|suspension|solution|gel|reference|test)\b",
+        r"\b(?:tablet|capsule|liquid|suspension|solution|gel)\s+(?:formulation|dosage form)?s?\b"
+        r"[^.;]{0,200}\b(?:versus|vs\.?|compare(?:s|d)?\s+(?:with|to)|bioequivalence|relative bioavailability)\b"
+        r"[^.;]{0,200}\b(?:tablet|capsule|liquid|suspension|solution|gel)\s+(?:formulation|dosage form)?s?\b",
+        r"\b(?:two|different)\s+oral\s+formulations?\b[^.;]{0,180}\b(?:bioequivalence|relative bioavailability|compare|comparison)\b",
+        r"\b(?:bioequivalence|relative bioavailability|compare|comparison)\b[^.;]{0,180}\b(?:two|different)\s+oral\s+formulations?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            snippet = _matched_evidence_text(text, match.start(), match.end())
+            if _formulation_comparison_evidence_valid(snippet):
+                return match
+    return None
+
+
 def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
     """Return the strongest specific attributable Tier-A trial signal.
 
@@ -612,16 +749,7 @@ def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
         m = _comparison_pair_match(text, ("immediate release", "immediate-release"), ("modified release", "modified-release", "targeted release", "targeted-release", "extended release", "extended-release", "delayed release", "delayed-release"))
         candidates.append(("release_profile_comparison", "immediate-versus-modified/targeted-release comparison", m, "delivery-system issue", "release-profile / delivery-system comparison"))
 
-        multi_pattern = re.compile(
-            r"\b(?:pharmacokinetic\s+(?:study|evaluation|assessment)\s+of\s+)?"
-            r"(?:two|three|multiple|several|different|alternative)\s+(?:new\s+)?(?:drug\s+)?formulations?\b(?:\s+of\s+[^.;,:]{2,100})?|"
-            r"\bformulations?\s+(?:a\s*[/,]\s*b(?:\s*[/,]\s*c)?|a\s+and\s+b)\b|"
-            r"\b(?:prototype|reference|test)\s+formulations?\b|"
-            r"\b(?:compare|comparison|comparative|versus|vs\.)\b[^.;]{0,140}\b(?:formulation|dosage form|delivery system|route)s?\b|"
-            r"\b(?:formulation|dosage form|delivery system|route)s?\b[^.;]{0,140}\b(?:compare|comparison|comparative|versus|vs\.)\b",
-            flags=re.I,
-        )
-        m = multi_pattern.search(compact)
+        m = _formulation_comparison_match(compact)
         if m:
             reason = _multi_formulation_reason(record, m) if "formulation" in _norm(m.group(0)) else "explicit formulation or dosage-form comparison"
             candidates.append(("formulation_comparison", reason, m, "formulation / delivery context", "formulation / dosage-form comparison"))
@@ -638,7 +766,7 @@ def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
         m = re.search(r"\bfood[- ]effect\b|\beffect of food\b|\bfed\s*(?:versus|vs\.?|and)\s*fasted\b|\bfasted\s*(?:versus|vs\.?|and)\s*fed\b|\bwith and without food\b|\bempty[- ]stomach\b[^.;]{0,100}\bmeal\b|\bmeal\b[^.;]{0,100}\bempty[- ]stomach\b", compact, flags=re.I)
         candidates.append(("food_effect_fed_fasted", "explicit food-effect / fed-versus-fasted assessment", m, "bioavailability / PK context", "food-effect / fed-fasted PK assessment"))
 
-        route_terms = ("oral", "intravenous", "subcutaneous", "intramuscular", "topical", "transdermal", "inhaled", "inhalation")
+        route_terms = ("oral", "parenteral", "intravenous", "subcutaneous", "intramuscular", "topical", "transdermal", "inhaled", "inhalation")
         m = None
         for i, left in enumerate(route_terms):
             for right in route_terms[i + 1:]:
@@ -647,11 +775,23 @@ def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
                     break
             if m:
                 break
-        candidates.append(("dosage_form_or_route_comparison", "explicit route or dosage-form comparison", m, "formulation / delivery context", "route / dosage-form comparison"))
+        if not m:
+            m = re.search(
+                r"\boral\s+(?:formulation|administration)?[^.;]{0,180}\b(?:alternative\s+to|rather\s+than|versus|vs\.?|compared\s+(?:with|to))\s+parenteral\s+(?:administration|therapy)?\b|"
+                r"\bparenteral\s+(?:administration|therapy)?[^.;]{0,180}\b(?:alternative\s+to|rather\s+than|versus|vs\.?|compared\s+(?:with|to))\s+oral\s+(?:formulation|administration)?\b",
+                compact, flags=re.I,
+            )
+        route_reason = "explicit route or dosage-form comparison"
+        if m and "oral" in _norm(m.group(0)) and "parenteral" in _norm(m.group(0)):
+            route_reason = "explicit oral-versus-parenteral formulation/delivery comparison"
+        candidates.append(("dosage_form_or_route_comparison", route_reason, m, "formulation / delivery context", "route / dosage-form comparison"))
 
         if title_or_objective:
-            m = re.search(r"\b(?:oral insulin delivery|transdermal delivery|inhaled delivery|inhalation delivery|delivery optimi[sz]ation)\b", compact, flags=re.I)
-            candidates.append(("delivery_optimisation", "explicit absorption/delivery optimisation study", m, "formulation / delivery context", "drug-delivery / absorption optimisation"))
+            m = _explicit_delivery_match(compact)
+            delivery_reason = "explicit delivery optimisation using a named formulation, matrix, device or route approach"
+            if m and "insulin" in _norm(m.group(0)) and "dextran" in _norm(m.group(0)):
+                delivery_reason = "explicit oral insulin delivery optimisation using a dextran matrix"
+            candidates.append(("explicit_delivery_optimization", delivery_reason, m, "formulation / delivery context", "explicit drug-delivery optimisation"))
 
         for code, reason, match, broad, specific in candidates:
             if not match:
@@ -665,15 +805,16 @@ def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
 
     priority = {
         "tablet_vs_capsule": 0,
-        "liquid_formulation_pk": 1,
-        "formulation_comparison": 2,
-        "release_profile_comparison": 3,
-        "delivery_device_comparison": 4,
-        "relative_bioavailability": 5,
-        "bioequivalence": 6,
-        "food_effect_fed_fasted": 7,
-        "dosage_form_or_route_comparison": 8,
-        "delivery_optimisation": 9,
+        "explicit_delivery_optimization": 1,
+        "delivery_optimisation": 2,
+        "delivery_device_comparison": 3,
+        "release_profile_comparison": 4,
+        "dosage_form_or_route_comparison": 5,
+        "liquid_formulation_pk": 6,
+        "formulation_comparison": 7,
+        "relative_bioavailability": 8,
+        "bioequivalence": 9,
+        "food_effect_fed_fasted": 10,
     }
     # De-duplicate exact code/reason/field/snippet combinations and retain the
     # strongest specific attributable match first.
@@ -865,6 +1006,10 @@ _COMPANY_SUFFIXES = {
     "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation",
     "company", "co", "plc", "gmbh", "ag", "sa", "pharmaceuticals", "pharma",
 }
+_COMPANY_TOKEN_ALIASES = {
+    "labs": "laboratories",
+    "laboratory": "laboratories",
+}
 
 
 def _company_tokens(value: str) -> set[str]:
@@ -874,10 +1019,16 @@ def _company_tokens(value: str) -> set[str]:
 def _company_entity_key(value: str) -> tuple[str, ...]:
     """Exact legal-entity-aware comparison key.
 
-    Corporate suffixes are ignored, but shared family tokens are insufficient:
-    Actavis Elizabeth and Actavis remain distinct entities.
+    Corporate suffixes and harmless punctuation are ignored, while safe aliases
+    such as Labs/Laboratories are normalised. Shared family tokens remain
+    insufficient: Actavis Elizabeth and Actavis are distinct entities.
     """
-    return tuple(x for x in re.findall(r"[a-z0-9]+", _norm(value)) if x not in _COMPANY_SUFFIXES)
+    tokens = []
+    for token in re.findall(r"[a-z0-9]+", _norm(value)):
+        if token in _COMPANY_SUFFIXES:
+            continue
+        tokens.append(_COMPANY_TOKEN_ALIASES.get(token, token))
+    return tuple(tokens)
 
 
 def _company_equivalent(a: str, b: str) -> bool:
@@ -961,10 +1112,13 @@ def company_role_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
 
     target_is_owner = _is_trial(record) and _company_equivalent(target, source)
     target_is_owner = target_is_owner or any(_company_equivalent(target, x) for x in manufactured_for + marketed_by)
-    technical_differs = any(not _company_equivalent(target, x) for x in manufacturers)
+    target_is_manufacturer = any(_company_equivalent(target, x) for x in manufacturers)
+    # Invariant: if the exact target is a named manufactured-by entity, another
+    # distributor or related entity must not imply a different technical maker.
+    technical_differs = bool(manufacturers) and not target_is_manufacturer
     target_distributor = any(_company_equivalent(target, x) for x in distributors)
     target_repackager = any(_company_equivalent(target, x) for x in repackagers)
-    distributor_only = (target_distributor or target_repackager) and not target_is_owner
+    distributor_only = (target_distributor or target_repackager) and not target_is_owner and not target_is_manufacturer
 
     source_differs = bool(source and target and not _company_equivalent(source, target))
     # A different contract manufacturer/source is a role difference when the
@@ -983,6 +1137,8 @@ def company_role_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
         notes.append("named distributor: " + "; ".join(distributors[:3]))
     if repackagers:
         notes.append("named repackager/packager: " + "; ".join(repackagers[:3]))
+    if distributor_only:
+        notes.append("target is the named distributor/unit-dose packager; technical product ownership requires validation")
 
     warning = ""
     if identity_mismatch:

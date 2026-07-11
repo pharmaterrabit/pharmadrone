@@ -413,3 +413,11 @@ ClinicalTrials Tier A now requires a coded, attributable structured-registry evi
 ## Checkpoint 6A.4
 
 ClinicalTrials Tier-A traces now export the actual sentence or match-centred context supporting the signal code, with code-specific validation and deterministic de-duplication. Multi-formulation registry titles such as Asasantin ER are recognised, source-ID audit corrections preserve the D-0202-2025 attribution warning, and company roles are bound to exact named entities so Actavis Elizabeth LLC is not confused with Actavis, Inc. Opportunity Scores, stable lead IDs, discovery, queues, enrichment and reports are unchanged.
+
+## Checkpoint 6A.5
+
+- Enforces signal-code-specific ClinicalTrials evidence invariants.
+- Restores explicit delivery-optimisation signals when a documented delivery limitation and named formulation/matrix/device/route solution are both present.
+- Requires formulation-comparison evidence to visibly identify multiple or compared formulations rather than a single isolated test/prototype formulation.
+- Uses exact entity-aware manufacturer/distributor binding for validation diagnostics.
+
