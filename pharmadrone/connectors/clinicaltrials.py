@@ -162,6 +162,9 @@ def _row(study: dict, discovery_topic: str = ""):
     ident = ps.get("identificationModule", {}) or {}
     status = ps.get("statusModule", {}) or {}
     design = ps.get("designModule", {}) or {}
+    description = ps.get("descriptionModule", {}) or {}
+    arms_module = ps.get("armsInterventionsModule", {}) or {}
+    outcomes_module = ps.get("outcomesModule", {}) or {}
     conditions = ps.get("conditionsModule", {}) or {}
     sponsor_mod = ps.get("sponsorCollaboratorsModule", {}) or {}
     sponsor = sponsor_mod.get("leadSponsor", {}) or {}
@@ -169,6 +172,9 @@ def _row(study: dict, discovery_topic: str = ""):
 
     nct = _clean(ident.get("nctId"))
     title = _clean(ident.get("briefTitle"))
+    official_title = _clean(ident.get("officialTitle"))
+    brief_summary = _clean(description.get("briefSummary"))
+    detailed_description = _clean(description.get("detailedDescription"))
     study_type = _clean(design.get("studyType")).upper()
     overall = _clean(status.get("overallStatus")).upper()
     why_stopped = _clean(status.get("whyStopped"))
@@ -177,6 +183,18 @@ def _row(study: dict, discovery_topic: str = ""):
     intervention_rows = _usable_interventions(study)
     intervention_names = [x["name"] for x in intervention_rows]
     intervention_types = [x["type"] for x in intervention_rows]
+    intervention_descriptions = [x.get("description", "") for x in intervention_rows if x.get("description")]
+    intervention_other_names = [name for x in intervention_rows for name in (x.get("other_names") or []) if name]
+    arm_labels = [_clean((x or {}).get("label")) for x in (arms_module.get("armGroups", []) or []) if _clean((x or {}).get("label"))]
+    arm_descriptions = [_clean((x or {}).get("description")) for x in (arms_module.get("armGroups", []) or []) if _clean((x or {}).get("description"))]
+    primary_outcomes = [
+        " | ".join(y for y in (_clean((x or {}).get("measure")), _clean((x or {}).get("description"))) if y)
+        for x in (outcomes_module.get("primaryOutcomes", []) or [])
+    ]
+    secondary_outcomes = [
+        " | ".join(y for y in (_clean((x or {}).get("measure")), _clean((x or {}).get("description"))) if y)
+        for x in (outcomes_module.get("secondaryOutcomes", []) or [])
+    ]
     product = intervention_names[0] if intervention_names else ""
     problem = _trial_problem(why_stopped)
     technical_context = _topic_context(discovery_topic)
@@ -223,6 +241,16 @@ def _row(study: dict, discovery_topic: str = ""):
             "phase": phases,
             "sponsor": sponsor_name or None,
             "conditions": conditions.get("conditions", []) or [],
+            "brief_title": title or None,
+            "official_title": official_title or None,
+            "brief_summary": brief_summary or None,
+            "detailed_description": detailed_description or None,
+            "intervention_descriptions": intervention_descriptions,
+            "intervention_other_names": intervention_other_names,
+            "arm_labels": arm_labels,
+            "arm_descriptions": arm_descriptions,
+            "primary_outcomes": [x for x in primary_outcomes if x],
+            "secondary_outcomes": [x for x in secondary_outcomes if x],
             "last_update_date": _clean(
                 status.get("lastUpdatePostDateStruct")
                 or status.get("lastUpdatePostDate")

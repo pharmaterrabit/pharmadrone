@@ -399,3 +399,7 @@ The dashboard displays `Checkpoint 5A.4 active`, confirms both primary Generate 
 ## Checkpoint 6A — precision and external eligibility
 
 Checkpoint 6A adds deterministic, read/export-time precision annotations without changing Opportunity Scores, stable lead IDs, discovery, queues, enrichment, or report generation. The opportunity index and 100-target validation export now include Signal Tiers A–D, broad and specific problem categories, company-role and product-type warnings, source-ID verification diagnostics, and a stricter `external_case_study_eligible` flag. Raw indexed records remain available for internal audit; only verified, suitable, specific A/strong-B signals with acceptable company/product mapping and seller fit are eligible for external case-study use.
+
+## Checkpoint 6A.2 — final live-regression correction
+
+Checkpoint 6A.2 tightens only deterministic precision annotations. ClinicalTrials.gov Tier A classification now inspects stored official titles, summaries, intervention descriptions, arms and outcomes rather than discovery-query context. FDA broad/specific taxonomy is derived from the structured recall reason first. Bulk API/raw-material warnings are limited to actual product descriptors, and company/manufacturer role conflicts remain visible. Opportunity Scores, stable lead IDs, discovery, queue, enrichment and report logic are unchanged.
