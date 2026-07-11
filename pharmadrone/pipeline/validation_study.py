@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .. import db
-from . import seller_target_matcher
+from . import seller_target_matcher, precision_validation
 
 DEFAULT_VALIDATION_TITLE = "PharmaTune 100-target validation study"
 DEFAULT_SELLER_SERVICE_PROFILE = "Specialist formulation / drug-product technology provider"
@@ -58,7 +58,24 @@ MANUAL_VERDICT_OPTIONS = ["PASS", "PARTIAL", "FAIL", "REMOVE FROM CASE STUDY"]
 
 CSV_FIELDS = [
     "validation_rank",
+    "signal_tier",
+    "signal_type",
+    "broad_problem_category",
+    "specific_problem_subcategory",
+    "source_problem_text",
+    "source_company",
     "target_company",
+    "company_role_note",
+    "company_match_warning",
+    "product_owner_warning",
+    "product_type_warning",
+    "source_id_verification_status",
+    "verification_method",
+    "source_id_verification_note",
+    "official_source_verified",
+    "external_case_study_eligible",
+    "exclusion_reason",
+    "clinical_trial_signal_reason",
     "product",
     "molecule",
     "problem_category",
@@ -420,39 +437,62 @@ def _validation_questions_text(value: Any) -> str:
 
 
 def _validation_row(record: dict[str, Any], rank: int) -> dict[str, Any]:
+    official_url = extract_official_source_url(record)
+    annotated = precision_validation.annotate_record(
+        record,
+        seller_profile=str(record.get("seller_capability") or record.get("seller_capability_match") or ""),
+        official_source_url=official_url,
+    )
     return {
         "validation_rank": rank,
-        "target_company": record.get("target_company") or record.get("company") or "",
-        "product": record.get("product") or record.get("short_product") or "",
-        "molecule": record.get("molecule") or "",
-        "problem_category": record.get("problem_category") or "",
-        "source_type": record.get("source_type") or "",
-        "source_id": record.get("source_id") or "",
-        "region": record.get("region") or "",
-        "opportunity_score": record.get("opportunity_score") if record.get("opportunity_score") is not None else record.get("score", ""),
-        "grade": record.get("grade") or "",
-        "lead_status": _normalise_lead_status(record.get("lead_status")),
-        "queue_status": record.get("queue_status") or "",
-        "evidence_quality": record.get("evidence_quality") or "not checked",
-        "best_evidence_tier": record.get("best_evidence_tier") or record.get("evidence_quality") or "not checked",
-        "direct_source_evidence_status": direct_source_evidence_status(record),
-        "corroboration_status": db.normalize_status_label(record.get("corroboration_status") or "direct source only") or "direct source only",
-        "official_followup_status": db.normalize_status_label(record.get("official_followup_status") or "not checked") or "not checked",
-        "label_context_status": db.normalize_status_label(record.get("label_context_status") or "not checked") or "not checked",
-        "clinical_trial_context_status": db.normalize_status_label(record.get("clinical_trial_context_status") or "not checked") or "not checked",
-        "literature_context_status": db.normalize_status_label(record.get("literature_context_status") or "not checked") or "not checked",
-        "source_coverage_count": _safe_int(record.get("source_coverage_count")),
-        "seller_fit_strength": record.get("fit_strength") or record.get("seller_fit_strength") or seller_target_matcher.FIT_WEAK,
-        "seller_capability_match": record.get("seller_capability") or record.get("seller_capability_match") or "",
-        "why_fit": record.get("why_fit") or "Possible technical/capability fit; requires validation.",
-        "what_evidence_proves": record.get("what_evidence_proves") or "Public evidence indicates an indexed product/problem signal.",
-        "what_evidence_does_not_prove": record.get("what_evidence_does_not_prove") or (
+        "signal_tier": annotated.get("signal_tier") or "C",
+        "signal_type": annotated.get("signal_type") or "weak/general signal",
+        "broad_problem_category": annotated.get("broad_problem_category") or annotated.get("problem_category") or "",
+        "specific_problem_subcategory": annotated.get("specific_problem_subcategory") or "",
+        "source_problem_text": annotated.get("source_problem_text") or "",
+        "source_company": annotated.get("source_company") or "",
+        "target_company": annotated.get("target_company") or annotated.get("company") or "",
+        "company_role_note": annotated.get("company_role_note") or "",
+        "company_match_warning": bool(annotated.get("company_match_warning")),
+        "product_owner_warning": annotated.get("product_owner_warning") or "",
+        "product_type_warning": annotated.get("product_type_warning") or "",
+        "source_id_verification_status": annotated.get("source_id_verification_status") or "not_verified",
+        "verification_method": annotated.get("verification_method") or "",
+        "source_id_verification_note": annotated.get("source_id_verification_note") or "",
+        "official_source_verified": bool(annotated.get("official_source_verified")),
+        "external_case_study_eligible": bool(annotated.get("external_case_study_eligible")),
+        "exclusion_reason": annotated.get("exclusion_reason") or "",
+        "clinical_trial_signal_reason": annotated.get("clinical_trial_signal_reason") or "",
+        "product": annotated.get("product") or annotated.get("short_product") or "",
+        "molecule": annotated.get("molecule") or "",
+        "problem_category": annotated.get("problem_category") or "",
+        "source_type": annotated.get("source_type") or "",
+        "source_id": annotated.get("source_id") or "",
+        "region": annotated.get("region") or "",
+        "opportunity_score": annotated.get("opportunity_score") if annotated.get("opportunity_score") is not None else annotated.get("score", ""),
+        "grade": annotated.get("grade") or "",
+        "lead_status": _normalise_lead_status(annotated.get("lead_status")),
+        "queue_status": annotated.get("queue_status") or "",
+        "evidence_quality": annotated.get("evidence_quality") or "not checked",
+        "best_evidence_tier": annotated.get("best_evidence_tier") or annotated.get("evidence_quality") or "not checked",
+        "direct_source_evidence_status": direct_source_evidence_status(annotated),
+        "corroboration_status": db.normalize_status_label(annotated.get("corroboration_status") or "direct source only") or "direct source only",
+        "official_followup_status": db.normalize_status_label(annotated.get("official_followup_status") or "not checked") or "not checked",
+        "label_context_status": db.normalize_status_label(annotated.get("label_context_status") or "not checked") or "not checked",
+        "clinical_trial_context_status": db.normalize_status_label(annotated.get("clinical_trial_context_status") or "not checked") or "not checked",
+        "literature_context_status": db.normalize_status_label(annotated.get("literature_context_status") or "not checked") or "not checked",
+        "source_coverage_count": _safe_int(annotated.get("source_coverage_count")),
+        "seller_fit_strength": annotated.get("fit_strength") or annotated.get("seller_fit_strength") or seller_target_matcher.FIT_WEAK,
+        "seller_capability_match": annotated.get("seller_capability") or annotated.get("seller_capability_match") or "",
+        "why_fit": annotated.get("why_fit") or "Possible technical/capability fit; requires validation.",
+        "what_evidence_proves": annotated.get("what_evidence_proves") or "Public evidence indicates an indexed product/problem signal.",
+        "what_evidence_does_not_prove": annotated.get("what_evidence_does_not_prove") or (
             "The evidence does not prove current customer need, commercial urgency, or a product-specific root cause."
         ),
-        "safe_bd_angle": record.get("safe_bd_angle") or record.get("recommended_bd_angle") or "Validation-led discussion only.",
-        "validation_questions": _validation_questions_text(record.get("validation_questions")),
-        "has_full_report": _as_bool(record.get("has_full_report")),
-        "report_path": record.get("report_path") or "",
+        "safe_bd_angle": annotated.get("safe_bd_angle") or annotated.get("recommended_bd_angle") or "Validation-led discussion only.",
+        "validation_questions": _validation_questions_text(annotated.get("validation_questions")),
+        "has_full_report": _as_bool(annotated.get("has_full_report")),
+        "report_path": annotated.get("report_path") or "",
         # Manual audit columns deliberately start blank. No automatic verdict is assigned.
         "official_source_found": "",
         "company_matches_source": "",
@@ -464,15 +504,14 @@ def _validation_row(record: dict[str, Any], rank: int) -> dict[str, Any]:
         "pharmatune_fit_reasonable": "",
         "manual_verdict": "",
         "auditor_notes": "",
-        "official_source_url": extract_official_source_url(record),
+        "official_source_url": official_url,
         "audit_date": "",
         "auditor_name": "",
         # Internal regression/metric fields omitted from CSV.
-        "stable_lead_id": record.get("stable_lead_id") or "",
-        "enrichment_status": record.get("enrichment_status") or "enrichment not checked",
-        "official_source_count": _safe_int(record.get("official_source_count")),
+        "stable_lead_id": annotated.get("stable_lead_id") or "",
+        "enrichment_status": annotated.get("enrichment_status") or "enrichment not checked",
+        "official_source_count": _safe_int(annotated.get("official_source_count")),
     }
-
 
 def _counter_dict(values: list[str]) -> dict[str, int]:
     return dict(sorted(Counter(v or "not specified" for v in values).items(), key=lambda item: (-item[1], item[0])))
@@ -507,6 +546,10 @@ def calculate_metrics(
         "strong_fit_count": sum(1 for x in fits if x == seller_target_matcher.FIT_STRONG),
         "moderate_fit_count": sum(1 for x in fits if x == seller_target_matcher.FIT_MODERATE),
         "weak_background_fit_count": sum(1 for x in fits if x == seller_target_matcher.FIT_WEAK),
+        "signal_tier_distribution": _counter_dict([str(r.get("signal_tier") or "C") for r in selected_rows]),
+        "external_case_study_eligible_count": sum(1 for r in selected_rows if r.get("external_case_study_eligible")),
+        "company_match_warning_count": sum(1 for r in selected_rows if r.get("company_match_warning")),
+        "source_id_verified_count": sum(1 for r in selected_rows if r.get("source_id_verification_status") in {"verified_direct", "verified_secondary"}),
         "source_type_breakdown": _counter_dict([str(r.get("source_type") or "not specified") for r in selected_rows]),
         "problem_category_breakdown": _counter_dict([str(r.get("problem_category") or "not specified") for r in selected_rows]),
         "average_opportunity_score": round(mean(scores), 1) if scores else None,
@@ -569,6 +612,19 @@ def _build_limitations(
         limitations.append(
             f"{low_priority} selected record(s) are labelled low priority / archive and are retained for internal false-positive and weak-signal validation."
         )
+    external_eligible = sum(1 for r in selected if r.get("external_case_study_eligible"))
+    limitations.append(
+        f"{external_eligible} of {len(selected)} selected record(s) meet the stricter deterministic external-case-study eligibility gate; the remaining records stay available for internal precision auditing."
+    )
+    tier_d = sum(1 for r in selected if str(r.get("signal_tier") or "").upper() == "D")
+    if tier_d:
+        limitations.append(f"{tier_d} selected record(s) are Signal Tier D and must not be used externally.")
+    company_warnings = sum(1 for r in selected if r.get("company_match_warning"))
+    if company_warnings:
+        limitations.append(f"{company_warnings} selected record(s) have unresolved company/role mapping warnings.")
+    unverified = sum(1 for r in selected if r.get("source_id_verification_status") not in {"verified_direct", "verified_secondary"})
+    if unverified:
+        limitations.append(f"{unverified} selected record(s) do not yet have direct/secondary source-ID verification and are ineligible for external use until resolved.")
     limitations.extend([
         "Seller Fit Strength is a deterministic technical/capability-fit label, not proof of commercial readiness or customer need.",
         "Label and literature context cannot confirm a product-specific root cause; trial termination is not treated as product failure unless the registry directly states a relevant reason.",
@@ -653,6 +709,11 @@ def build_validation_study(
             continue
         combined = {**deepcopy(original), **deepcopy(match)}
         combined["stable_lead_id"] = original.get("stable_lead_id") or match.get("stable_lead_id") or ""
+        combined = precision_validation.annotate_record(
+            combined,
+            seller_profile=profile["seller_service_profile"] + " " + " ".join(capabilities),
+            official_source_url=extract_official_source_url(combined),
+        )
         matched.append(combined)
 
     eligible: list[dict[str, Any]] = []
@@ -710,7 +771,7 @@ def build_validation_study(
         "seller_capabilities": seller_result.get("seller_capabilities", capabilities),
         "method_note": (
             "Selected from existing indexed/enriched PharmaTune public evidence using deterministic seller-to-target matching and configured filters only. "
-            "No APIs or LLMs were called, and Opportunity Scores and stable lead IDs were not changed."
+            "No APIs or LLMs were called, and Opportunity Scores and stable lead IDs were not changed. Checkpoint 6A annotations separate raw indexed records from stricter external-case-study eligibility."
         ),
     }
 
@@ -809,6 +870,10 @@ def build_markdown_summary(result: dict[str, Any]) -> str:
         f"- Tier 2: {metrics.get('tier2_count', 0)}",
         f"- Evidence enrichment/quality not checked: {metrics.get('not_checked_count', 0)}",
         f"- Official direct-source records available: {metrics.get('official_direct_source_records_available', 0)}",
+        f"- Source IDs verified direct/secondary: {metrics.get('source_id_verified_count', 0)}",
+        f"- External-case-study eligible: {metrics.get('external_case_study_eligible_count', 0)}",
+        f"- Company-match warnings: {metrics.get('company_match_warning_count', 0)}",
+        f"- Signal tiers: {_format_breakdown(metrics.get('signal_tier_distribution', {}))}",
         f"- Monitor only: {metrics.get('monitor_only_count', 0)}",
         f"- Needs validation: {metrics.get('needs_validation_count', 0)}",
         f"- Low priority / archive: {metrics.get('low_priority_archive_count', 0)}",
@@ -834,6 +899,7 @@ def build_markdown_summary(result: dict[str, Any]) -> str:
         "## 8. Manual audit instructions",
         "Open each official source URL where available, or locate the authoritative source manually when the URL is blank. Complete every manual audit column in the CSV.",
         "Record whether the source exists; whether company, product, source ID, problem signal, and status/date classification match; whether root cause is directly confirmed; and whether PharmaTune's seller-fit reasoning is reasonable.",
+        "Review Signal Tier, specific problem subcategory, company-role warnings, product-type warnings, source-ID verification status, and external-case-study eligibility. Tier D, unresolved company mismatches, unverified source IDs, and unsuitable placebo/specimen/diagnostic/hygiene/vague records must remain internal or be removed.",
         "Allowed manual verdicts: " + ", ".join(MANUAL_VERDICT_OPTIONS) + ".",
         "Do not mark root cause as confirmed unless the authoritative source directly states it. Do not infer confirmed customer need, urgency, or partnership intent.",
         "",

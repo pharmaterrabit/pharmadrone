@@ -395,3 +395,7 @@ The two primary Generate buttons now use the same bounded official-source expans
 ## Checkpoint 5A.4 live wiring diagnostic
 
 The dashboard displays `Checkpoint 5A.4 active`, confirms both primary Generate modes use the same expanded official-source discovery function, reports configured versus attempted recall taxonomy calls and fallback sweep calls, and counts official direct-source validation records independently from enrichment status.
+
+## Checkpoint 6A — precision and external eligibility
+
+Checkpoint 6A adds deterministic, read/export-time precision annotations without changing Opportunity Scores, stable lead IDs, discovery, queues, enrichment, or report generation. The opportunity index and 100-target validation export now include Signal Tiers A–D, broad and specific problem categories, company-role and product-type warnings, source-ID verification diagnostics, and a stricter `external_case_study_eligible` flag. Raw indexed records remain available for internal audit; only verified, suitable, specific A/strong-B signals with acceptable company/product mapping and seller fit are eligible for external case-study use.

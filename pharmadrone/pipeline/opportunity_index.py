@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
+from . import precision_validation
 
 
 def utc_now_iso() -> str:
@@ -456,12 +457,25 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
         "official_followup_status", "official_followup_count", "label_context_status",
         "clinical_trial_context_status", "literature_context_status", "best_evidence_tier",
         "official_source_count", "literature_source_count",
+        "signal_tier", "signal_type", "broad_problem_category",
+        "specific_problem_subcategory", "source_problem_text", "source_company",
+        "target_company", "company_role_note", "company_match_warning",
+        "product_owner_warning", "product_type_warning",
+        "source_id_verification_status", "verification_method",
+        "source_id_verification_note", "official_source_verified",
+        "external_case_study_eligible", "exclusion_reason",
+        "clinical_trial_signal_reason", "official_source_url",
     ]
     with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for rec in records:
-            row = {k: rec.get(k, "") for k in fields}
+            annotated = precision_validation.annotate_record(
+                rec,
+                seller_profile="Specialist formulation / drug-product technology provider particle engineering solubility enhancement formulation CDMO dissolution testing analytical/QC testing stability troubleshooting impurity investigation",
+                official_source_url=precision_validation.extract_stored_official_url(rec),
+            )
+            row = {k: annotated.get(k, "") for k in fields}
             for _k in tuple(row.keys()):
                 if _k.endswith("_status") or _k in {"enrichment_status", "corroboration_status"}:
                     row[_k] = _ascii_status_label(row[_k])

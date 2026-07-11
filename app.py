@@ -15,7 +15,7 @@ st.set_page_config(page_title="PharmaDrone", layout="wide")
 from pharmadrone import settings, db, auth, CHECKPOINT
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
-from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study
+from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study, precision_validation
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -949,7 +949,15 @@ with tab_results:
     if idx_stats.get("indexed_total", 0):
         st.info(_index_summary_text(idx_stats))
         st.caption("SQLite persistence is suitable for this local/Streamlit MVP, but it is not production SaaS persistence.")
-        preview = pd.DataFrame(idx_records)
+        precision_records = [
+            precision_validation.annotate_record(
+                r,
+                seller_profile="Specialist formulation / drug-product technology provider particle engineering solubility enhancement formulation CDMO dissolution testing analytical/QC testing stability troubleshooting impurity investigation",
+                official_source_url=precision_validation.extract_stored_official_url(r),
+            )
+            for r in idx_records
+        ]
+        preview = pd.DataFrame(precision_records)
         if "problem_category" in preview.columns:
             preview["problem_category"] = preview["problem_category"].apply(opportunity_index.clean_problem_category)
         for _status_col in [c for c in preview.columns if c.endswith("_status") or c in {"enrichment_status", "corroboration_status"}]:
@@ -961,7 +969,10 @@ with tab_results:
             "enrichment_status", "source_coverage_count", "last_enrichment_check",
             "official_followup_status", "label_context_status", "clinical_trial_context_status",
             "literature_context_status", "best_evidence_tier", "official_source_count",
-            "literature_source_count", "first_seen_at", "last_checked_at", "last_updated_at"
+            "literature_source_count", "signal_tier", "signal_type", "specific_problem_subcategory",
+            "source_id_verification_status", "company_match_warning", "product_type_warning",
+            "external_case_study_eligible", "exclusion_reason",
+            "first_seen_at", "last_checked_at", "last_updated_at"
         ] if c in preview.columns]
         if show_cols:
             st.dataframe(preview[show_cols], use_container_width=True, hide_index=True)
@@ -1284,6 +1295,10 @@ with tab_results:
         v9.metric("Tier 1 / high", vm.get("tier1_high_count", 0))
         v10.metric("Official direct source", vm.get("official_direct_source_records_available", 0))
         v11.metric("Official URLs", vm.get("number_with_official_source_urls_available", 0))
+        v12, v13, v14 = st.columns(3)
+        v12.metric("External-case-study eligible", vm.get("external_case_study_eligible_count", 0))
+        v13.metric("Source IDs verified", vm.get("source_id_verified_count", 0))
+        v14.metric("Company warnings", vm.get("company_match_warning_count", 0))
         if vm.get("not_checked_count", 0):
             st.caption(
                 f"{vm.get('not_checked_count', 0)} selected record(s) have enrichment/evidence quality not checked. "
@@ -1308,6 +1323,7 @@ with tab_results:
             st.markdown(f"**Evidence quality:** {_as_text(vm.get('evidence_strength_distribution'))}")
             st.markdown(f"**Readiness:** {_as_text(vm.get('readiness_distribution'))}")
             st.markdown(f"**Seller fit:** {_as_text(vm.get('seller_fit_distribution'))}")
+            st.markdown(f"**Signal tiers:** {_as_text(vm.get('signal_tier_distribution'))}")
             st.markdown(f"**Source types:** {_as_text(vm.get('source_type_breakdown'))}")
             st.markdown(f"**Problem categories:** {_as_text(vm.get('problem_category_breakdown'))}")
             st.caption(validation_result.get("method_note") or "")
@@ -1318,9 +1334,13 @@ with tab_results:
             validation_cols = [c for c in [
                 "validation_rank", "target_company", "product", "molecule", "problem_category",
                 "source_type", "source_id", "region", "opportunity_score", "grade",
-                "lead_status", "queue_status", "evidence_quality", "best_evidence_tier",
-                "seller_fit_strength", "has_full_report", "source_coverage_count",
-                "official_source_url", "safe_bd_angle", "validation_questions"
+                "lead_status", "queue_status", "signal_tier", "signal_type",
+                "broad_problem_category", "specific_problem_subcategory",
+                "source_company", "company_match_warning", "product_type_warning",
+                "source_id_verification_status", "external_case_study_eligible", "exclusion_reason",
+                "evidence_quality", "best_evidence_tier", "seller_fit_strength",
+                "has_full_report", "source_coverage_count", "official_source_url",
+                "safe_bd_angle", "validation_questions"
             ] if c in validation_preview.columns]
             st.dataframe(validation_preview[validation_cols], use_container_width=True, hide_index=True)
 
