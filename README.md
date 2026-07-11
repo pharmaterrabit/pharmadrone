@@ -429,3 +429,7 @@ Production validation/export parity correction:
 - ClinicalTrials evidence selection prefers named formulation/route comparisons over generic short titles.
 - FDA company-role diagnostics read the full stored product description and apply exact-manufacturer precedence at export time.
 - Production CSV regression assertions are keyed by source type and source ID.
+## Checkpoint 6A.5.2
+
+Checkpoint 6A.5.2 corrects production validation/export parity for the sparse legacy indexed record NCT00990444. The general combined-field delivery classifier still runs first; when the older index row lacks the retained registry fields, a deterministic source-ID-keyed audited ClinicalTrials.gov trace restores the oral-insulin limitation and dextran-matrix solution at read/export time. Scores, stable IDs, discovery, queues, enrichment, reports and seller matching are unchanged.
+
