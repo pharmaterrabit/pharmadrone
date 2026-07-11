@@ -460,12 +460,17 @@ def export_index_csv(conn, reports_dir: Path) -> Path:
         "signal_tier", "signal_type", "broad_problem_category",
         "specific_problem_subcategory", "source_problem_text", "source_company",
         "target_company", "company_role_note", "company_match_warning",
+        "company_match_warning_note", "company_identity_mismatch",
+        "company_role_difference", "technical_manufacturer_differs",
+        "target_is_product_owner_or_sponsor", "target_is_distributor_or_repackager_only",
         "product_owner_warning", "product_type_warning",
         "source_id_verification_status", "verification_method",
         "source_id_verification_note", "official_source_verified",
         "source_record_present", "source_id_verified_by_structured_source",
         "manual_audit_status", "external_case_study_eligible", "exclusion_reason",
-        "clinical_trial_signal_reason", "official_source_url",
+        "clinical_trial_signal_code", "clinical_trial_signal_reason",
+        "clinical_trial_evidence_field", "clinical_trial_evidence_text",
+        "audit_correction_note", "official_source_url",
     ]
     with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)

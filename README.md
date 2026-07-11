@@ -403,3 +403,8 @@ Checkpoint 6A adds deterministic, read/export-time precision annotations without
 ## Checkpoint 6A.2 — final live-regression correction
 
 Checkpoint 6A.2 tightens only deterministic precision annotations. ClinicalTrials.gov Tier A classification now inspects stored official titles, summaries, intervention descriptions, arms and outcomes rather than discovery-query context. FDA broad/specific taxonomy is derived from the structured recall reason first. Bulk API/raw-material warnings are limited to actual product descriptors, and company/manufacturer role conflicts remain visible. Opportunity Scores, stable lead IDs, discovery, queue, enrichment and report logic are unchanged.
+
+
+## Checkpoint 6A.3
+
+ClinicalTrials Tier A now requires a coded, attributable structured-registry evidence trace. Company-role diagnostics distinguish identity mismatches from normal sponsor/contract-manufacturer relationships, and audited source-ID corrections are applied deterministically in validation/export paths.
