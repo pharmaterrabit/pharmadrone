@@ -160,7 +160,8 @@ def source_problem_text(record: dict[str, Any]) -> str:
     for ent in _entities(record):
         rf = ent.get("recall_fields") or {}
         bits.extend(str(x) for x in (
-            rf.get("reason_for_recall"), ent.get("event_reason"), ent.get("reason_text"),
+            rf.get("reason_for_recall"), rf.get("product_description"),
+            ent.get("event_reason"), ent.get("reason_text"),
             ent.get("why_stopped"), ent.get("shortage_reason"), ent.get("issue_category"),
         ) if x)
     for e in _evidence(record):
@@ -547,6 +548,12 @@ def _formulation_comparison_evidence_valid(evidence_text: str) -> bool:
         return True
     if comparison_language and test_reference_pair and text.count("formulation") >= 2:
         return True
+    # Test/reference language itself is an explicit comparative design when the
+    # snippet visibly names two distinct dosage forms/routes. This supports
+    # records such as reference capsules versus test intranasal gel even when
+    # the sentence does not repeat the word "comparison".
+    if test_reference_pair and len(dosage_forms) >= 2:
+        return True
     return False
 
 
@@ -712,6 +719,8 @@ def _formulation_comparison_match(text: str) -> re.Match[str] | None:
         r"[^.;]{0,200}\b(?:tablet|capsule|liquid|suspension|solution|gel)\s+(?:formulation|dosage form)?s?\b",
         r"\b(?:two|different)\s+oral\s+formulations?\b[^.;]{0,180}\b(?:bioequivalence|relative bioavailability|compare|comparison)\b",
         r"\b(?:bioequivalence|relative bioavailability|compare|comparison)\b[^.;]{0,180}\b(?:two|different)\s+oral\s+formulations?\b",
+        r"\b(?:reference|test)\s+formulation\b[^.;]{0,320}\b(?:reference|test)\s+formulation\b",
+        r"\b(?:reference|test)\s+(?:tablet|capsule|liquid|suspension|solution|gel)\b[^.;]{0,320}\b(?:reference|test)\s+(?:tablet|capsule|liquid|suspension|solution|gel)\b",
     )
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
@@ -720,6 +729,117 @@ def _formulation_comparison_match(text: str) -> re.Match[str] | None:
             if _formulation_comparison_evidence_valid(snippet):
                 return match
     return None
+
+
+
+def _pattern_snippet(field: str, text: str, pattern: str) -> tuple[str, str] | None:
+    match = re.search(pattern, _compact_text(text), flags=re.I)
+    if not match:
+        return None
+    return field, _matched_evidence_text(_compact_text(text), match.start(), match.end(), limit=320)
+
+
+def _cross_field_explicit_delivery_trace(
+    record: dict[str, Any], fields: list[tuple[str, str]]
+) -> dict[str, str] | None:
+    """Bind a delivery limitation and named solution across official fields.
+
+    Some ClinicalTrials records state the delivery barrier in the brief summary
+    and the named formulation/matrix in the title or detailed description. The
+    exported trace combines only the two attributable registry snippets and is
+    validated as one evidence unit. Discovery topics and generated reports are
+    never used.
+    """
+    limitation_pattern = (
+        r"\b(?:poor|low|limited|negligible)\s+(?:oral\s+)?(?:bioavailability|absorption)\b|"
+        r"\b(?:degrad(?:ed|ation)|destroyed)\b[^.;]{0,120}\b(?:gastrointestinal|digestive|stomach|oral)\b|"
+        r"\bcannot\s+be\s+(?:administered|given)\s+orally\b|"
+        r"\brequires?\s+(?:injection|parenteral administration)\b|"
+        r"\bcurrently\s+(?:administered|given)\s+(?:by\s+)?injection\b|"
+        r"\bdelivery\s+(?:barrier|limitation|challenge)\b"
+    )
+    approach_pattern = (
+        r"\b(?:insulin(?:-in-|\s+in\s+(?:a\s+)?)dextran\s+matrix|dextran\s+matrix)\b|"
+        r"\b(?:dextran|polymer|lipid|nanoparticle|microparticle)\s+(?:matrix|carrier|delivery system)\b|"
+        r"\bgastro[- ]resistant\s+formulations?\b|"
+        r"\benteric[- ]coated\s+(?:formulation|tablet|capsule)s?\b|"
+        r"\b(?:transdermal|inhaled|inhalation|buccal|sublingual)\s+(?:formulation|delivery|device|system)\b"
+    )
+    intent_pattern = (
+        r"\b(?:oral administration|oral delivery|non[- ]injection|alternative to parenteral|"
+        r"overcome|improve|enhance|increase|enable|allow)\b"
+    )
+    limitations: list[tuple[str, str]] = []
+    approaches: list[tuple[str, str]] = []
+    intents: list[tuple[str, str]] = []
+    for field, text in fields:
+        hit = _pattern_snippet(field, text, limitation_pattern)
+        if hit:
+            limitations.append(hit)
+        hit = _pattern_snippet(field, text, approach_pattern)
+        if hit:
+            approaches.append(hit)
+        hit = _pattern_snippet(field, text, intent_pattern)
+        if hit:
+            intents.append(hit)
+    if not limitations or not approaches:
+        return None
+
+    # Prefer a solution snippet that already contains intent; otherwise add the
+    # closest attributable intent sentence as a third short clause.
+    best: tuple[int, dict[str, str]] | None = None
+    for l_field, l_text in limitations:
+        for a_field, a_text in approaches:
+            clauses = [l_text, a_text]
+            field_names = [l_field, a_field]
+            combined = " | ".join(dict.fromkeys(x for x in clauses if x))
+            if not re.search(intent_pattern, _norm(combined), flags=re.I):
+                for i_field, i_text in intents:
+                    clauses.append(i_text)
+                    field_names.append(i_field)
+                    combined = " | ".join(dict.fromkeys(x for x in clauses if x))
+                    if re.search(intent_pattern, _norm(combined), flags=re.I):
+                        break
+            if not _explicit_delivery_evidence_valid(combined):
+                continue
+            norm_combined = _norm(combined)
+            insulin_dextran = "insulin" in norm_combined and "dextran matrix" in norm_combined
+            reason = (
+                "explicit oral insulin delivery optimisation using a dextran matrix"
+                if insulin_dextran
+                else "explicit delivery optimisation using a named formulation, matrix, device or route approach"
+            )
+            row = {
+                "clinical_trial_signal_code": "explicit_delivery_optimization",
+                "clinical_trial_signal_reason": reason,
+                "clinical_trial_evidence_field": " + ".join(dict.fromkeys(field_names)),
+                "clinical_trial_evidence_text": combined,
+                "broad_problem_category": "formulation / delivery context",
+                "specific_problem_subcategory": "explicit drug-delivery optimisation",
+            }
+            score = (20 if insulin_dextran else 10) + sum(_TRIAL_FIELD_PRIORITY.get(f, 20) * -1 for f in set(field_names))
+            if best is None or score > best[0]:
+                best = (score, row)
+    return best[1] if best and validate_clinical_trial_trace(best[1]) else None
+
+
+def _trace_richness(row: dict[str, str]) -> int:
+    """Prefer evidence that names the compared products/forms over generic titles."""
+    text = _norm(row.get("clinical_trial_evidence_text"))
+    code = row.get("clinical_trial_signal_code") or ""
+    score = 0
+    score += 4 * len(_distinct_dosage_forms(text))
+    score += 5 if "test formulation" in text and "reference formulation" in text else 0
+    score += 4 if re.search(r"\b(?:versus|vs\.?|compared with|compared to|between)\b", text) else 0
+    score += 3 if any(x in text for x in ("intranasal", "transdermal", "inhaled", "oral", "parenteral")) else 0
+    score += 3 if _trial_signal_evidence_valid("relative_bioavailability", text) else 0
+    score += 3 if _trial_signal_evidence_valid("bioequivalence", text) else 0
+    score += 2 if _trial_signal_evidence_valid("food_effect_fed_fasted", text) else 0
+    # A generic three-word title such as "comparative bioavailability study" is
+    # valid context but should lose to an attributable named-formulation span.
+    if code in {"relative_bioavailability", "bioequivalence"} and len(text.split()) <= 6 and len(_distinct_dosage_forms(text)) < 2:
+        score -= 8
+    return score
 
 
 def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
@@ -800,6 +920,10 @@ def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
             if row:
                 matches.append(row)
 
+    cross_field_delivery = _cross_field_explicit_delivery_trace(record, trial_registry_fields(record))
+    if cross_field_delivery:
+        matches.append(cross_field_delivery)
+
     if not matches:
         return {}
 
@@ -840,6 +964,7 @@ def clinical_trial_signal_trace(record: dict[str, Any]) -> dict[str, str]:
 
     unique.sort(key=lambda row: (
         priority.get(row["clinical_trial_signal_code"], 99),
+        -_trace_richness(row),
         -specificity(row),
         _TRIAL_FIELD_PRIORITY.get(row["clinical_trial_evidence_field"], 99),
         len(row["clinical_trial_evidence_text"]),
@@ -1042,6 +1167,30 @@ def _company_equivalent(a: str, b: str) -> bool:
     return bool(ka and kb and ka == kb)
 
 
+
+def _role_entity_candidates(value: str) -> list[str]:
+    """Return conservative legal-entity candidates from a role clause.
+
+    FDA product descriptions often append an address after the company name.
+    We consider the full clause and comma-delimited prefixes, but never use
+    shared brand tokens alone.
+    """
+    compact = re.sub(r"\s+", " ", str(value or "")).strip(" ,:-")
+    if not compact:
+        return []
+    candidates = [compact]
+    parts = [x.strip(" ,:-") for x in compact.split(",") if x.strip(" ,:-")]
+    if parts:
+        candidates.append(parts[0])
+        if len(parts) >= 2 and _norm(parts[1]) in {"inc", "inc.", "llc", "ltd", "limited", "corp", "corporation"}:
+            candidates.append(parts[0] + " " + parts[1])
+    return list(dict.fromkeys(candidates))
+
+
+def _role_entity_matches(target: str, role_value: str) -> bool:
+    return any(_company_equivalent(target, candidate) for candidate in _role_entity_candidates(role_value))
+
+
 def _extract_role_names(raw_blob: str, pattern: str) -> list[str]:
     values = re.findall(pattern, raw_blob, flags=re.I)
     clean: list[str] = []
@@ -1111,13 +1260,14 @@ def company_role_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
     manufactured_for, marketed_by = unique(manufactured_for), unique(marketed_by)
 
     target_is_owner = _is_trial(record) and _company_equivalent(target, source)
-    target_is_owner = target_is_owner or any(_company_equivalent(target, x) for x in manufactured_for + marketed_by)
-    target_is_manufacturer = any(_company_equivalent(target, x) for x in manufacturers)
-    # Invariant: if the exact target is a named manufactured-by entity, another
-    # distributor or related entity must not imply a different technical maker.
+    target_is_owner = target_is_owner or any(_role_entity_matches(target, x) for x in manufactured_for + marketed_by)
+    target_is_manufacturer = any(_role_entity_matches(target, x) for x in manufacturers)
+    # Final exact-manufacturer precedence: if the target matches any named
+    # manufactured-by entity, another distributor or affiliate cannot reset the
+    # technical-manufacturer flag later in aggregation/export.
     technical_differs = bool(manufacturers) and not target_is_manufacturer
-    target_distributor = any(_company_equivalent(target, x) for x in distributors)
-    target_repackager = any(_company_equivalent(target, x) for x in repackagers)
+    target_distributor = any(_role_entity_matches(target, x) for x in distributors)
+    target_repackager = any(_role_entity_matches(target, x) for x in repackagers)
     distributor_only = (target_distributor or target_repackager) and not target_is_owner and not target_is_manufacturer
 
     source_differs = bool(source and target and not _company_equivalent(source, target))
@@ -1159,6 +1309,7 @@ def company_role_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
         "technical_manufacturer_differs": technical_differs,
         "target_is_product_owner_or_sponsor": target_is_owner,
         "target_is_distributor_or_repackager_only": distributor_only,
+        "target_exactly_matches_named_manufacturer": target_is_manufacturer,
     }
     correction = audit_correction(record)
     if correction:
@@ -1171,6 +1322,13 @@ def company_role_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
                     result[key] = result[key] + "; " + str(correction[key])
                 else:
                     result[key] = correction[key]
+    # Apply exact-manufacturer precedence after all aggregation/corrections.
+    if result.get("target_exactly_matches_named_manufacturer"):
+        result["technical_manufacturer_differs"] = False
+        result["target_is_distributor_or_repackager_only"] = False
+        if not result.get("company_identity_mismatch"):
+            result["company_match_warning"] = False
+            result["company_match_warning_note"] = ""
     return result
 
 

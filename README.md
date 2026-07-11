@@ -421,3 +421,11 @@ ClinicalTrials Tier-A traces now export the actual sentence or match-centred con
 - Requires formulation-comparison evidence to visibly identify multiple or compared formulations rather than a single isolated test/prototype formulation.
 - Uses exact entity-aware manufacturer/distributor binding for validation diagnostics.
 
+## Checkpoint 6A.5.1
+
+Production validation/export parity correction:
+
+- Cross-field official ClinicalTrials evidence can bind an attributable delivery limitation to a named delivery solution.
+- ClinicalTrials evidence selection prefers named formulation/route comparisons over generic short titles.
+- FDA company-role diagnostics read the full stored product description and apply exact-manufacturer precedence at export time.
+- Production CSV regression assertions are keyed by source type and source ID.
