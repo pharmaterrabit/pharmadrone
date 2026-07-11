@@ -328,13 +328,21 @@ def discover_taxonomy(*, page_size: int = 50, max_pages: int = 3,
         return ConnectorResult(NAME, "expanded recall taxonomy", ok=True, count=0, records=[])
 
     query_specs = list(RECALL_QUERY_SPECS)
-    fair_page_size = max(5, min(page_size, max(5, math.ceil(max_results / max(1, len(query_specs))))))
+    # Use floor division so the first round can attempt every configured
+    # taxonomy query before the source cap is reached (300 // 21 = 14).
+    fair_page_size = max(5, min(page_size, max(5, max_results // max(1, len(query_specs)))))
     unique: dict[str, tuple[dict, str]] = {}
     raw_results = 0
+    taxonomy_raw_results = 0
+    fallback_sweep_raw_results = 0
     query_count = 0
+    taxonomy_query_calls = 0
+    fallback_sweep_query_calls = 0
     failed_queries = 0
     pages_run = 0
     rejection_reasons: Counter[str] = Counter()
+    taxonomy_rejection_reasons: Counter[str] = Counter()
+    fallback_rejection_reasons: Counter[str] = Counter()
     per_query_counts: dict[str, int] = {}
     errors: list[str] = []
 
@@ -352,6 +360,7 @@ def discover_taxonomy(*, page_size: int = 50, max_pages: int = 3,
                 "skip": page * fair_page_size,
             }
             query_count += 1
+            taxonomy_query_calls += 1
             try:
                 data = get_json(URL, params)
             except Exception as exc:
@@ -366,15 +375,18 @@ def discover_taxonomy(*, page_size: int = 50, max_pages: int = 3,
             pages_run += 1
             rows = data.get("results", []) or []
             raw_results += len(rows)
+            taxonomy_raw_results += len(rows)
             per_query_counts[query] = per_query_counts.get(query, 0) + len(rows)
             if len(rows) < params["limit"]:
                 exhausted_queries.add(query)
             for row in rows:
                 if not _clean(row.get("recall_number") or row.get("event_id")):
                     rejection_reasons["missing recall/event ID"] += 1
+                    taxonomy_rejection_reasons["missing recall/event ID"] += 1
                     continue
                 if not _clean(row.get("recalling_firm")) and not _clean(row.get("product_description")):
                     rejection_reasons["missing company and product"] += 1
+                    taxonomy_rejection_reasons["missing company and product"] += 1
                     continue
                 unique.setdefault(_dedupe_key(row), (row, label))
                 if len(unique) >= max_results:
@@ -394,6 +406,7 @@ def discover_taxonomy(*, page_size: int = 50, max_pages: int = 3,
             break
         limit = min(page_size, max_results - len(unique))
         query_count += 1
+        fallback_sweep_query_calls += 1
         try:
             data = get_json(URL, {
                 "limit": limit,
@@ -411,24 +424,31 @@ def discover_taxonomy(*, page_size: int = 50, max_pages: int = 3,
         pages_run += 1
         rows = data.get("results", []) or []
         raw_results += len(rows)
+        fallback_sweep_raw_results += len(rows)
         if not rows:
             break
         before = len(unique)
         for row in rows:
             if not _clean(row.get("recall_number") or row.get("event_id")):
                 rejection_reasons["missing recall/event ID"] += 1
+                fallback_rejection_reasons["missing recall/event ID"] += 1
                 continue
             if not _clean(row.get("recalling_firm")) and not _clean(row.get("product_description")):
                 rejection_reasons["missing company and product"] += 1
+                fallback_rejection_reasons["missing company and product"] += 1
                 continue
             if not _is_relevant_sweep_row(row):
                 rejection_reasons["recent recall outside approved drug-product/quality taxonomy"] += 1
+                fallback_rejection_reasons["recent recall outside approved drug-product/quality taxonomy"] += 1
                 continue
             unique.setdefault(_dedupe_key(row), (row, "recent official recall sweep"))
             if len(unique) >= max_results:
                 break
         recent_added += max(0, len(unique) - before)
-        if len(rows) < limit or len(unique) == before:
+        # Do not stop merely because one recent page added no accepted rows.
+        # A page can consist entirely of duplicates or out-of-taxonomy recalls
+        # while later pages still contain relevant official drug-product events.
+        if len(rows) < limit:
             break
 
     records = []
@@ -453,11 +473,23 @@ def discover_taxonomy(*, page_size: int = 50, max_pages: int = 3,
         warnings=warnings,
         stats={
             "query_count": query_count,
+            "taxonomy_query_specs_configured": len(query_specs),
+            "taxonomy_query_calls": taxonomy_query_calls,
+            "fallback_sweep_query_calls": fallback_sweep_query_calls,
             "raw_results": raw_results,
+            "taxonomy_raw_results": taxonomy_raw_results,
+            "fallback_sweep_raw_results": fallback_sweep_raw_results,
             "unique_records": len(records),
             "taxonomy_unique": taxonomy_count,
+            "taxonomy_accepted_unique": taxonomy_count,
             "recent_sweep_added": recent_added,
+            "fallback_sweep_accepted_unique": recent_added,
             "duplicates_removed": max(0, raw_results - len(records)),
+            "records_rejected": sum(rejection_reasons.values()),
+            "taxonomy_records_rejected": sum(taxonomy_rejection_reasons.values()),
+            "fallback_sweep_records_rejected": sum(fallback_rejection_reasons.values()),
+            "taxonomy_rejection_reasons": dict(taxonomy_rejection_reasons),
+            "fallback_sweep_rejection_reasons": dict(fallback_rejection_reasons),
             "failed_queries": failed_queries,
             "successful_queries": max(0, query_count - failed_queries),
             "pages_run": pages_run,

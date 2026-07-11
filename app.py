@@ -9,7 +9,10 @@ import json as _json
 import pandas as pd
 import streamlit as st
 
-from pharmadrone import settings, db, auth
+# Must be the first Streamlit command; settings may inspect st.secrets on import.
+st.set_page_config(page_title="PharmaDrone", layout="wide")
+
+from pharmadrone import settings, db, auth, CHECKPOINT
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
 from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study
@@ -19,8 +22,6 @@ from pharmadrone.pipeline.opportunity_matcher import (
     match_problem_to_solutions,
     match_technology_to_targets,
 )
-
-st.set_page_config(page_title="PharmaDrone", layout="wide")
 
 # --- Password gate (server-side; password never reaches the browser) --------
 auth.require_password()
@@ -318,6 +319,7 @@ def _render_seller_target_cards(result: dict) -> None:
         st.divider()
 
 st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
+st.info(f"**{CHECKPOINT}** · both primary Generate modes are wired to bounded expanded official-source discovery.")
 st.caption("Find evidence-backed pharma product problems, solution technologies, "
            "service provider categories, research innovation signals, and BD "
            "opportunities. Private dashboard · global public-source scouting "
@@ -484,6 +486,10 @@ with tab_gen:
              "Raw source results": d.get("raw_results", d.get("evidence_items", 0)),
              "Taxonomy raw": d.get("taxonomy_raw_results", 0),
              "Fallback/sweep raw": d.get("fallback_sweep_raw_results") or d.get("newest_sweep_raw_results", 0),
+             "Taxonomy configured": d.get("taxonomy_query_specs_configured", 0),
+             "Taxonomy attempted": d.get("taxonomy_query_calls", 0),
+             "Fallback calls": d.get("fallback_sweep_query_calls", 0),
+             "Expansion diagnostic": d.get("expansion_diagnostic", "—"),
              "Evidence items": d.get("evidence_items", 0),
              "Candidates created": d.get("candidate_records_created", 0),
              "Candidates rejected": d.get("candidate_records_rejected", 0),
@@ -531,6 +537,11 @@ with tab_gen:
   - rejected (too little evidence): {dbg.get('scoring', {}).get('rejected_low_evidence', 0)}
   - rejected (grade D): {dbg.get('scoring', {}).get('rejected_grade_d', 0)}
 """)
+            st.markdown(f"**Runtime checkpoint:** `{dbg.get('checkpoint_version') or CHECKPOINT}`")
+            st.markdown(
+                "**Official discovery path:** "
+                + ("expanded for this Generate mode" if dbg.get("expanded_official_discovery") else "not run / not applicable")
+            )
             effective_settings = dbg.get("effective_discovery_settings", {}) or {}
             if effective_settings:
                 st.markdown("**Effective discovery settings used in this run:**")
@@ -558,6 +569,10 @@ with tab_gen:
                         "Fallback/sweep accepted": values.get("fallback_sweep_accepted_unique") or values.get("newest_sweep_accepted_unique", 0),
                         "Taxonomy rejected": values.get("taxonomy_records_rejected", 0),
                         "Fallback/sweep rejected": values.get("fallback_sweep_records_rejected", 0),
+                        "Taxonomy configured": values.get("taxonomy_query_specs_configured", 0),
+                        "Taxonomy attempted": values.get("taxonomy_query_calls", 0),
+                        "Fallback calls": values.get("fallback_sweep_query_calls", 0),
+                        "Expansion diagnostic": values.get("expansion_diagnostic", "—"),
                         "API total available": values.get("api_total_available") if values.get("api_total_available") is not None else "—",
                         "Evidence after source gates": values.get("raw_evidence", 0),
                         "Rejected at source gate": values.get("source_records_rejected", 0),

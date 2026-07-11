@@ -386,3 +386,12 @@ records and records explicit exclusion reasons for specimen, placebo-only,
 standard-of-care, and diagnostic/control records. FDA shortages remain cautious
 supply, availability, manufacturing-quality, or discontinuation signals and do
 not establish a formulation root cause or customer need.
+
+## Checkpoint 5A.3 source-depth diagnostics
+
+The two primary Generate buttons now use the same bounded official-source expansion settings. Developer/debug output shows the effective recall/trial/source caps, recall taxonomy and fallback-sweep stages, shortage endpoint totals, source rejections, candidate creation, indexing, and full-report counts separately. Checkpoint 4 also reports official direct-source availability separately from enrichment/evidence-quality review status.
+
+
+## Checkpoint 5A.4 live wiring diagnostic
+
+The dashboard displays `Checkpoint 5A.4 active`, confirms both primary Generate modes use the same expanded official-source discovery function, reports configured versus attempted recall taxonomy calls and fallback sweep calls, and counts official direct-source validation records independently from enrichment status.

@@ -134,6 +134,8 @@ def discover_shortages(*, max_results: int = 300, page_size: int = 50,
     unique: dict[str, dict] = {}
     pages_run = 0
     raw_results = 0
+    api_total_available = None
+    sort_fallback_used = False
     rejected = Counter()
     try:
         for page in range(max_pages):
@@ -142,13 +144,29 @@ def discover_shortages(*, max_results: int = 300, page_size: int = 50,
                 break
             limit = min(page_size, remaining)
             try:
-                data = get_json(URL, {"limit": limit, "skip": page * page_size})
+                data = get_json(URL, {
+                    "limit": limit,
+                    "skip": page * page_size,
+                    "sort": "update_date:desc",
+                })
             except Exception as exc:
                 msg = describe_error(exc)
                 if "404" in msg:
                     break
-                raise
+                # Some openFDA deployments/endpoints can reject sorting even
+                # though bounded limit/skip pagination is valid. Retry this page
+                # once without sort rather than losing the shortage source.
+                try:
+                    data = get_json(URL, {"limit": limit, "skip": page * page_size})
+                    sort_fallback_used = True
+                except Exception:
+                    raise exc
             pages_run += 1
+            meta_results = ((data.get("meta") or {}).get("results") or {})
+            try:
+                api_total_available = int(meta_results.get("total"))
+            except (TypeError, ValueError):
+                pass
             rows = data.get("results", []) or []
             raw_results += len(rows)
             if not rows:
@@ -164,7 +182,9 @@ def discover_shortages(*, max_results: int = 300, page_size: int = 50,
                 unique.setdefault(_stable_key(row), row)
                 if len(unique) >= max_results:
                     break
-            if len(rows) < limit or len(unique) == before:
+            # Continue across bounded pages even when one page adds no new
+            # stable keys. Later pages may contain other shortage products.
+            if len(rows) < limit:
                 break
     except Exception as exc:
         return ConnectorResult(
@@ -172,23 +192,42 @@ def discover_shortages(*, max_results: int = 300, page_size: int = 50,
             stats={
                 "query_count": 1, "successful_queries": 0, "failed_queries": 1,
                 "raw_results": raw_results,
+                "api_total_available": api_total_available,
                 "records_rejected": sum(rejected.values()),
                 "rejection_reasons": dict(rejected),
             },
         )
 
     records = _parse(list(unique.values()))
+    warnings = [
+        f"bounded newest-first pagination: {pages_run} page(s), {len(records)} unique shortage record(s), "
+        f"{sum(rejected.values())} source record(s) rejected"
+    ]
+    if sort_fallback_used:
+        warnings.append("update-date sorting was rejected; bounded pagination continued without sort")
+    if api_total_available is not None:
+        if api_total_available <= len(records) + sum(rejected.values()):
+            warnings.append(
+                f"openFDA shortage endpoint reported {api_total_available} total available record(s); "
+                "the bounded sweep retrieved the complete currently exposed result set."
+            )
+        else:
+            warnings.append(
+                f"openFDA shortage endpoint reported {api_total_available} total available record(s); "
+                f"this run was bounded to {max_results} accepted records across {max_pages} page(s)."
+            )
     return ConnectorResult(
         NAME, "drug shortages", ok=True, count=len(records), records=records,
-        warnings=[
-            f"bounded pagination: {pages_run} page(s), {len(records)} unique shortage record(s), "
-            f"{sum(rejected.values())} source record(s) rejected"
-        ],
+        warnings=warnings,
         stats={
             "query_count": 1,
             "successful_queries": 1,
             "failed_queries": 0,
             "raw_results": raw_results,
+            "api_total_available": api_total_available,
+            "sort_fallback_used": sort_fallback_used,
+            "newest_sweep_raw_results": raw_results,
+            "newest_sweep_accepted_unique": len(records),
             "unique_records": len(records),
             "records_rejected": sum(rejected.values()),
             "rejection_reasons": dict(rejected),

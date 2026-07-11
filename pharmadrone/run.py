@@ -23,7 +23,7 @@ import argparse
 import json
 from collections import Counter
 import uuid
-from . import settings, db, export, llm
+from . import settings, db, export, llm, CHECKPOINT
 from .cost import CostTracker
 from .pipeline import (queries, retrieve, extract, dedup, score, report,
                        failure_signal, discover, event_discovery, opportunity_index, source_health)
@@ -36,6 +36,7 @@ FALLBACK_MIN_RAW_EVIDENCE = 20
 MAX_CANDIDATES_TO_SCORE = 12
 # Cap evidence batches sent to the LLM extraction step (each batch = 1 LLM call).
 MAX_LLM_EXTRACTION_BATCHES = 3
+PRIMARY_EXPANDED_DISCOVERY_MODES = {"test", "failure"}
 
 
 def _source_status(cov: dict) -> str:
@@ -84,12 +85,43 @@ def _coverage_summary(coverage: dict, accepted: list[dict], *,
         disc = discovery_by_source.get(source, {}) or {}
         connector_reasons = dict(cov.get("rejection_reasons", {}) or {})
         candidate_reasons = dict(disc.get("rejection_reasons", {}) or {})
+        connector_stats = list(cov.get("connector_stats", []) or [])
+        recall_stats = next((x for x in connector_stats if x.get("taxonomy_query_specs_configured") is not None), {})
+        configured = int(recall_stats.get("taxonomy_query_specs_configured") or 0)
+        attempted = int(recall_stats.get("taxonomy_query_calls") or 0)
+        fallback_calls = int(recall_stats.get("fallback_sweep_query_calls") or 0)
+        source_cap = int(recall_stats.get("source_cap") or (cov.get("settings") or {}).get("MAX_DISCOVERY_RECORDS_PER_SOURCE") or 0)
+        unique_records = int(recall_stats.get("unique_records") or cov.get("evidence") or 0)
+        if configured and attempted < configured:
+            if source_cap and unique_records >= source_cap:
+                expansion_diagnostic = f"Stopped after {attempted}/{configured} taxonomy queries because source cap {source_cap} was reached."
+            elif int(recall_stats.get("failed_queries") or 0):
+                expansion_diagnostic = f"Attempted {attempted}/{configured}; connector/API interruption occurred. Review developer source errors."
+            else:
+                expansion_diagnostic = f"Attempted {attempted}/{configured}; runtime package/path mismatch or early connector stop suspected."
+        elif configured:
+            expansion_diagnostic = f"Attempted all {attempted}/{configured} taxonomy queries; fallback sweep calls={fallback_calls}."
+        else:
+            expansion_diagnostic = "not applicable"
         summary[source] = {
             "status": _source_status(cov),
             "queries": cov.get("queries", 0),
             "succeeded": cov.get("ok", 0),
             "failed": cov.get("failed", 0),
             "raw_results": cov.get("raw_results", cov.get("evidence", 0)),
+            "taxonomy_raw_results": cov.get("taxonomy_raw_results", 0),
+            "fallback_sweep_raw_results": cov.get("fallback_sweep_raw_results", 0),
+            "taxonomy_query_specs_configured": configured,
+            "taxonomy_query_calls": attempted,
+            "fallback_sweep_query_calls": fallback_calls,
+            "expansion_diagnostic": expansion_diagnostic,
+            "taxonomy_accepted_unique": cov.get("taxonomy_accepted_unique", 0),
+            "fallback_sweep_accepted_unique": cov.get("fallback_sweep_accepted_unique", 0),
+            "taxonomy_records_rejected": cov.get("taxonomy_records_rejected", 0),
+            "fallback_sweep_records_rejected": cov.get("fallback_sweep_records_rejected", 0),
+            "newest_sweep_raw_results": cov.get("newest_sweep_raw_results", 0),
+            "newest_sweep_accepted_unique": cov.get("newest_sweep_accepted_unique", 0),
+            "api_total_available": cov.get("api_total_available"),
             "evidence_items": cov.get("evidence", 0),
             "source_records_rejected": cov.get("source_rejected", 0),
             "candidate_records_created": disc.get("candidate_records_created", 0),
@@ -113,7 +145,7 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     cost = CostTracker(profile.get("pricing_usd_per_million_tokens", {}))
     enabled = settings.enabled_sources(profile)
     say = log or (lambda m: None)
-    debug = {}
+    debug = {"checkpoint_version": CHECKPOINT, "generate_mode": mode}
 
     # Fresh circuit breaker for this run: after 2 consecutive 429s the LLM is
     # disabled and the run continues deterministically (no more OpenRouter calls).
@@ -166,16 +198,26 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     # Event-first discovery runs in failure mode (exclusively) and in test mode
     # (in addition to the generic queries), so structured event records lead.
     evidence, coverage = [], {}
-    if mode in ("failure", "test") and fail_on:
+    if mode in PRIMARY_EXPANDED_DISCOVERY_MODES and fail_on:
+        # Checkpoint 5A.4: both primary Generate buttons call the exact same
+        # bounded official-source discovery function. This is deliberately
+        # explicit rather than inferred from per-source limits.
+        debug["expanded_official_discovery"] = True
+        debug["official_discovery_function"] = "event_discovery.discover_events(expanded=True)"
         ev_events, cov_events = event_discovery.discover_events(
             profile, cost, per_source=8 if mode == "failure" else 4, log=say,
-            expanded=(mode == "failure"))
+            expanded=True)
         say(f"Event-first discovery: {len(ev_events)} event record(s) "
             "(recalls / stopped trials / targeted web).")
         evidence.extend(ev_events)
         coverage.update(cov_events)
         debug["event_first_count"] = len(ev_events)
         debug["has_event_source"] = event_discovery.has_event_source(ev_events)
+        debug["effective_discovery_settings"] = {
+            source: dict((details or {}).get("settings") or {})
+            for source, details in cov_events.items()
+            if (details or {}).get("settings")
+        }
 
     if qs:
         ev_generic, cov_generic = retrieve.retrieve(
@@ -273,6 +315,27 @@ def generate(mode="test", n=5, use_llm_queries=True, progress=None, log=None):
     debug["source_candidate_pipeline"] = {
         source: {
             "raw_source_results": int((coverage.get(source) or {}).get("raw_results", raw_by_source.get(source, 0))),
+            "taxonomy_raw_results": int((coverage.get(source) or {}).get("taxonomy_raw_results", 0)),
+            "fallback_sweep_raw_results": int((coverage.get(source) or {}).get("fallback_sweep_raw_results", 0)),
+            "taxonomy_accepted_unique": int((coverage.get(source) or {}).get("taxonomy_accepted_unique", 0)),
+            "fallback_sweep_accepted_unique": int((coverage.get(source) or {}).get("fallback_sweep_accepted_unique", 0)),
+            "taxonomy_records_rejected": int((coverage.get(source) or {}).get("taxonomy_records_rejected", 0)),
+            "fallback_sweep_records_rejected": int((coverage.get(source) or {}).get("fallback_sweep_records_rejected", 0)),
+            "taxonomy_query_specs_configured": int(next((x.get("taxonomy_query_specs_configured") or 0 for x in ((coverage.get(source) or {}).get("connector_stats", []) or []) if x.get("taxonomy_query_specs_configured") is not None), 0)),
+            "taxonomy_query_calls": int(next((x.get("taxonomy_query_calls") or 0 for x in ((coverage.get(source) or {}).get("connector_stats", []) or []) if x.get("taxonomy_query_calls") is not None), 0)),
+            "fallback_sweep_query_calls": int(next((x.get("fallback_sweep_query_calls") or 0 for x in ((coverage.get(source) or {}).get("connector_stats", []) or []) if x.get("fallback_sweep_query_calls") is not None), 0)),
+            "expansion_diagnostic": next((
+                (f"Attempted all {int(x.get('taxonomy_query_calls') or 0)}/{int(x.get('taxonomy_query_specs_configured') or 0)} taxonomy queries; fallback sweep calls={int(x.get('fallback_sweep_query_calls') or 0)}."
+                 if int(x.get('taxonomy_query_calls') or 0) >= int(x.get('taxonomy_query_specs_configured') or 0)
+                 else (f"Stopped after {int(x.get('taxonomy_query_calls') or 0)}/{int(x.get('taxonomy_query_specs_configured') or 0)} taxonomy queries because source cap {int(x.get('source_cap') or 0)} was reached."
+                       if int(x.get('source_cap') or 0) and int(x.get('unique_records') or 0) >= int(x.get('source_cap') or 0)
+                       else f"Attempted {int(x.get('taxonomy_query_calls') or 0)}/{int(x.get('taxonomy_query_specs_configured') or 0)}; inspect runtime version/settings and connector failures."))
+                for x in ((coverage.get(source) or {}).get("connector_stats", []) or [])
+                if x.get("taxonomy_query_specs_configured") is not None
+            ), "not applicable"),
+            "newest_sweep_raw_results": int((coverage.get(source) or {}).get("newest_sweep_raw_results", 0)),
+            "newest_sweep_accepted_unique": int((coverage.get(source) or {}).get("newest_sweep_accepted_unique", 0)),
+            "api_total_available": (coverage.get(source) or {}).get("api_total_available"),
             "raw_evidence": int(raw_by_source.get(source, 0)),
             "source_records_rejected": int((coverage.get(source) or {}).get("source_rejected", 0)),
             "source_rejection_reasons": dict((coverage.get(source) or {}).get("rejection_reasons", {}) or {}),

@@ -71,6 +71,7 @@ CSV_FIELDS = [
     "queue_status",
     "evidence_quality",
     "best_evidence_tier",
+    "direct_source_evidence_status",
     "corroboration_status",
     "official_followup_status",
     "label_context_status",
@@ -348,6 +349,18 @@ def _has_official_source_evidence(record: dict[str, Any]) -> bool:
     return bool(extract_official_source_url(record))
 
 
+def direct_source_evidence_status(record: dict[str, Any]) -> str:
+    """Display official-source presence separately from enrichment quality.
+
+    A preview can legitimately have an official FDA/registry source while its
+    Phase 3 enrichment quality remains ``not checked``. This label prevents the
+    validation UI from implying that no authoritative evidence exists.
+    """
+    if _has_official_source_evidence(record):
+        return "official direct source - not enriched" if not _is_enriched(record) else "official direct source - enriched"
+    return "no official direct source identified"
+
+
 def _rank_key(record: dict[str, Any]) -> tuple[Any, ...]:
     lead_status = _normalise_lead_status(record.get("lead_status"))
     return (
@@ -422,6 +435,7 @@ def _validation_row(record: dict[str, Any], rank: int) -> dict[str, Any]:
         "queue_status": record.get("queue_status") or "",
         "evidence_quality": record.get("evidence_quality") or "not checked",
         "best_evidence_tier": record.get("best_evidence_tier") or record.get("evidence_quality") or "not checked",
+        "direct_source_evidence_status": direct_source_evidence_status(record),
         "corroboration_status": db.normalize_status_label(record.get("corroboration_status") or "direct source only") or "direct source only",
         "official_followup_status": db.normalize_status_label(record.get("official_followup_status") or "not checked") or "not checked",
         "label_context_status": db.normalize_status_label(record.get("label_context_status") or "not checked") or "not checked",
@@ -498,6 +512,17 @@ def calculate_metrics(
         "average_opportunity_score": round(mean(scores), 1) if scores else None,
         "number_requiring_manual_audit": len(selected_rows),
         "number_with_official_source_urls_available": sum(1 for r in selected_rows if r.get("official_source_url")),
+        "official_direct_source_records_available": sum(
+            1 for r in selected_rows
+            if (
+                bool(r.get("official_source_url"))
+                or str(r.get("direct_source_evidence_status") or "").lower().startswith("official direct source")
+                or any(
+                    token in _norm(r.get("source_type") or "")
+                    for token in ("fda", "regulator", "recall", "clinicaltrials", "trial registry")
+                )
+            )
+        ),
         "evidence_strength_distribution": _counter_dict(evidence),
         "readiness_distribution": _counter_dict(readiness),
         "seller_fit_distribution": _counter_dict(fits),
@@ -782,7 +807,8 @@ def build_markdown_summary(result: dict[str, Any]) -> str:
         f"- Enriched records: {metrics.get('enriched_count', 0)}",
         f"- Tier 1 / high: {metrics.get('tier1_high_count', 0)}",
         f"- Tier 2: {metrics.get('tier2_count', 0)}",
-        f"- Evidence not checked: {metrics.get('not_checked_count', 0)}",
+        f"- Evidence enrichment/quality not checked: {metrics.get('not_checked_count', 0)}",
+        f"- Official direct-source records available: {metrics.get('official_direct_source_records_available', 0)}",
         f"- Monitor only: {metrics.get('monitor_only_count', 0)}",
         f"- Needs validation: {metrics.get('needs_validation_count', 0)}",
         f"- Low priority / archive: {metrics.get('low_priority_archive_count', 0)}",
@@ -797,6 +823,7 @@ def build_markdown_summary(result: dict[str, Any]) -> str:
         "",
         "## 6. Evidence quality distribution",
         _format_breakdown(metrics.get("evidence_strength_distribution", {})),
+        "Evidence quality/enrichment marked not checked does not mean that no official source exists. Official direct-source presence is reported separately above.",
         "",
         "## 7. Readiness distribution",
         _format_breakdown(metrics.get("readiness_distribution", {})),

@@ -135,6 +135,12 @@ def discover_events(profile: dict, cost, per_source: int = 8, log=None,
         trial_pages = _int_env("CLINICALTRIALS_MAX_PAGES_PER_TOPIC", 2, maximum=10)
         if not expanded:
             trial_page_size, trial_pages = max(1, per_source), 1
+        coverage["ClinicalTrials.gov"]["settings"] = {
+            "CLINICALTRIALS_PAGE_SIZE": trial_page_size,
+            "CLINICALTRIALS_MAX_PAGES_PER_TOPIC": trial_pages,
+            "MAX_DISCOVERY_RECORDS_PER_SOURCE": max_per_source,
+            "TOPIC_COUNT": len(TRIAL_STOP_TOPICS),
+        }
         seen = 0
         for topic in TRIAL_STOP_TOPICS:
             remaining = max_per_source - seen
@@ -161,6 +167,11 @@ def discover_events(profile: dict, cost, per_source: int = 8, log=None,
             max_results=max_per_source if expanded else per_source,
             page_size=shortage_page_size, max_pages=shortage_pages,
         )
+        coverage["openFDA (Drug Shortages)"]["settings"] = {
+            "OPENFDA_SHORTAGE_PAGE_SIZE": shortage_page_size,
+            "OPENFDA_SHORTAGE_MAX_PAGES": shortage_pages,
+            "MAX_DISCOVERY_RECORDS_PER_SOURCE": max_per_source,
+        }
         _absorb(coverage["openFDA (Drug Shortages)"], res, evidence,
                 region="United States", say=say)
 
@@ -181,6 +192,11 @@ def _blank():
     return {
         "queries": 0, "ok": 0, "failed": 0, "evidence": 0,
         "raw_results": 0, "source_rejected": 0,
+        "taxonomy_raw_results": 0, "fallback_sweep_raw_results": 0,
+        "taxonomy_accepted_unique": 0, "fallback_sweep_accepted_unique": 0,
+        "taxonomy_records_rejected": 0, "fallback_sweep_records_rejected": 0,
+        "newest_sweep_raw_results": 0, "newest_sweep_accepted_unique": 0,
+        "api_total_available": None,
         "rejection_reasons": {}, "connector_stats": [],
         "errors": [], "warnings": [], "settings": {},
     }
@@ -190,6 +206,15 @@ def _absorb(cov, res, evidence, region=None, say=None, query_text=None):
     stats = getattr(res, "stats", {}) or {}
     cov["queries"] += int(stats.get("query_count") or 1)
     cov["raw_results"] += int(stats.get("raw_results") or res.count or 0)
+    for key in (
+        "taxonomy_raw_results", "fallback_sweep_raw_results",
+        "taxonomy_accepted_unique", "fallback_sweep_accepted_unique",
+        "taxonomy_records_rejected", "fallback_sweep_records_rejected",
+        "newest_sweep_raw_results", "newest_sweep_accepted_unique",
+    ):
+        cov[key] = int(cov.get(key) or 0) + int(stats.get(key) or 0)
+    if stats.get("api_total_available") is not None:
+        cov["api_total_available"] = stats.get("api_total_available")
     cov["source_rejected"] += int(stats.get("records_rejected") or 0)
     for reason, count in (stats.get("rejection_reasons") or {}).items():
         cov["rejection_reasons"][reason] = cov["rejection_reasons"].get(reason, 0) + int(count or 0)
