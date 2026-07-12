@@ -222,6 +222,151 @@ def _infrastructure_schema(conn) -> None:
     """)
 
 
+
+def _scheduler_schema(conn) -> None:
+    ident = _identity(conn)
+    ts = _timestamp_default(conn)
+    bool_check = "CHECK (enabled IN (0,1))"
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS source_refresh_state (
+        source_name TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        cadence TEXT NOT NULL,
+        last_attempt_at TEXT,
+        last_success_at TEXT,
+        next_due_at TEXT,
+        last_cursor TEXT,
+        last_watermark TEXT,
+        last_status TEXT DEFAULT 'Never run',
+        consecutive_failures INTEGER DEFAULT 0,
+        last_error_summary TEXT,
+        enabled INTEGER DEFAULT 1 {bool_check},
+        updated_at TEXT DEFAULT {ts}
+    );
+    CREATE TABLE IF NOT EXISTS refresh_runs (
+        run_id TEXT PRIMARY KEY,
+        trigger_type TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        status TEXT NOT NULL,
+        sources_due INTEGER DEFAULT 0,
+        sources_completed INTEGER DEFAULT 0,
+        sources_failed INTEGER DEFAULT 0,
+        records_retrieved INTEGER DEFAULT 0,
+        records_created INTEGER DEFAULT 0,
+        records_updated INTEGER DEFAULT 0,
+        records_unchanged INTEGER DEFAULT 0,
+        records_rejected INTEGER DEFAULT 0,
+        opportunities_created INTEGER DEFAULT 0,
+        duplicate_records_prevented INTEGER DEFAULT 0,
+        estimated_spend REAL DEFAULT 0,
+        error_summary TEXT,
+        metadata_json TEXT
+    );
+    CREATE TABLE IF NOT EXISTS source_refresh_runs (
+        run_id TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        status TEXT NOT NULL,
+        cursor_before TEXT,
+        cursor_after TEXT,
+        watermark_before TEXT,
+        watermark_after TEXT,
+        records_retrieved INTEGER DEFAULT 0,
+        records_created INTEGER DEFAULT 0,
+        records_updated INTEGER DEFAULT 0,
+        records_unchanged INTEGER DEFAULT 0,
+        records_rejected INTEGER DEFAULT 0,
+        opportunities_created INTEGER DEFAULT 0,
+        duplicate_records_prevented INTEGER DEFAULT 0,
+        retry_count INTEGER DEFAULT 0,
+        elapsed_seconds REAL DEFAULT 0,
+        estimated_spend REAL DEFAULT 0,
+        error_class TEXT,
+        error_summary TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (run_id, source_name),
+        FOREIGN KEY (run_id) REFERENCES refresh_runs(run_id),
+        FOREIGN KEY (source_name) REFERENCES source_refresh_state(source_name)
+    );
+    CREATE TABLE IF NOT EXISTS source_records (
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        official_source_url TEXT,
+        source_updated_at TEXT,
+        content_checksum TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        last_changed_at TEXT NOT NULL,
+        last_refresh_run_id TEXT,
+        active INTEGER DEFAULT 1 CHECK (active IN (0,1)),
+        PRIMARY KEY (source_type, source_id),
+        FOREIGN KEY (last_refresh_run_id) REFERENCES refresh_runs(run_id)
+    );
+    CREATE TABLE IF NOT EXISTS source_record_changes (
+        id {ident},
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        previous_checksum TEXT,
+        new_checksum TEXT NOT NULL,
+        fields_changed_json TEXT,
+        source_update_timestamp TEXT,
+        ingested_at TEXT NOT NULL,
+        refresh_run_id TEXT NOT NULL,
+        previous_record_json TEXT,
+        new_record_json TEXT NOT NULL,
+        FOREIGN KEY (refresh_run_id) REFERENCES refresh_runs(run_id),
+        FOREIGN KEY (source_type, source_id) REFERENCES source_records(source_type, source_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_refresh_flags (
+        stable_lead_id TEXT NOT NULL,
+        refresh_run_id TEXT NOT NULL,
+        review_status TEXT NOT NULL,
+        reason TEXT,
+        reviewed_at TEXT NOT NULL,
+        metadata_json TEXT,
+        PRIMARY KEY (stable_lead_id, refresh_run_id),
+        FOREIGN KEY (stable_lead_id) REFERENCES opportunity_index(stable_lead_id),
+        FOREIGN KEY (refresh_run_id) REFERENCES refresh_runs(run_id)
+    );
+    CREATE TABLE IF NOT EXISTS source_url_checks (
+        id {ident},
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        http_status INTEGER,
+        error_summary TEXT,
+        refresh_run_id TEXT NOT NULL,
+        FOREIGN KEY (source_type, source_id) REFERENCES source_records(source_type, source_id),
+        FOREIGN KEY (refresh_run_id) REFERENCES refresh_runs(run_id)
+    );
+    CREATE TABLE IF NOT EXISTS scheduler_notifications (
+        id {ident},
+        run_id TEXT,
+        source_name TEXT,
+        severity TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        safe_summary TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        FOREIGN KEY (run_id) REFERENCES refresh_runs(run_id),
+        FOREIGN KEY (source_name) REFERENCES source_refresh_state(source_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_refresh_state_due ON source_refresh_state(enabled, next_due_at);
+    CREATE INDEX IF NOT EXISTS idx_refresh_runs_started ON refresh_runs(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_source_refresh_runs_source ON source_refresh_runs(source_name, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_source_records_name ON source_records(source_name, source_updated_at);
+    CREATE INDEX IF NOT EXISTS idx_source_records_seen ON source_records(last_seen_at, active);
+    CREATE INDEX IF NOT EXISTS idx_source_changes_identity ON source_record_changes(source_type, source_id, ingested_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_source_url_checks_identity ON source_url_checks(source_type, source_id, checked_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_scheduler_notifications_open ON scheduler_notifications(resolved_at, created_at DESC);
+    """)
+
 def _additive_legacy_columns(conn) -> None:
     additions = {
         "source_health_events": {"query_count": "INTEGER DEFAULT 1"},
@@ -250,6 +395,7 @@ MIGRATIONS = (
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
     Migration(3, "checkpoint_6c_import_and_indexes", _infrastructure_schema),
     Migration(4, "legacy_additive_columns", _additive_legacy_columns),
+    Migration(5, "checkpoint_6c1_scheduler_schema", _scheduler_schema),
 )
 
 

@@ -248,6 +248,13 @@ class DatabaseConnection:
             self.execute(statement)
 
     def commit(self) -> None:
+        # Frozen business helpers historically commit after each write. Inside
+        # an explicit scheduler/import transaction those commits must not split
+        # the atomic unit; SQLAlchemy has already sent the statements to the
+        # active transaction, so defer the real commit to transaction().
+        if self._atomic_depth > 0:
+            _mark_success("transaction deferred commit")
+            return
         try:
             self._conn.commit()
             _mark_success("commit")

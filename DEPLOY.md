@@ -296,3 +296,94 @@ Run the application migrations and compare audit counts/checksums after restore.
 12. Confirm a controlled database error appears and no SQLite database is created.
 
 Do not declare Checkpoint 6C stable until steps 1–12 pass against the production-like managed PostgreSQL service.
+
+---
+
+# Checkpoint 6C.1 — GitHub Actions scheduled refresh
+
+## Repository secrets
+
+In GitHub: **Settings → Secrets and variables → Actions → New repository secret**.
+
+Required:
+
+- `DATABASE_URL` — the same durable Neon PostgreSQL database used by Streamlit.
+
+Optional, only when their configured jobs are enabled:
+
+- `TAVILY_API_KEY`
+- `OPENROUTER_API_KEY`
+
+Do not create or upload `.env`, `secrets.toml`, database dumps or generated credential files as workflow artifacts. GitHub masks registered secrets, but application output must still avoid printing connection strings or keys.
+
+Streamlit Secrets and GitHub Actions Secrets are separate. Configure both environments independently.
+
+## Workflow
+
+`.github/workflows/pharmatune_refresh.yml`
+
+- automatic: daily at 03:17 UTC;
+- manual: Actions → PharmaTune scheduled refresh → Run workflow;
+- supports due jobs, one source, force, dry run and lookback days.
+
+The daily invocation is deliberately tolerant of GitHub cron delay. PostgreSQL `next_due_at` controls which source jobs actually run.
+
+## Migrations
+
+Application startup and scheduler CLI apply ordered migrations automatically. Manual verification:
+
+```bash
+python -m pharmadrone.storage.migrate
+python -m pharmadrone.scheduler status
+```
+
+Expected schema after Checkpoint 6C.1: version 5, five applied migrations.
+
+## Guardrails
+
+Configure through GitHub Actions repository variables or environment values:
+
+```text
+SCHEDULER_MAX_PAGES_PER_CONNECTOR=3
+SCHEDULER_MAX_RECORDS_PER_CONNECTOR=300
+SCHEDULER_MAX_PROCESSING_SECONDS=900
+SCHEDULER_MAX_LLM_CALLS=0
+SCHEDULER_MAX_TAVILY_CALLS=10
+SCHEDULER_MAX_ESTIMATED_SPEND_USD=2.00
+SCHEDULER_MAX_CONCURRENT_JOBS=1
+SCHEDULER_RETRY_ATTEMPTS=3
+SCHEDULER_LOOKBACK_DAYS=14
+SCHEDULER_MONTHLY_URL_CHECK_LIMIT=50
+SCHEDULER_URL_CHECK_TIMEOUT_SECONDS=8
+```
+
+The current scheduler makes zero LLM calls. A cost/volume stop is recorded as `Partial`, not as a complete successful refresh. Monthly maintenance performs bounded official-source URL availability checks and stores append-only results in `source_url_checks`.
+
+## Manual live validation checklist
+
+1. Add `DATABASE_URL` and optional keys to GitHub Actions Secrets.
+2. Run the workflow manually with **dry run**.
+3. Confirm due sources are identified.
+4. Run one low-volume source manually, such as `openfda_shortages`.
+5. Confirm `refresh_runs` and `source_refresh_runs` contain the run.
+6. Confirm retrieved/created/updated/unchanged/rejected counts.
+7. Run the identical source again.
+8. Confirm no duplicate `source_records`, stable lead IDs or opportunities.
+9. Confirm cursor/watermark changes only after success.
+10. Temporarily force a safe connector failure and confirm other sources continue.
+11. Confirm Streamlit System Health shows the failure without secrets.
+12. Confirm the frozen benchmark remains 100 records with unchanged audit counts.
+13. Confirm Streamlit shows the latest refresh status.
+14. Confirm the GitHub job runs while Streamlit is sleeping/stopped.
+15. Allow one scheduled automatic run to complete before declaring stability.
+
+## Backup and recovery
+
+Checkpoint 6C audit backup/restore procedures remain authoritative. PostgreSQL operational tables are included in normal `pg_dump` backups:
+
+```bash
+pg_dump --format=custom --no-owner --file=pharmatune.dump "$DATABASE_URL"
+pg_restore --clean --if-exists --no-owner --dbname="$DATABASE_URL" pharmatune.dump
+```
+
+Never paste the complete `DATABASE_URL` into logs, screenshots or issue reports.

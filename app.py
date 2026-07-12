@@ -18,6 +18,7 @@ from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
 from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study, precision_validation, human_audit
 from pharmadrone.storage import DatabaseConfigurationError, DatabaseUnavailableError
 from pharmadrone.storage.backup import build_audit_backup
+from pharmadrone.scheduler import repository as scheduler_repository
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -963,12 +964,73 @@ with tab_results:
         f"Corrections: {dbs.get('correction_count', 0)}"
     )
     st.caption("Credentials and connection strings are never displayed.")
+
+    st.markdown("### Scheduled refresh status")
+    try:
+        conn_sched = db.connect()
+        scheduler_repository.ensure_source_states(conn_sched)
+        sched = scheduler_repository.scheduler_summary(conn_sched)
+        conn_sched.close()
+        latest = sched.get("latest_run") or {}
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("Scheduler", "GitHub Actions")
+        sc2.metric("Enabled sources", sched.get("enabled_sources", 0))
+        sc3.metric("Failed sources", sched.get("failed_sources", 0))
+        sc4.metric("Status", sched.get("scheduler_status") or latest.get("status") or "Never run")
+        st.caption(
+            f"Latest orchestrator run: {latest.get('started_at') or 'Never run'} · "
+            f"Next documented workflow run: {sched.get('next_orchestrator_run') or '03:17 UTC daily'} · "
+            f"Records created: {sched.get('records_created', 0)} · "
+            f"updated: {sched.get('records_updated', 0)} · "
+            f"duplicates prevented: {sched.get('duplicates_prevented', 0)}"
+        )
+        source_rows = []
+        now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        for row in sched.get("sources", []) or []:
+            next_due = row.get("next_due_at")
+            status = row.get("last_status") or "Never run"
+            try:
+                due_dt = __import__("datetime").datetime.fromisoformat(str(next_due).replace("Z", "+00:00")) if next_due else None
+                if int(row.get("enabled") or 0) and due_dt and due_dt <= now_utc and status not in {"Running", "Failed", "Degraded"}:
+                    status = "Due"
+            except Exception:
+                pass
+            source_rows.append({
+                "Source": row.get("source_name"),
+                "Cadence": row.get("cadence"),
+                "Status": status if int(row.get("enabled") or 0) else "Disabled",
+                "Last success": row.get("last_success_at") or "—",
+                "Next due": next_due or "—",
+                "Retrieved": row.get("records_retrieved") or 0,
+                "Created": row.get("records_created") or 0,
+                "Updated": row.get("records_updated") or 0,
+                "Unchanged": row.get("records_unchanged") or 0,
+                "Failures": row.get("consecutive_failures") or 0,
+                "Latest safe error": row.get("last_error_summary") or row.get("latest_run_error") or "",
+            })
+        if source_rows:
+            st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
+        notification_rows = sched.get("notification_ready_events") or []
+        if notification_rows:
+            st.warning("Scheduler attention events are ready for operator review.")
+            st.dataframe(pd.DataFrame(notification_rows), use_container_width=True, hide_index=True)
+        st.caption("Scheduled jobs run outside Streamlit through GitHub Actions. This page is status-only and never starts long-running refresh work.")
+    except Exception as exc:
+        st.warning(f"Scheduled-refresh status unavailable: {type(exc).__name__}. No credentials were displayed.")
+
     pg_result = settings.env("POSTGRES_PERSISTENCE_TEST_RESULT", "pending managed-PostgreSQL validation")
     redeploy_result = settings.env("REDEPLOYMENT_PERSISTENCE_TEST_RESULT", "pending restart/redeployment validation")
     test_count = settings.env("CHECKPOINT6C_AUTOMATED_TEST_RESULT", "59 passed; 1 optional live-PostgreSQL test pending")
+    scheduler_test_count = settings.env("CHECKPOINT6C1_AUTOMATED_TEST_RESULT", "82 tests run; 81 passed; 1 optional live-PostgreSQL test skipped")
+    scheduler_persistence = settings.env("POSTGRES_SCHEDULER_PERSISTENCE_TEST_RESULT", "pending live GitHub Actions validation")
+    scheduled_run_result = settings.env("SCHEDULED_RUN_PERSISTENCE_TEST_RESULT", "pending first automatic run")
     st.caption(
         f"PostgreSQL persistence test: {pg_result} · Redeployment persistence test: {redeploy_result} · "
-        f"Automated tests: {test_count}"
+        f"Checkpoint 6C tests: {test_count}"
+    )
+    st.caption(
+        f"Scheduler PostgreSQL test: {scheduler_persistence} · Scheduled-run test: {scheduled_run_result} · "
+        f"Checkpoint 6C.1 tests: {scheduler_test_count}"
     )
     try:
         conn = db.connect()

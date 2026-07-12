@@ -451,3 +451,11 @@ SQLite audit tables are separate from `opportunity_index`, `opportunities`, `evi
 ## Checkpoint 6C — Durable PostgreSQL persistence
 
 Production persistence now uses PostgreSQL through `DATABASE_URL`; explicit SQLite remains available for local development/tests only. The application fails closed if production PostgreSQL is missing or unavailable. Ordered migrations, repeat-safe SQLite audit import, pooled connections, atomic audit writes, database health status, and integrity-rich audit backups are included. See `CHECKPOINT_6C.md` and `DEPLOY.md`.
+
+## Checkpoint 6C.1 — scheduled incremental refresh
+
+PharmaTune now includes a GitHub Actions worker that runs independently of Streamlit and refreshes only due connected sources. Operational state, cursors, source-record checksums, change history and run metrics are stored in PostgreSQL. The worker is repeat-safe, does not modify the frozen benchmark, does not grant audit approvals and does not require an LLM.
+
+See `CHECKPOINT_6C1.md` and `DEPLOY.md` for commands, GitHub Secrets and the live stability checklist.
+
+Checkpoint 6C.1 monthly maintenance stores bounded official-source URL availability checks in the append-only `source_url_checks` operational table.
