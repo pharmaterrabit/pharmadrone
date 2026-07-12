@@ -16,6 +16,8 @@ from pharmadrone import settings, db, auth, CHECKPOINT
 from pharmadrone.run import generate, continue_queue
 from pharmadrone.test_connectors import check_all, DEFAULT_QUERY
 from pharmadrone.pipeline import opportunity_index, enrichment, seller_target_matcher, pilot_case_study, validation_study, precision_validation, human_audit
+from pharmadrone.storage import DatabaseConfigurationError, DatabaseUnavailableError
+from pharmadrone.storage.backup import build_audit_backup
 from pharmadrone.pipeline.opportunity_matcher import (
     MATCH_SCOPE_LABEL,
     TECH_CERTAINTY_NOTE,
@@ -25,6 +27,19 @@ from pharmadrone.pipeline.opportunity_matcher import (
 
 # --- Password gate (server-side; password never reaches the browser) --------
 auth.require_password()
+
+# --- Durable database startup gate -----------------------------------------
+try:
+    _boot_conn = db.connect()
+    human_audit.ensure_schema(_boot_conn)
+    _boot_conn.close()
+    DATABASE_STATUS = db.database_status()
+except (DatabaseConfigurationError, DatabaseUnavailableError, RuntimeError) as exc:
+    st.error(
+        "Database unavailable or not configured. Production requires DATABASE_URL and will not "
+        "silently fall back to local SQLite. " + str(exc)
+    )
+    st.stop()
 
 # --- Deploy guardrails (set as env vars on the host) ------------------------
 ALLOW_SCALE = settings.env("ALLOW_SCALE_RUNS", "").lower() in ("1", "true", "yes")
@@ -49,7 +64,7 @@ def _zip_reports() -> bytes | None:
 
 def _load_index_state(include_hidden: bool = False) -> tuple[list[dict], dict]:
     try:
-        conn = db.connect(settings.DB_PATH)
+        conn = db.connect()
         opportunity_index.backfill_generated_opportunities(conn)
         records = db.fetch_index_records(conn, include_hidden=include_hidden)
         stats = db.fetch_index_stats(conn)
@@ -319,7 +334,8 @@ def _render_seller_target_cards(result: dict) -> None:
         st.divider()
 
 st.title("PharmaTune / PharmaDrone — Global Pharma Opportunity Engine")
-st.info(f"**{CHECKPOINT}** · both primary Generate modes are wired to bounded expanded official-source discovery.")
+st.info(f"**{CHECKPOINT}**")
+st.caption(f"Database backend: **{DATABASE_STATUS.get('backend', 'unknown')}** · schema v{DATABASE_STATUS.get('schema_version', 0)} · {DATABASE_STATUS.get('migration_count', 0)} migrations")
 st.caption("Find evidence-backed pharma product problems, solution technologies, "
            "service provider categories, research innovation signals, and BD "
            "opportunities. Private dashboard · global public-source scouting "
@@ -933,8 +949,29 @@ with tab_profile:
 # ==========================================================================
 with tab_results:
     st.subheader("Generated opportunities")
+    st.markdown("### Database status")
+    dbs = DATABASE_STATUS
+    dc1, dc2, dc3, dc4 = st.columns(4)
+    dc1.metric("Backend", str(dbs.get("backend") or "unknown").upper())
+    dc2.metric("Connection", dbs.get("connection_status") or "unknown")
+    dc3.metric("Schema version", dbs.get("schema_version", 0))
+    dc4.metric("Migrations", dbs.get("migration_count", 0))
+    st.caption(
+        f"Last successful operation: {dbs.get('last_successful_database_operation') or 'not recorded'} · "
+        f"Audit queue: {dbs.get('audit_queue_record_count', 0)} · "
+        f"Audit versions: {dbs.get('audit_version_count', 0)} · "
+        f"Corrections: {dbs.get('correction_count', 0)}"
+    )
+    st.caption("Credentials and connection strings are never displayed.")
+    pg_result = settings.env("POSTGRES_PERSISTENCE_TEST_RESULT", "pending managed-PostgreSQL validation")
+    redeploy_result = settings.env("REDEPLOYMENT_PERSISTENCE_TEST_RESULT", "pending restart/redeployment validation")
+    test_count = settings.env("CHECKPOINT6C_AUTOMATED_TEST_RESULT", "59 passed; 1 optional live-PostgreSQL test pending")
+    st.caption(
+        f"PostgreSQL persistence test: {pg_result} · Redeployment persistence test: {redeploy_result} · "
+        f"Automated tests: {test_count}"
+    )
     try:
-        conn = db.connect(settings.DB_PATH)
+        conn = db.connect()
         opportunity_index.backfill_generated_opportunities(conn)
         opps = db.fetch_all(conn, "opportunities")
         ev = db.fetch_all(conn, "evidence")
@@ -948,7 +985,7 @@ with tab_results:
     st.markdown("### Opportunity index")
     if idx_stats.get("indexed_total", 0):
         st.info(_index_summary_text(idx_stats))
-        st.caption("SQLite persistence is suitable for this local/Streamlit MVP, but it is not production SaaS persistence.")
+        st.caption("Opportunity and audit records use the active configured database backend. PostgreSQL is required for durable production persistence.")
         precision_records = [
             precision_validation.annotate_record(
                 r,
@@ -995,7 +1032,7 @@ with tab_results:
         )
         if enrich_clicked:
             with st.spinner("Enriching indexed leads…"):
-                conn_e = db.connect(settings.DB_PATH)
+                conn_e = db.connect()
                 logs_e = []
                 result_e = enrichment.enrich_indexed_leads(
                     conn_e, limit=5, use_web=use_web_enrich, log=lambda m: logs_e.append(m)
@@ -1250,7 +1287,7 @@ with tab_results:
     if build_validation_clicked:
         with st.spinner("Building deterministic validation set from indexed evidence…"):
             try:
-                conn_v = db.connect(settings.DB_PATH)
+                conn_v = db.connect()
                 opportunity_index.backfill_generated_opportunities(conn_v)
                 fresh_validation_records = db.fetch_index_records(conn_v, include_hidden=False)
                 conn_v.close()
@@ -1393,7 +1430,7 @@ with tab_results:
     )
 
     try:
-        conn_a = db.connect(settings.DB_PATH)
+        conn_a = db.connect()
         human_audit.ensure_schema(conn_a)
         audit_batch = human_audit.latest_benchmark_batch(conn_a)
         conn_a.close()
@@ -1409,7 +1446,7 @@ with tab_results:
     )
     if au2.button("Import golden audit queue", disabled=golden_upload is None):
         try:
-            conn_a = db.connect(settings.DB_PATH)
+            conn_a = db.connect()
             result_import = human_audit.import_benchmark_csv(
                 conn_a, golden_upload.getvalue(), filename=golden_upload.name
             )
@@ -1442,7 +1479,7 @@ with tab_results:
         audit_source_mode = "Current opportunity index"
 
     try:
-        conn_a = db.connect(settings.DB_PATH)
+        conn_a = db.connect()
         human_audit.ensure_schema(conn_a)
         if audit_source_mode == "Frozen 100-target benchmark" and audit_batch:
             audit_base_records = human_audit.benchmark_rows(conn_a, audit_batch.get("batch_id"))
@@ -1593,7 +1630,7 @@ with tab_results:
             with layer_c:
                 st.markdown("#### Append-only human decision")
                 try:
-                    conn_hist = db.connect(settings.DB_PATH)
+                    conn_hist = db.connect()
                     human_audit.ensure_schema(conn_hist)
                     selected_history = human_audit.audit_history(conn_hist, selected_key)
                     selected_corrections = human_audit.correction_history(conn_hist, selected_key)
@@ -1671,7 +1708,7 @@ with tab_results:
                         "supporting_source_url": supporting_source_url,
                     }
                     try:
-                        conn_save = db.connect(settings.DB_PATH)
+                        conn_save = db.connect()
                         saved_audit = human_audit.save_audit_version(conn_save, selected_audit_record, payload)
                         conn_save.close()
                         st.success(
@@ -1692,14 +1729,16 @@ with tab_results:
                         st.dataframe(pd.DataFrame(selected_corrections), use_container_width=True, hide_index=True)
 
         try:
-            conn_exports = db.connect(settings.DB_PATH)
+            conn_exports = db.connect()
             human_audit.ensure_schema(conn_exports)
             export_history_bytes = human_audit.export_history(conn_exports)
             export_corrections_bytes = human_audit.export_correction_history(conn_exports)
+            audit_backup_bytes = build_audit_backup(conn_exports)
             conn_exports.close()
         except Exception:
             export_history_bytes = b""
             export_corrections_bytes = b""
+            audit_backup_bytes = b""
         ex1, ex2, ex3 = st.columns(3)
         ex1.download_button(
             "⬇ Full internal audit export",
@@ -1737,6 +1776,13 @@ with tab_results:
             export_corrections_bytes,
             file_name="pharmatune_audit_correction_history.csv",
             mime="text/csv",
+        )
+        st.download_button(
+            "⬇ Durable audit backup (.zip)",
+            audit_backup_bytes,
+            file_name="pharmatune_audit_backup.zip",
+            mime="application/zip",
+            help="Includes full audit CSV/JSON exports, schema version, benchmark identity, record counts and SHA-256 checksums.",
         )
     else:
         st.caption("No records are available for the Human Validation Queue. Import the frozen benchmark or run Generate first.")
@@ -1821,7 +1867,7 @@ with tab_conn:
     st.subheader("Source Health / API Reliability")
     st.caption("Developer/debug view. Normal user reports show evidence gaps, not raw API errors.")
     try:
-        conn_h = db.connect(settings.DB_PATH)
+        conn_h = db.connect()
         health_summary = db.fetch_source_health_summary(conn_h)
         health_events = db.fetch_source_health_events(conn_h, limit=100)
         conn_h.close()

@@ -447,3 +447,7 @@ Checkpoint 6B adds a separate, append-only human audit registry without modifyin
 - optional import of the frozen Checkpoint 6A.5.2 100-target validation CSV as the golden audit queue.
 
 SQLite audit tables are separate from `opportunity_index`, `opportunities`, `evidence`, enrichment and source-health tables. Every save creates a new audit version; previous decisions are never silently overwritten. The three frozen manual corrections for D-0202-2025, D-0386-2024 and NCT00990444 are seeded as historical audit corrections, without granting automatic external or outreach approval.
+
+## Checkpoint 6C — Durable PostgreSQL persistence
+
+Production persistence now uses PostgreSQL through `DATABASE_URL`; explicit SQLite remains available for local development/tests only. The application fails closed if production PostgreSQL is missing or unavailable. Ordered migrations, repeat-safe SQLite audit import, pooled connections, atomic audit writes, database health status, and integrity-rich audit backups are included. See `CHECKPOINT_6C.md` and `DEPLOY.md`.

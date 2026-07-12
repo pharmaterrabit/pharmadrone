@@ -1,8 +1,14 @@
-"""Tiny SQLite persistence layer."""
+"""Backend-neutral persistence facade for SQLite and PostgreSQL."""
 from __future__ import annotations
-import sqlite3
 import json
 from pathlib import Path
+from typing import Any
+
+from .storage import (
+    configured_database, open_connection, DatabaseConnection,
+    DatabaseConfigurationError, DatabaseUnavailableError,
+    last_successful_operation,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS opportunities (
@@ -80,24 +86,33 @@ CREATE INDEX IF NOT EXISTS idx_source_health_lead ON source_health_events(stable
 """
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
-    # Additive migrations for local MVP databases created by older ZIPs.
-    _ensure_column(conn, "source_health_events", "query_count", "INTEGER DEFAULT 1")
-    # Phase 3B additive enrichment columns for local MVP databases created by older ZIPs.
-    for column, spec in {
-        "official_followup_status": "TEXT DEFAULT 'not checked'",
-        "official_followup_count": "INTEGER DEFAULT 0",
-        "label_context_status": "TEXT DEFAULT 'not checked'",
-        "clinical_trial_context_status": "TEXT DEFAULT 'not checked'",
-        "literature_context_status": "TEXT DEFAULT 'not checked'",
-        "best_evidence_tier": "TEXT DEFAULT 'not checked'",
-        "official_source_count": "INTEGER DEFAULT 0",
-        "literature_source_count": "INTEGER DEFAULT 0",
-    }.items():
-        _ensure_column(conn, "opportunity_enrichment", column, spec)
+def connect(db_path: Path | str | None = None) -> DatabaseConnection:
+    """Open the configured backend and apply ordered migrations.
+
+    An explicit ``db_path`` is an explicit SQLite local/test choice. Runtime
+    application code should call ``connect()`` so DATABASE_URL is honoured.
+    """
+    if db_path is not None:
+        # Legacy application code historically passed settings.DB_PATH. Resolve
+        # the runtime configuration first so DATABASE_URL in either environment
+        # variables or Streamlit secrets still selects PostgreSQL. Explicit
+        # arbitrary paths used by tests remain explicit SQLite choices.
+        from . import settings as _settings
+        is_legacy_app_path = Path(db_path).expanduser().resolve() == Path(_settings.DB_PATH).resolve()
+        try:
+            runtime_config = configured_database()
+        except DatabaseConfigurationError:
+            if is_legacy_app_path:
+                raise
+            runtime_config = None
+        if runtime_config is not None and (runtime_config.is_postgresql or is_legacy_app_path):
+            config = runtime_config
+        else:
+            config = configured_database(db_path)
+    else:
+        config = configured_database()
+    conn = open_connection(config)
+    conn.ensure_migrations()
     return conn
 
 
@@ -165,16 +180,15 @@ def _clean_status_fields(row: dict) -> dict:
 
 def _ensure_column(conn, table: str, column: str, spec: str) -> None:
     try:
-        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
-            conn.commit()
+        conn.ensure_column(table, column, spec)
     except Exception:
-        # Do not block app startup on a non-critical additive migration.
-        pass
+        # Ordered migrations are authoritative; this remains a compatibility
+        # helper for legacy callers and must not hide startup migration errors.
+        return
 
 
-def reset(db_path: Path) -> None:
+
+def reset(db_path: Path | str | None = None) -> None:
     conn = connect(db_path)
     conn.executescript(
         "DELETE FROM opportunities; DELETE FROM evidence; DELETE FROM rejected;"
@@ -227,7 +241,18 @@ def save_rejected(conn, company, product, reason, ev_count, data) -> None:
 
 
 def fetch_all(conn, table: str) -> list[dict]:
-    rows = conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+    order_by = {
+        "opportunities": "created_at, id",
+        "evidence": "id",
+        "rejected": "id",
+        "opportunity_index": "created_at, stable_lead_id",
+        "opportunity_run_summary": "created_at, run_id",
+        "source_health_events": "created_at, id",
+        "opportunity_enrichment": "created_at, stable_lead_id",
+    }
+    if table not in order_by:
+        raise ValueError(f"Unsupported table: {table}")
+    rows = conn.execute(f"SELECT * FROM {table} ORDER BY {order_by[table]}").fetchall()
     return [_clean_status_fields(dict(r)) for r in rows]
 
 
@@ -579,3 +604,37 @@ def fetch_enrichment_candidates(conn, limit: int = 5) -> list[dict]:
         (int(limit),),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def database_status() -> dict[str, Any]:
+    """Return credential-safe backend and migration health metadata."""
+    conn = connect()
+    try:
+        migration_rows = conn.execute(
+            "SELECT version, name, applied_at FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        counts = {}
+        for table, key in (
+            ("audit_queue_records", "audit_queue_record_count"),
+            ("human_audit_versions", "audit_version_count"),
+            ("human_audit_corrections", "correction_count"),
+        ):
+            row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+            counts[key] = int(row["n"] if row else 0)
+        last = last_successful_operation()
+        return {
+            "backend": conn.backend,
+            "connection_status": "healthy",
+            "schema_version": max([int(r["version"]) for r in migration_rows], default=0),
+            "migration_count": len(migration_rows),
+            "migration_status": "up to date",
+            "last_successful_database_operation": last.get("timestamp") or "current health check",
+            "last_operation_type": last.get("operation") or "health check",
+            **counts,
+        }
+    finally:
+        conn.close()
+
+
+def configured_backend_name() -> str:
+    return configured_database().backend

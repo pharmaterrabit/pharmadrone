@@ -286,64 +286,63 @@ def audit_key(record: dict[str, Any]) -> str:
 
 
 def ensure_schema(conn) -> None:
-    conn.executescript(SCHEMA)
-    conn.commit()
+    """Ensure ordered Checkpoint 6C migrations and frozen historical seeds."""
+    conn.ensure_migrations()
     seed_historical_corrections(conn)
 
 
 def seed_historical_corrections(conn) -> None:
     """Seed the three frozen Checkpoint 6A manual corrections once."""
-    for item in _HISTORICAL_CORRECTIONS:
-        rec = {
-            "source_type": item["source_type"],
-            "source_id": item["source_id"],
-            "stable_lead_id": "",
-        }
-        key = audit_key(rec)
-        exists = conn.execute(
-            "SELECT 1 FROM human_audit_versions WHERE audit_key=? LIMIT 1", (key,)
-        ).fetchone()
-        if exists:
-            continue
-        now = _now()
-        cursor = conn.execute(
-            """INSERT INTO human_audit_versions
-            (audit_key, stable_lead_id, source_type, source_id, audit_version, parent_audit_id,
-             audit_status, audit_decision, reviewer_name, reviewed_at, audit_notes,
-             evidence_checked, company_identity_checked, product_identity_checked,
-             problem_signal_checked, evidence_supports_problem, technical_fit_checked, current_relevance_checked,
-             target_company_site_checked, outreach_wording_reviewed,
-             unresolved_warnings_acknowledged, company_warning_resolved,
-             internal_use_approved, external_use_approved, outreach_approved,
-             current_relevance_status, historical_resolved, correction_type, corrected_value,
-             correction_reason, supporting_source_url, external_gate_passed,
-             outreach_gate_passed, source_snapshot_hash, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                key, "", item["source_type"], item["source_id"], 1, None, item["audit_status"],
-                item["audit_decision"], "Checkpoint 6A manual audit", now, item["audit_notes"],
-                1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, "unknown", 0,
-                item["correction_type"], item["corrected_value"], item["correction_reason"],
-                "", 0, 0, "historical-checkpoint-6a", now,
-            ),
-        )
-        audit_id = cursor.lastrowid
-        conn.execute(
-            """INSERT INTO human_audit_corrections
-            (audit_version_id, audit_key, stable_lead_id, source_type, source_id, field_name,
-             original_value, corrected_value, reviewer_name, corrected_at, reason, supporting_source_url)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                audit_id, key, "", item["source_type"], item["source_id"], item["correction_type"],
-                item["original_value"], item["corrected_value"], "Checkpoint 6A manual audit",
-                now, item["correction_reason"], "",
-            ),
-        )
-    conn.commit()
-
+    with conn.transaction():
+        for item in _HISTORICAL_CORRECTIONS:
+            rec = {
+                "source_type": item["source_type"],
+                "source_id": item["source_id"],
+                "stable_lead_id": "",
+            }
+            key = audit_key(rec)
+            exists = conn.execute(
+                "SELECT 1 FROM human_audit_versions WHERE audit_key=? LIMIT 1", (key,)
+            ).fetchone()
+            if exists:
+                continue
+            now = _now()
+            cursor = conn.execute(
+                """INSERT INTO human_audit_versions
+                (audit_key, stable_lead_id, source_type, source_id, audit_version, parent_audit_id,
+                 audit_status, audit_decision, reviewer_name, reviewed_at, audit_notes,
+                 evidence_checked, company_identity_checked, product_identity_checked,
+                 problem_signal_checked, evidence_supports_problem, technical_fit_checked, current_relevance_checked,
+                 target_company_site_checked, outreach_wording_reviewed,
+                 unresolved_warnings_acknowledged, company_warning_resolved,
+                 internal_use_approved, external_use_approved, outreach_approved,
+                 current_relevance_status, historical_resolved, correction_type, corrected_value,
+                 correction_reason, supporting_source_url, external_gate_passed,
+                 outreach_gate_passed, source_snapshot_hash, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    key, "", item["source_type"], item["source_id"], 1, None, item["audit_status"],
+                    item["audit_decision"], "Checkpoint 6A manual audit", now, item["audit_notes"],
+                    1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, "unknown", 0,
+                    item["correction_type"], item["corrected_value"], item["correction_reason"],
+                    "", 0, 0, "historical-checkpoint-6a", now,
+                ),
+            )
+            audit_id = cursor.lastrowid
+            conn.execute(
+                """INSERT INTO human_audit_corrections
+                (audit_version_id, audit_key, stable_lead_id, source_type, source_id, field_name,
+                 original_value, corrected_value, reviewer_name, corrected_at, reason, supporting_source_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    audit_id, key, "", item["source_type"], item["source_id"], item["correction_type"],
+                    item["original_value"], item["corrected_value"], "Checkpoint 6A manual audit",
+                    now, item["correction_reason"], "",
+                ),
+            )
 
 def import_benchmark_csv(conn, payload: bytes, filename: str = "pharmatune_100_target_validation_study.csv") -> dict[str, Any]:
-    """Import an immutable golden validation CSV snapshot into the audit queue."""
+    """Import an immutable golden validation CSV snapshot atomically."""
     ensure_schema(conn)
     digest = hashlib.sha256(payload).hexdigest()
     batch_id = f"golden-{digest[:20]}"
@@ -356,29 +355,29 @@ def import_benchmark_csv(conn, payload: bytes, filename: str = "pharmatune_100_t
     text = payload.decode("utf-8-sig")
     rows = list(csv.DictReader(io.StringIO(text)))
     now = _now()
-    conn.execute(
-        """INSERT INTO audit_benchmark_batches
-        (batch_id, filename, sha256, imported_at, row_count, is_golden, notes)
-        VALUES (?,?,?,?,?,1,?)""",
-        (batch_id, filename, digest, now, len(rows), "Frozen Checkpoint 6A.5.2 validation benchmark; source rows remain immutable."),
-    )
     inserted = 0
-    for raw in rows:
-        record = {k: v for k, v in raw.items()}
-        key = audit_key(record)
-        original_hash = _hash_payload(record)
+    with conn.transaction():
         conn.execute(
-            """INSERT OR IGNORE INTO audit_queue_records
-            (batch_id, audit_key, stable_lead_id, source_type, source_id,
-             original_row_json, original_row_hash, created_at)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                batch_id, key, record.get("stable_lead_id") or "", _source_type(record.get("source_type")),
-                record.get("source_id") or "", _json_dumps(record), original_hash, now,
-            ),
+            """INSERT INTO audit_benchmark_batches
+            (batch_id, filename, sha256, imported_at, row_count, is_golden, notes)
+            VALUES (?,?,?,?,?,1,?)""",
+            (batch_id, filename, digest, now, len(rows), "Frozen Checkpoint 6A.5.2 validation benchmark; source rows remain immutable."),
         )
-        inserted += 1
-    conn.commit()
+        for raw in rows:
+            record = {k: v for k, v in raw.items()}
+            key = audit_key(record)
+            original_hash = _hash_payload(record)
+            result = conn.execute(
+                """INSERT OR IGNORE INTO audit_queue_records
+                (batch_id, audit_key, stable_lead_id, source_type, source_id,
+                 original_row_json, original_row_hash, created_at)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    batch_id, key, record.get("stable_lead_id") or "", _source_type(record.get("source_type")),
+                    record.get("source_id") or "", _json_dumps(record), original_hash, now,
+                ),
+            )
+            inserted += max(0, result.rowcount)
     return {"batch_id": batch_id, "row_count": inserted, "already_imported": False, "sha256": digest}
 
 
@@ -653,9 +652,8 @@ def apply_action_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def save_audit_version(conn, record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def _save_audit_version_atomic(conn, record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Append one audit version and optional correction; never update prior rows."""
-    ensure_schema(conn)
     data = apply_action_defaults(payload)
     status = data.get("audit_status") or "pending"
     if status not in AUDIT_STATUSES:
@@ -730,9 +728,15 @@ def save_audit_version(conn, record: dict[str, Any], payload: dict[str, Any]) ->
                 data.get("supporting_source_url") or "",
             ),
         )
-    conn.commit()
     saved = conn.execute("SELECT * FROM human_audit_versions WHERE id=?", (audit_id,)).fetchone()
     return dict(saved)
+
+
+def save_audit_version(conn, record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Append one complete audit version/correction in a single transaction."""
+    ensure_schema(conn)
+    with conn.transaction():
+        return _save_audit_version_atomic(conn, record, payload)
 
 
 def audit_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:

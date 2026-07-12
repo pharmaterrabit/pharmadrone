@@ -182,3 +182,117 @@ Keep `MAX_REPORTS_PER_RUN=5`; discovery may index many evidence-backed previews,
 ## Checkpoint 6B audit persistence
 
 The human audit registry uses separate SQLite tables in `pharmadrone.db`. Audit versions persist across app/process restarts while the same filesystem/database is retained. Streamlit Community Cloud and similar free hosts may reset local disk during redeploys or infrastructure replacement, so regularly download the internal audit and change-history exports. Production multi-user persistence will require a durable managed database in a later checkpoint.
+
+# Checkpoint 6C PostgreSQL deployment
+
+## Production configuration
+
+Set these environment variables in Streamlit Cloud, Render, Railway, or the chosen host:
+
+```text
+APP_ENV=production
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require
+DATABASE_POOL_SIZE=5
+DATABASE_MAX_OVERFLOW=5
+DATABASE_POOL_TIMEOUT=10
+DATABASE_CONNECT_TIMEOUT=8
+DATABASE_CONNECT_RETRIES=3
+```
+
+Do not set `DATABASE_BACKEND=sqlite` in production. Do not commit the URL or paste it into reports. The application accepts `postgres://` and normalises it to the psycopg SQLAlchemy driver.
+
+Run migrations explicitly when desired:
+
+```bash
+python -m pharmadrone.storage.migrate
+```
+
+Migrations also run safely at application startup.
+
+## Local development
+
+```bash
+cp .env.example .env
+# Set:
+APP_ENV=local
+DATABASE_BACKEND=sqlite
+SQLITE_PATH=pharmadrone.db
+streamlit run app.py
+```
+
+SQLite local mode is explicit. Production without `DATABASE_URL` fails rather than creating an empty local database.
+
+## Import the existing SQLite Human Audit database
+
+Back up the SQLite file first, configure `DATABASE_URL`, then run:
+
+```bash
+python -m pharmadrone.storage.import_sqlite \
+  --sqlite-path /absolute/path/to/pharmadrone.db \
+  --source-label checkpoint-6B-production
+```
+
+The importer:
+
+- reports source and destination counts;
+- preserves benchmark batches, immutable queue snapshots, audit versions, timestamps, approvals, and corrections;
+- maps parent/version IDs safely;
+- prevents duplicates on repeat execution;
+- reports conflicts and rejected rows rather than silently discarding them;
+- commits the import atomically.
+
+Review the JSON summary. Any conflict must be resolved before deleting the SQLite backup.
+
+## Backup
+
+### Application audit backup
+
+Results & Export → Human Validation Queue → **Durable audit backup (.zip)** includes:
+
+- CSV for every audit table;
+- full JSON audit data;
+- migration/schema version;
+- export timestamp;
+- benchmark batch IDs;
+- record counts;
+- SHA-256 file checksums.
+
+### PostgreSQL physical/logical backup
+
+Create a compressed logical backup:
+
+```bash
+pg_dump --format=custom --no-owner --no-acl "$DATABASE_URL" > pharmatune-$(date +%F).dump
+```
+
+Verify:
+
+```bash
+pg_restore --list pharmatune-YYYY-MM-DD.dump >/dev/null
+```
+
+Restore into a clean database:
+
+```bash
+pg_restore --clean --if-exists --no-owner --no-acl \
+  --dbname "$RESTORE_DATABASE_URL" pharmatune-YYYY-MM-DD.dump
+```
+
+Run the application migrations and compare audit counts/checksums after restore.
+
+## Manual PostgreSQL persistence validation checklist
+
+1. Configure the application with managed PostgreSQL.
+2. Confirm the UI says backend `POSTGRESQL`.
+3. Confirm schema version and migration count are displayed.
+4. Import the frozen 100-record benchmark and confirm 100 queue records.
+5. Confirm historical corrections for `D-0202-2025`, `D-0386-2024`, and `NCT00990444`.
+6. Save one new audit decision and record its source ID/version.
+7. Restart or redeploy the application.
+8. Confirm the new audit version remains and counts are unchanged.
+9. Download the durable audit backup and verify its manifest/checksums.
+10. Confirm external/outreach approval states and full history remain correct.
+11. Temporarily use an invalid/unavailable PostgreSQL URL in a safe test deployment.
+12. Confirm a controlled database error appears and no SQLite database is created.
+
+Do not declare Checkpoint 6C stable until steps 1–12 pass against the production-like managed PostgreSQL service.

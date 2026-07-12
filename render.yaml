@@ -9,6 +9,12 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
+      # --- durable PostgreSQL persistence (required in production) ---
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_ENV
+        value: production
+
       # --- dashboard password (set in Render → Environment) ---
       - key: APP_PASSWORD
         sync: false
