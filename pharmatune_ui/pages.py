@@ -71,9 +71,11 @@ def explorer(navigate: Callable[[str], None]) -> None:
         st.session_state["selected_lead_id"] = result["rows"][selected[0]]["stable_lead_id"]
         if st.button("Open selected opportunity", type="primary"): navigate("Opportunity Detail")
     p1,p2,p3 = st.columns([1,3,1])
-    if p1.button("← Previous", disabled=page<=1): st.session_state["opp_page"] = page-1; st.rerun()
+    def set_page(target: int) -> None:
+        st.session_state["opp_page"] = target
+    p1.button("← Previous", disabled=page<=1, on_click=set_page, args=(page-1,))
     p2.markdown(f"<div style='text-align:center;color:#7787A6;padding:8px'>Page {page} / {pages}</div>", unsafe_allow_html=True)
-    if p3.button("Next →", disabled=page>=pages): st.session_state["opp_page"] = page+1; st.rerun()
+    p3.button("Next →", disabled=page>=pages, on_click=set_page, args=(page+1,))
 
 
 def opportunity_detail(navigate: Callable[[str], None]) -> None:
