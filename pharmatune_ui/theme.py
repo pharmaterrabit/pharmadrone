@@ -42,6 +42,15 @@ def inject() -> None:
     .pt-evidence{min-height:180px}.pt-evidence h4{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.07em}.pt-evidence p{font-size:13px}
     #MainMenu,footer{visibility:hidden}
     @media(max-width:1280px){.block-container{padding:1.2rem 1rem 3rem}}
+    @media(max-width:760px){
+      [data-testid="stSidebar"]{width:220px!important;min-width:220px!important;max-width:220px!important}
+      [data-testid="stSidebar"]>div:first-child{width:220px!important}
+      .block-container{padding:.9rem .7rem 2.5rem}
+      [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.55rem!important}
+      [data-testid="column"]{flex:1 1 100%!important;min-width:0!important;width:100%!important}
+      .pt-title{font-size:24px}
+      .pt-card{padding:14px}
+    }
     </style>
     """, unsafe_allow_html=True)
 
