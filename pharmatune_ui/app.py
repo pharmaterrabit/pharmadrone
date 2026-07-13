@@ -14,6 +14,8 @@ NAV = {
     "PLATFORM":["Data Sources","System Health","Settings"],
 }
 
+HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}
+
 
 def _navigate(page: str) -> None:
     st.session_state["page"] = page
@@ -25,7 +27,8 @@ def _sidebar() -> str:
         st.markdown('<div class="pt-brand"><div class="pt-mark">P</div><div><b>PharmaTune</b><small>Intelligence Platform</small></div></div>',unsafe_allow_html=True)
         current=st.session_state.get("page","Overview")
         options=[p for group in NAV.values() for p in group]
-        selected=st.radio("Navigation",options,index=options.index(current) if current in options else 0,label_visibility="collapsed")
+        visible_current=current if current in options else HIDDEN_ROUTE_PARENT.get(current,"Overview")
+        selected=st.radio("Navigation",options,index=options.index(visible_current),label_visibility="collapsed")
         st.markdown("---")
         st.markdown(theme.badge("Analyst workspace","blue"),unsafe_allow_html=True)
         st.caption("Evidence-backed opportunity signals. Human validation required.")
@@ -40,9 +43,13 @@ def run() -> None:
         st.error("PharmaTune cannot connect to its durable database. Production remains closed rather than using a disposable fallback.")
         st.caption(str(exc)); st.stop()
     selected=_sidebar()
-    if selected!=st.session_state.get("page","Overview"):
-        st.session_state["page"]=selected
-    page=st.session_state.get("page","Overview")
+    current=st.session_state.get("page","Overview")
+    if HIDDEN_ROUTE_PARENT.get(current) == selected:
+        page=current
+    else:
+        if selected!=current:
+            st.session_state["page"]=selected
+        page=st.session_state.get("page","Overview")
     routes={
         "Overview":pages.overview,
         "Opportunity Explorer":lambda:pages.explorer(_navigate),
