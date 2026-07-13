@@ -1,6 +1,6 @@
 # Checkpoint 6D-A — Customer / Analyst Platform
 
-Status: **implemented and locally tested; live deployment validation pending**.
+Status: **stable — deployed and validated live on 13 July 2026**.
 
 ## Scope
 
@@ -35,7 +35,7 @@ The UI preserves the three-layer model: confirmed source evidence, deterministic
 
 Checkpoint 6C.1 was automatically validated on 13 July 2026. The live system showed PostgreSQL schema v5, five migrations, nine enabled source jobs, zero failed sources, the scheduled run stored at 2026-07-13T12:42:52Z, 100 frozen audit records, four audit versions and four corrections.
 
-Do not mark Checkpoint 6D-A stable until deployment, responsive visual review, live navigation and live PostgreSQL read/write validation are complete.
+Checkpoint 6D-A live validation completed on 13 July 2026. The deployed platform passed sign-in, responsive navigation, PostgreSQL reads, database-side pagination, opportunity-detail evidence separation, case-study generation and both CSV and Markdown exports. A controlled non-approving audit-progress version was appended to record `D-1274-2020` by `Codex Validation`; it became Version 1 with status `in_review`. The benchmark remained 100 records, completed approvals remained four, external approvals remained zero and no source evidence was modified.
 
 ## Local validation result
 
@@ -47,12 +47,12 @@ Do not mark Checkpoint 6D-A stable until deployment, responsive visual review, l
 
 ## Live deployment validation checklist
 
-1. Deploy the complete repository to the existing Streamlit application.
-2. Confirm sign-in and PostgreSQL schema v5 health.
-3. Open every Customer / Analyst navigation destination at 1440px and 1280px.
-4. Confirm the Explorer returns real PostgreSQL records and pagination changes pages.
-5. Open an opportunity and verify the three evidence layers remain distinct.
-6. Save one non-approving audit-progress version and confirm the previous history remains.
-7. Build and download one case-study shortlist.
-8. Confirm the scheduler shows the latest automatic run and zero unexplained failed sources.
-9. Confirm the frozen benchmark remains 100 records with unchanged historical versions and corrections except for the deliberate validation record created in step 6.
+- [x] Deploy the complete repository to the existing Streamlit application.
+- [x] Confirm sign-in and PostgreSQL schema v5 health.
+- [x] Review the responsive Customer / Analyst navigation and narrow-screen controls.
+- [x] Confirm the Explorer returns real PostgreSQL records and pagination changes pages.
+- [x] Open an opportunity and verify the three evidence layers remain distinct.
+- [x] Save one non-approving audit-progress version and confirm Version 1 is retained.
+- [x] Build and download one 20-record case-study shortlist as CSV and Markdown.
+- [x] Confirm the scheduler shows the latest automatic run and zero unexplained failed sources.
+- [x] Confirm the frozen benchmark remains 100 records; the deliberate validation write changed no source evidence or approval totals.
