@@ -41,6 +41,11 @@ class Checkpoint6DATests(unittest.TestCase):
         text = (ROOT / "pharmatune_ui" / "data.py").read_text(encoding="utf-8")
         self.assertIn("LIMIT ? OFFSET ?", text)
 
+    def test_hidden_detail_route_preserves_explorer_parent(self):
+        text = (ROOT / "pharmatune_ui" / "app.py").read_text(encoding="utf-8")
+        self.assertIn('HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}', text)
+        self.assertIn("HIDDEN_ROUTE_PARENT.get(current) == selected", text)
+
 
 if __name__ == "__main__":
     unittest.main()
