@@ -467,6 +467,10 @@ The default `app.py` now launches the approved PharmaTune enterprise Customer / 
 
 The same server entry point now routes authenticated roles to separate Customer / Analyst, Workspace Administration or Platform Administration experiences. Workspace access is organisation-scoped again in the backend, while platform operators receive real connector, scheduler, ingestion, usage, database, backup, audit and feature-flag views. Migration 6 adds durable administration records without seeding demonstration values. See `CHECKPOINT_6D_B.md`.
 
+## Checkpoint 7A — Real Seller-Specific Case Study
+
+The Case Studies workspace now uses a real Hovione provider profile supported by Hovione's official capability pages. It matches the verified formulation, particle-engineering, solubility, dissolution, analytical/QC, stability and impurity capability lens against the frozen human-validation dataset. Every build is saved under migration 7, candidates link directly into Human Validation, and customer Markdown/HTML exports remain locked until at least one target passes the append-only external-use gate. Internal review CSVs remain clearly separated from customer-safe exports. See `CHECKPOINT_7A.md`.
+
 See `CHECKPOINT_6C1.md` and `DEPLOY.md` for commands, GitHub Secrets and the live stability checklist.
 
 Checkpoint 6C.1 monthly maintenance stores bounded official-source URL availability checks in the append-only `source_url_checks` operational table.
