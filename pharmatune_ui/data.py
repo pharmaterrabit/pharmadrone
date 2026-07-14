@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from pharmadrone import db
-from pharmadrone.pipeline import human_audit
+from pharmadrone.pipeline import human_audit, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -118,6 +118,37 @@ def audit_histories(key: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]
     conn = connection()
     try: return human_audit.audit_history(conn, key), human_audit.correction_history(conn, key)
     finally: conn.close()
+
+
+def build_seller_case_study(limit: int, principal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build and persist a real-provider case study from the human audit queue."""
+    principal = principal or {}
+    conn = connection()
+    try:
+        records = human_audit.merge_queue_with_audits(
+            human_audit.benchmark_rows(conn), human_audit.latest_audit_map(conn)
+        )
+        result = seller_case_study.build_real_case_study(records, limit=limit)
+        seller_case_study.save_snapshot(
+            conn,
+            result,
+            organisation_id=str(principal.get("organisation_id") or "platform"),
+            created_by=str(principal.get("display_name") or "Analyst / Reviewer"),
+        )
+        return result
+    finally:
+        conn.close()
+
+
+def seller_case_study_history(principal: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    principal = principal or {}
+    conn = connection()
+    try:
+        return seller_case_study.history(
+            conn, organisation_id=str(principal.get("organisation_id") or "platform")
+        )
+    finally:
+        conn.close()
 
 
 def source_health() -> dict[str, Any]:
