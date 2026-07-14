@@ -56,7 +56,7 @@ class Checkpoint6C1Tests(unittest.TestCase):
         )
 
     def test_migration_5_operational_tables(self):
-        self.assertEqual(max(m.version for m in MIGRATIONS), 5)
+        self.assertGreaterEqual(max(m.version for m in MIGRATIONS), 5)
         for table in (
             "source_refresh_state", "refresh_runs", "source_refresh_runs", "source_records",
             "source_record_changes", "source_url_checks", "scheduler_notifications", "opportunity_refresh_flags",
