@@ -83,6 +83,13 @@ class Checkpoint7ATests(unittest.TestCase):
         with self.assertRaises(seller_case_study.CustomerExportBlocked):
             seller_case_study.export_customer_html(result)
 
+    def test_legacy_yes_no_report_flags_do_not_break_matching(self):
+        records = self._records(approved=False)
+        records[0]["has_full_report"] = "yes"
+        records[1]["has_full_report"] = "no"
+        result = seller_case_study.build_real_case_study(records, limit=5)
+        self.assertEqual(result["metrics"]["candidate_count"], 5)
+
     def test_migration_7_persists_immutable_case_study_snapshot(self):
         self.assertEqual(max(m.version for m in MIGRATIONS), 7)
         conn = db.connect(self.path)
