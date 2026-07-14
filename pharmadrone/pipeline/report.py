@@ -169,8 +169,11 @@ def _deterministic_body(opp: dict) -> str:
             f"- Recall initiation date: {_fmt(rf.get('recall_initiation_date'))}\n"
             f"- FDA report date: {_fmt(rf.get('report_date'))}")
     else:
-        confirmed = (f"**Confirmed:** {opp.get('confirmed_fact','A public-source signal '
-                     'was found for this target.')}")
+        confirmed_fact = (
+            opp.get("confirmed_fact")
+            or "A public-source signal was found for this target."
+        )
+        confirmed = f"**Confirmed:** {confirmed_fact}"
 
     who = "\n".join(f"- {r}" for r in bd_rules.CONTACT_ROLES)
     partner_lines = "\n".join(f"- {p}" for p in partners)
