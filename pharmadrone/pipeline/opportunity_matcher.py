@@ -47,6 +47,13 @@ def _norm(text: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+/.-]+", " ", str(text).lower())).strip()
 
 
+def _boolish(value: Any) -> bool:
+    """Normalise current numeric and legacy yes/no boolean values."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "checked", "approved"}
+    return bool(value)
+
+
 def _contains_any(text: str, terms: list[str] | tuple[str, ...]) -> bool:
     t = _norm(text)
     return any(_norm(term) in t for term in terms if term)
@@ -882,7 +889,7 @@ def _display_title(opp: dict[str, Any]) -> str:
 
 
 def _last_generated_date(opp: dict[str, Any]) -> str:
-    if int(opp.get("has_full_report") or 0):
+    if _boolish(opp.get("has_full_report")):
         return str(opp.get("created_at") or opp.get("date_generated") or opp.get("generated_at") or opp.get("last_updated_at") or "")
     return ""
 
@@ -922,7 +929,7 @@ def _target_label(opp: dict[str, Any]) -> str:
 
 def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
     evidence = opp.get("evidence", []) or []
-    has_full_report = int(opp.get("has_full_report") or (1 if opp.get("report_md") else 0) or 0)
+    has_full_report = _boolish(opp.get("has_full_report")) or bool(opp.get("report_md"))
     return {
         "opportunity_id": opp.get("stable_lead_id") or opp.get("id") or "",
         "stable_lead_id": opp.get("stable_lead_id") or opp.get("id") or "",
@@ -938,7 +945,7 @@ def _common_match_metadata(opp: dict[str, Any]) -> dict[str, Any]:
         "source_freshness": _source_freshness(opp),
         "novelty_status": opp.get("novelty_status") or "",
         "queue_status": opp.get("queue_status") or "",
-        "has_full_report": bool(has_full_report),
+        "has_full_report": has_full_report,
         "report_path": opp.get("report_path") or "",
         "last_generated_date": _last_generated_date(opp),
         "stored_report_md": opp.get("report_md") or "",
