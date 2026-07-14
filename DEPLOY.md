@@ -91,6 +91,9 @@ any JavaScript.
 | Variable | What it does |
 |---|---|
 | `APP_PASSWORD` | the login password for the dashboard |
+| `PLATFORM_ADMIN_PASSWORD` | distinct password for the Checkpoint 6D-B Platform Administration experience |
+| `WORKSPACE_ADMIN_PASSWORD` | distinct password for organisation-scoped Workspace Administration |
+| `WORKSPACE_ADMIN_ORGANISATION_ID` | organisation ID that enforces the workspace administrator boundary |
 | `LLM_PROVIDER` | `openrouter` (default) / `groq` / `openai` / `gemini` |
 | `LLM_MODEL` | model string for that provider (cheap/free default set) |
 | `OPENROUTER_API_KEY` | LLM key — needed if provider=openrouter (default) |
@@ -101,6 +104,8 @@ any JavaScript.
 | `CONTACT_EMAIL` | optional, politer Crossref/OpenAlex |
 | `MAX_REPORTS_PER_RUN` | hard cap per click (default 5) |
 | `ALLOW_SCALE_RUNS` | `false` hides the 20/80 buttons; set `true` to unlock |
+
+For Checkpoint 6D-B, first add a distinct `PLATFORM_ADMIN_PASSWORD` and sign in to create the production organisation. Copy the generated `org-…` identifier into `WORKSPACE_ADMIN_ORGANISATION_ID`, add a distinct `WORKSPACE_ADMIN_PASSWORD`, save the host settings, and then validate the scoped login. Never reuse the Customer / Analyst password for either administrator role.
 
 **To switch LLM provider later:** change `LLM_PROVIDER` (and `LLM_MODEL`), add that
 provider's key, Save Changes. If the selected provider's key is missing, the app
