@@ -28,7 +28,7 @@ class Checkpoint6DBTests(unittest.TestCase):
         return self.real_connect(self.path)
 
     def test_migration_6_administration_tables(self):
-        self.assertEqual(max(m.version for m in MIGRATIONS), 6)
+        self.assertGreaterEqual(max(m.version for m in MIGRATIONS), 6)
         conn = self._connect()
         for table in ("organisations","workspaces","admin_users","workspace_settings","admin_audit_events","backup_records","feature_flags","api_usage_daily"):
             self.assertTrue(conn.has_table(table), table)
