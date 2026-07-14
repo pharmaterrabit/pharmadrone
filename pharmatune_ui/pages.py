@@ -7,7 +7,7 @@ from typing import Any, Callable
 import pandas as pd
 import streamlit as st
 
-from pharmadrone.pipeline import human_audit, pilot_case_study
+from pharmadrone.pipeline import human_audit, seller_case_study
 from . import data, theme
 
 
@@ -138,10 +138,18 @@ def validation() -> None:
         filtered=[r for r in filtered if any(needle in str(r.get(k) or "").lower() for k in ("source_id","target_company","company","product"))]
     labels = {f"{r.get('source_id','No source ID')} · {r.get('target_company') or r.get('company','Unknown')} · Tier {r.get('signal_tier','?')}":r for r in filtered}
     if not labels: st.warning("No validation records match these filters."); return
-    selected_label = st.selectbox("Validation record",list(labels)); record = labels[selected_label]
+    label_options = list(labels)
+    requested_key = str(st.session_state.get("validation_audit_key") or "")
+    requested_index = next(
+        (i for i, label in enumerate(label_options) if str(labels[label].get("audit_key") or "") == requested_key),
+        0,
+    )
+    selected_label = st.selectbox("Validation record", label_options, index=requested_index)
+    record = labels[selected_label]
+    st.session_state["validation_audit_key"] = record.get("audit_key") or ""
     a,b,c = st.columns(3)
     with a: theme.card("Confirmed source evidence",_safe(record.get("evidence_span") or record.get("specific_problem_category") or record.get("problem_category")),[(record.get("source_type","Source"),"green")],_safe(record.get("source_id")))
-    with b: theme.card("PharmaTune interpretation",_safe(record.get("signal_reason") or record.get("signal_tier_reason") or "Deterministic classification"),[(f"Tier {record.get('signal_tier','?')}","blue")],"No inference of buying intent")
+    with b: theme.card("PharmaTune interpretation",_safe(record.get("signal_reason") or record.get("signal_tier_reason") or "Deterministic classification"),[(f"Tier {record.get('signal_tier','?')}","blue")],f"External eligibility: {'eligible' if record.get('external_case_study_eligible') else 'not eligible'}")
     with c: theme.card("Latest human decision",_safe(record.get("audit_decision"),"Pending review"),[(record.get("audit_status","pending"),"violet")],f"Version {record.get('audit_version',0)}")
     with st.form("audit_form"):
         st.markdown("### Mandatory audit checklist")
@@ -156,8 +164,8 @@ def validation() -> None:
         reviewer=st.text_input("Reviewer name",value=str(record.get("reviewer_name") or ""))
         action=st.selectbox("Decision",human_audit.AUDIT_ACTIONS)
         notes=st.text_area("Audit notes",value=str(record.get("audit_notes") or ""))
-        external=st.checkbox("Approve for external case study",value=False,help="Requires every mandatory check and cannot be used for Tier D.")
-        outreach=st.checkbox("Approve for outreach",value=False,disabled=not external,help="Outreach remains locked until external approval is requested and valid.")
+        external=st.checkbox("Approve for external case study",value=bool(record.get("external_use_approved")),help="Requires every mandatory check and cannot be used for Tier D.")
+        outreach=st.checkbox("Approve for outreach",value=bool(record.get("outreach_approved")),disabled=not external,help="Outreach remains locked until external approval is requested and valid.")
         submitted=st.form_submit_button("Save append-only audit version",type="primary")
     if submitted:
         payload={"reviewer_name":reviewer,"action":action,"audit_notes":notes,"evidence_checked":evidence_checked,"product_identity_checked":product_checked,"company_identity_checked":company_checked,"problem_signal_checked":signal_checked,"evidence_supports_problem":supports,"unresolved_warnings_acknowledged":warnings,"company_warning_resolved":warning_resolved,"external_use_approved":external,"outreach_approved":outreach}
@@ -169,29 +177,105 @@ def validation() -> None:
         if corrections: st.dataframe(pd.DataFrame(corrections),use_container_width=True,hide_index=True)
 
 
-def case_studies() -> None:
-    theme.page_header("Case Study Builder", "Build a real, evidence-backed seller-specific shortlist with deterministic matching.", "Workflow")
-    st.markdown(theme.badge("1 Profile","blue")+theme.badge("2 Evidence filters","blue")+theme.badge("3 Match","blue")+theme.badge("4 Human review","violet")+theme.badge("5 Export","green"),unsafe_allow_html=True)
-    with st.form("case_study"):
-        title=st.text_input("Case study title",pilot_case_study.DEFAULT_CASE_STUDY_TITLE)
-        objective=st.text_area("Objective",pilot_case_study.DEFAULT_CASE_STUDY_OBJECTIVE)
-        seller=st.text_area("Seller / service-provider capability profile",pilot_case_study.DEFAULT_SELLER_SERVICE_PROFILE)
-        capabilities=st.multiselect("Capabilities",pilot_case_study.DEFAULT_CAPABILITIES,default=pilot_case_study.DEFAULT_CAPABILITIES)
-        limit=st.slider("Maximum targets",5,20,20)
-        submitted=st.form_submit_button("Build evidence-backed shortlist",type="primary")
-    if submitted:
-        records=data.all_opportunities()
-        result=pilot_case_study.build_pilot_case_study(records,limit=limit,case_study_title=title,case_study_objective=objective,seller_service_profile=seller,capability_categories=capabilities)
-        st.session_state["case_result"]=result
-    result=st.session_state.get("case_result")
+def case_studies(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:
+    theme.page_header("Hovione Case Study", "A real provider profile matched to evidence-backed product problems, with human approval before customer export.", "Workflow")
+    st.markdown(theme.badge("1 Verified provider","green")+theme.badge("2 Evidence match","blue")+theme.badge("3 Human validation","violet")+theme.badge("4 Approved shortlist","violet")+theme.badge("5 Customer export","green"),unsafe_allow_html=True)
+
+    provider = seller_case_study.HOVIONE_PROFILE
+    st.markdown("### Verified seller / solution-provider profile")
+    theme.card(
+        provider["provider_name"],
+        provider["profile_summary"],
+        [("Real provider", "green"), (f"Verified {provider['last_verified_at']}", "blue")],
+        provider["provider_type"],
+    )
+    st.caption("Published capabilities used for matching: " + " · ".join(provider["capabilities"]))
+    with st.expander("Provider capability evidence"):
+        for source in provider["evidence_sources"]:
+            st.markdown(f"[{source['title']}]({source['url']})  ")
+            st.caption(source["supports"])
+
+    left, right = st.columns([1, 2])
+    limit = left.slider("Maximum shortlist candidates", 5, 20, 12)
+    right.info("The build uses the frozen human-validation dataset. No target enters the customer export until a reviewer passes the external-use gate.")
+    if st.button("Build and save Hovione case study", type="primary"):
+        with st.spinner("Matching the verified provider profile to validated evidence..."):
+            try:
+                st.session_state["case_result"] = data.build_seller_case_study(limit, principal)
+            except Exception as exc:
+                st.error("The case study could not be built or saved. No partial customer export was created.")
+                st.caption(str(exc))
+
+    result = st.session_state.get("case_result")
     if result:
-        st.success(result.get("message")); rows=result.get("rows",[])
-        if rows:
-            st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-            st.download_button("Download shortlist CSV",pilot_case_study.export_pilot_csv(result),"pharmatune_case_study.csv","text/csv")
-            st.download_button("Download evidence summary",pilot_case_study.export_pilot_markdown(result),"pharmatune_case_study.md","text/markdown")
+        metrics = result.get("metrics", {})
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Validation records", metrics.get("validation_records_reviewed", 0))
+        c2.metric("Matched candidates", metrics.get("candidate_count", 0))
+        c3.metric("Human reviewed", metrics.get("reviewed_count", 0))
+        c4.metric("Customer-ready", metrics.get("approved_count", 0))
+        if result.get("approved_rows"):
+            st.success(result.get("message"))
+        else:
+            st.warning(result.get("message"))
+
+        candidates = result.get("candidate_rows", [])
+        if candidates:
+            st.markdown("### Evidence review and human-validation status")
+            display_rows = [{
+                "Rank": row.get("pilot_rank"),
+                "Company": row.get("target_company"),
+                "Product": row.get("product"),
+                "Public problem signal": row.get("problem_category"),
+                "Potential Hovione fit": row.get("seller_capability_match"),
+                "Fit strength": row.get("seller_fit_strength"),
+                "Evidence source": f"{row.get('source_type','')} · {row.get('source_id','')}",
+                "Validation": row.get("validation_status"),
+            } for row in candidates]
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+            review_labels = {
+                f"{row.get('target_company') or 'Unknown'} · {row.get('product') or row.get('source_id') or 'Record'}": row
+                for row in candidates if row.get("audit_key") and not row.get("external_use_approved")
+            }
+            if review_labels:
+                selected = st.selectbox("Candidate to validate", list(review_labels))
+                if st.button("Open selected candidate in Human Validation"):
+                    st.session_state["validation_audit_key"] = review_labels[selected]["audit_key"]
+                    navigate("Human Validation")
+            st.download_button(
+                "Download internal evidence-review CSV",
+                seller_case_study.export_review_csv(result),
+                "pharmatune_hovione_internal_review.csv",
+                "text/csv",
+            )
+
+        if result.get("approved_rows"):
+            st.markdown("### Customer-safe case study exports")
+            st.caption("Only human-approved rows are included. Internal reviewer names and unapproved candidates are excluded.")
+            e1,e2 = st.columns(2)
+            e1.download_button(
+                "Download customer case study (.md)",
+                seller_case_study.export_customer_markdown(result),
+                "pharmatune_hovione_customer_case_study.md",
+                "text/markdown",
+            )
+            e2.download_button(
+                "Download customer case study (.html)",
+                seller_case_study.export_customer_html(result),
+                "pharmatune_hovione_customer_case_study.html",
+                "text/html",
+            )
+        else:
+            st.info("Customer exports are locked. Validate a candidate and approve it for external case-study use, then rebuild this case study.")
         with st.expander("Method and limitations"):
-            st.write(result.get("method_note")); [st.warning(x) for x in result.get("limitations",[])]
+            st.write(result.get("method_note"))
+            for limitation in result.get("limitations", []):
+                st.warning(limitation)
+
+    history = data.seller_case_study_history(principal)
+    if history:
+        with st.expander("Saved case-study snapshots"):
+            st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
 
 
 def sources() -> None:
