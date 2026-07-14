@@ -61,7 +61,7 @@ def run(principal: dict | None = None) -> None:
         "Products":lambda:pages.entity_page("Products","Products represented in the current live opportunity index.","product"),
         "Technologies":pages.technology_profile,
         "Human Validation":pages.validation,
-        "Case Studies":pages.case_studies,
+        "Case Studies":lambda:pages.case_studies(principal,_navigate),
         "Data Sources":pages.sources,
         "System Health":pages.health,
         "Research & Innovation":lambda:pages.placeholder("Research & Innovation","Future university, research-group and technology-transfer intelligence."),
