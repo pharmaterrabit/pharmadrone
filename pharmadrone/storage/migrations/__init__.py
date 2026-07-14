@@ -492,6 +492,60 @@ def _administration_schema(conn) -> None:
     """)
 
 
+def _seller_case_study_schema(conn) -> None:
+    """Durable real-provider case studies and validation-gated shortlists."""
+    ts = _timestamp_default(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS seller_profiles (
+        profile_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_type TEXT NOT NULL,
+        website_url TEXT NOT NULL,
+        profile_summary TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        evidence_sources_json TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        updated_at TEXT NOT NULL DEFAULT {ts}
+    );
+    CREATE TABLE IF NOT EXISTS seller_case_studies (
+        case_study_id TEXT PRIMARY KEY,
+        organisation_id TEXT NOT NULL DEFAULT 'platform',
+        profile_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        workflow_status TEXT NOT NULL,
+        candidate_count INTEGER NOT NULL DEFAULT 0,
+        approved_count INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (profile_id) REFERENCES seller_profiles(profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS seller_case_study_targets (
+        case_study_id TEXT NOT NULL,
+        target_key TEXT NOT NULL,
+        audit_key TEXT,
+        stable_lead_id TEXT,
+        target_company TEXT,
+        product TEXT,
+        problem_category TEXT,
+        source_type TEXT,
+        source_id TEXT,
+        seller_fit_strength TEXT,
+        validation_status TEXT NOT NULL,
+        external_use_approved INTEGER DEFAULT 0 CHECK (external_use_approved IN (0,1)),
+        target_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        PRIMARY KEY (case_study_id, target_key),
+        FOREIGN KEY (case_study_id) REFERENCES seller_case_studies(case_study_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_seller_case_studies_org ON seller_case_studies(organisation_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_seller_case_studies_status ON seller_case_studies(workflow_status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_seller_case_targets_audit ON seller_case_study_targets(audit_key, validation_status);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -499,6 +553,7 @@ MIGRATIONS = (
     Migration(4, "legacy_additive_columns", _additive_legacy_columns),
     Migration(5, "checkpoint_6c1_scheduler_schema", _scheduler_schema),
     Migration(6, "checkpoint_6db_administration_schema", _administration_schema),
+    Migration(7, "checkpoint_7a_seller_case_study_schema", _seller_case_study_schema),
 )
 
 
