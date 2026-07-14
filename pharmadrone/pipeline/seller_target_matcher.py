@@ -164,6 +164,20 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+/.-]+", " ", str(value).lower())).strip()
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Accept legacy numeric strings without failing on yes/no status values."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "checked", "approved"}
+    return bool(value)
+
+
 def _contains(text: str, term: str) -> bool:
     return _norm(term) in _norm(text)
 
@@ -377,8 +391,8 @@ def _max_fit_strength(record: dict[str, Any]) -> str:
     This is a display-only trust cap. It does not change matching, queue status,
     enrichment, Opportunity Score, or any stored lead classification.
     """
-    coverage = int(record.get("source_coverage_count") or 0)
-    has_report = bool(int(record.get("has_full_report") or 0))
+    coverage = _safe_int(record.get("source_coverage_count"))
+    has_report = _bool(record.get("has_full_report"))
     lead_status = _lead_status(record)
     evidence_quality = record.get("evidence_quality") or "not checked"
     best_tier = record.get("best_evidence_tier") or "not checked"
@@ -417,8 +431,8 @@ def _apply_fit_cap(strength: str, cap: str) -> str:
 def _fit_strength(raw_score: int, record: dict[str, Any]) -> str:
     if raw_score <= 0:
         return ""
-    coverage = int(record.get("source_coverage_count") or 0)
-    has_report = bool(int(record.get("has_full_report") or 0))
+    coverage = _safe_int(record.get("source_coverage_count"))
+    has_report = _bool(record.get("has_full_report"))
     evidence_rank = _evidence_rank(record)
     lead_status = _lead_status(record)
     adjusted = raw_score
@@ -512,7 +526,7 @@ def _base_match_record(record: dict[str, Any]) -> dict[str, Any]:
         "grade": record.get("grade") or "",
         "lead_status": _lead_status(record),
         "queue_status": record.get("queue_status") or "",
-        "has_full_report": bool(int(record.get("has_full_report") or 0) or record.get("report_md")),
+        "has_full_report": bool(_bool(record.get("has_full_report")) or record.get("report_md")),
         "evidence_quality": record.get("evidence_quality") or "not checked",
         "best_evidence_tier": record.get("best_evidence_tier") or record.get("evidence_quality") or "not checked",
         "corroboration_status": _status(record, "corroboration_status", "direct source only"),
@@ -520,7 +534,7 @@ def _base_match_record(record: dict[str, Any]) -> dict[str, Any]:
         "label_context_status": _status(record, "label_context_status", "not checked"),
         "clinical_trial_context_status": _status(record, "clinical_trial_context_status", "not checked"),
         "literature_context_status": _status(record, "literature_context_status", "not checked"),
-        "source_coverage_count": int(record.get("source_coverage_count") or 0),
+        "source_coverage_count": _safe_int(record.get("source_coverage_count")),
         "report_path": record.get("report_path") or meta.get("report_path") or "",
         "stored_report_md": record.get("report_md") or meta.get("stored_report_md") or "",
     }
@@ -634,12 +648,12 @@ def match_seller_to_targets(
     fit_order = {FIT_STRONG: 0, FIT_MODERATE: 1, FIT_WEAK: 2}
     matches.sort(key=lambda m: (
         fit_order.get(m.get("fit_strength"), 9),
-        -int(m.get("source_coverage_count") or 0),
-        -int(m.get("opportunity_score") or 0),
+        -_safe_int(m.get("source_coverage_count")),
+        -_safe_int(m.get("opportunity_score")),
         0 if m.get("has_full_report") else 1,
         m.get("risk_readiness_label") == "monitor only",
     ))
-    matches = matches[: max(1, int(max_targets or 10))]
+    matches = matches[: max(1, _safe_int(max_targets, 10))]
 
     if not matches:
         return {
