@@ -35,8 +35,11 @@ def _sidebar() -> str:
         return selected
 
 
-def run() -> None:
-    theme.inject(); auth.require_password()
+def run(principal: dict | None = None) -> None:
+    theme.inject(); principal = principal or auth.require_password()
+    if principal.get("role") not in {"analyst_reviewer", "read_only_executive"}:
+        st.error("This account is assigned to an administration workspace.")
+        st.stop()
     try:
         conn=db.connect(); conn.close(); status=db.database_status()
     except (DatabaseConfigurationError,DatabaseUnavailableError,RuntimeError) as exc:
