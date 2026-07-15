@@ -74,3 +74,34 @@ def test_orange_book_projects_governed_lifecycle_relationships_into_memory(tmp_p
 def test_workflow_exposes_manual_orange_book_refresh():
     workflow = Path(".github/workflows/pharmatune_refresh.yml").read_text()
     assert "- fda_orange_book" in workflow
+
+
+def test_drugsfda_fallback_retains_products_without_inventing_lifecycle_fields():
+    payload = {"meta": {"last_updated": "2026-07-14"}, "results": [{
+        "application_number": "NDA012345", "sponsor_name": "Example Pharma Inc",
+        "submissions": [{"submission_type": "ORIG", "submission_status": "AP", "submission_status_date": "20200102"}],
+        "products": [{"product_number": "001", "brand_name": "EXAMPLE DRUG",
+                      "active_ingredients": [{"name": "EXAMPLINE", "strength": "10MG"}],
+                      "reference_drug": "Yes", "reference_standard": "Yes", "dosage_form": "TABLET",
+                      "route": "ORAL", "marketing_status": "Prescription", "te_code": "AB"}],
+    }]}
+    result = fda_orange_book.parse_drugsfda_payload(payload)
+    assert result.ok and result.count == 1
+    item = result.records[0]
+    assert item["record_id"] == "012345-001"
+    assert item["entities"]["patents"] == []
+    assert item["entities"]["exclusivities"] == []
+    assert item["entities"]["dataset_mode"] == "Drugs@FDA product fallback"
+    assert item["entities"]["direct_problem_evidence"] is False
+
+
+def test_fetch_uses_official_drugsfda_fallback_when_archive_is_blocked():
+    fallback = fda_orange_book.parse_drugsfda_payload({"results": []})
+    response = __import__("httpx").Response(200, content=b"<html>FDA challenge</html>", request=__import__("httpx").Request("GET", fda_orange_book.DEFAULT_ARCHIVE_URL))
+    with patch("httpx.Client.get", return_value=response), patch(
+        "pharmadrone.connectors.fda_orange_book.fetch_drugsfda_fallback", return_value=fallback
+    ):
+        result = fda_orange_book.fetch(max_results=10)
+    assert result.ok
+    assert result.stats["archive_error"]
+    assert result.stats["dataset_mode"] == "Drugs@FDA product fallback"

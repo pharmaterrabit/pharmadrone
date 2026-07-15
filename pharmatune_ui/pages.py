@@ -318,6 +318,8 @@ def sources() -> None:
     f2.metric("Listed patents", f"{fda.get('patents', 0):,}")
     f3.metric("Exclusivity entries", f"{fda.get('exclusivities', 0):,}")
     f4.metric("Latest source update", fda.get("latest_update") or "Not ingested yet")
+    if fda.get("fallback"):
+        st.info("FDA is currently serving product records through the official daily Drugs@FDA fallback. Patent and exclusivity fields remain empty until FDA restores the Orange Book archive.")
     st.caption("Orange Book product, patent and exclusivity records are regulatory lifecycle context. Patent listings are not legal advice, proof of freedom to operate, product failure or commercial demand.")
     st.markdown("### Planned source families")
     for name in ("PMDA and further global regulators","Company news, deals and funding","Global patent families and ownership","University technology transfer"):

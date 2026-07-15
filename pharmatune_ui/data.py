@@ -266,7 +266,7 @@ def fda_orange_book_coverage() -> dict[str, Any]:
             "SELECT record_json,source_updated_at FROM source_records "
             "WHERE source_type='fda_orange_book_product' AND active=1"
         ).fetchall()
-        patents = exclusivities = rld = 0
+        patents = exclusivities = rld = fallback = 0
         latest = ""
         for stored in rows:
             item = dict(stored)
@@ -276,8 +276,9 @@ def fda_orange_book_coverage() -> dict[str, Any]:
             patents += len(entities.get("patents") or [])
             exclusivities += len(entities.get("exclusivities") or [])
             rld += int(bool(entities.get("reference_listed_drug")))
+            fallback += int(entities.get("dataset_mode") == "Drugs@FDA product fallback")
             latest = max(latest, str(item.get("source_updated_at") or ""))
-        return {"total": len(rows), "patents": patents, "exclusivities": exclusivities,
+        return {"total": len(rows), "patents": patents, "exclusivities": exclusivities, "fallback": fallback,
                 "reference_listed": rld, "latest_update": latest}
     finally:
         conn.close()
