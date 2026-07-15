@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+pharmadrone.db
+reports/*.md
+reports/*.html
+reports/*.csv
+reports/*.json
+!reports/.gitkeep
+
+# Streamlit secrets must never be committed.
+.streamlit/secrets.toml
