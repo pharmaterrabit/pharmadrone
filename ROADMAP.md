@@ -6,7 +6,7 @@ in this order (robust output first, not 15 brittle scrapers):
 | Order | Source | Notes |
 |------:|--------|-------|
 | ✅ v1 | ClinicalTrials.gov v2, openFDA, Europe PMC, OpenAlex, Crossref, Tavily | live |
-| 1 | **EMA / EPARs** | EU medicine data downloads + EPAR links |
+| ✅ Phase 4A | **EMA / EPARs** | Official medicines JSON, daily durable ingestion, EPAR links and memory projection |
 | 2 | **FDA Orange Book** | downloadable dataset — patents/exclusivity/lifecycle timing |
 | 3 | PMDA (Japan) | advanced module |
 | 4 | NMPA (China) | advanced module |

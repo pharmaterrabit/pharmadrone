@@ -287,6 +287,18 @@ def sources() -> None:
         rows.append({"Source job":r.get("source_name"),"Cadence":r.get("cadence"),"Status":r.get("last_status") or "Not run","Last success":r.get("last_success_at"),"Next due":r.get("next_due_at"),"Created":r.get("records_created") or 0,"Updated":r.get("records_updated") or 0,"Unchanged":r.get("records_unchanged") or 0})
     st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
     st.caption("Connected does not mean a source automatically establishes a pharmaceutical problem or commercial need.")
+    ema = data.ema_coverage()
+    st.markdown("### European Medicines Agency")
+    e1,e2,e3 = st.columns(3)
+    e1.metric("EMA medicines retained", f"{ema.get('total', 0):,}")
+    e2.metric("Medicine categories", len(ema.get("categories") or {}))
+    e3.metric("Latest source update", ema.get("latest_update") or "Not ingested yet")
+    if ema.get("categories"):
+        st.dataframe(pd.DataFrame([
+            {"Category": category, "Medicines": count}
+            for category, count in sorted(ema["categories"].items())
+        ]), use_container_width=True, hide_index=True)
+    st.caption("EMA catalogue records confirm published regulatory facts only. They do not prove product failure, customer need or solution fit.")
     st.markdown("### Planned source families")
     for name in ("PMDA and further global regulators","Company news, deals and funding","Patent families and ownership","University technology transfer"):
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])
@@ -311,10 +323,10 @@ def pharmaceutical_memory() -> None:
     if not companies:
         theme.empty("No company memory found", "Try a broader company search or refresh the opportunity index.", "No results")
         return
-    labels = {f"{row['display_name']} · {row['opportunity_signals']} signals": row for row in companies}
+    labels = {f"{row['display_name']} · {row['evidence_records']} records": row for row in companies}
     selected = labels[st.selectbox("Company memory", list(labels))]
     relationships = data.pharmaceutical_memory_relationships(selected["entity_id"])
-    st.caption(f"{selected['opportunity_signals']} evidence-backed opportunity signals · last seen {selected.get('last_seen_at') or 'Not recorded'}")
+    st.caption(f"{selected['evidence_records']} evidence-linked memory records · last seen {selected.get('last_seen_at') or 'Not recorded'}")
     if relationships:
         frame = pd.DataFrame([{
             "Relationship": row.get("relationship_type", "").replace("_", " ").title(),

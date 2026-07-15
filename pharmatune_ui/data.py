@@ -182,6 +182,7 @@ def pharmaceutical_memory(search: str = "") -> dict[str, Any]:
     conn = connection()
     try:
         metrics = memory.sync_from_opportunity_index(conn)
+        metrics = memory.sync_ema_medicines(conn)
         companies = memory.company_memories(conn, search=search)
         return {"metrics": metrics, "companies": companies}
     finally:
@@ -203,6 +204,32 @@ def source_health() -> dict[str, Any]:
     try:
         return {"summary": scheduler_repository.scheduler_summary(conn), "sources": scheduler_repository.source_status_rows(conn), "database": db.database_status()}
     finally: conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def ema_coverage() -> dict[str, Any]:
+    conn = connection()
+    try:
+        rows = conn.execute(
+            "SELECT source_id,record_json,source_updated_at,last_seen_at FROM source_records "
+            "WHERE source_type='ema_medicine' AND active=1"
+        ).fetchall()
+        categories: dict[str, int] = {}
+        statuses: dict[str, int] = {}
+        latest = ""
+        for stored in rows:
+            item = dict(stored)
+            try: record = json.loads(item.get("record_json") or "{}")
+            except (TypeError, ValueError): continue
+            entities = record.get("entities") or {}
+            category = str(entities.get("medicine_category") or "Not stated")
+            status = str(entities.get("medicine_status") or "Not stated")
+            categories[category] = categories.get(category, 0) + 1
+            statuses[status] = statuses.get(status, 0) + 1
+            latest = max(latest, str(item.get("source_updated_at") or ""))
+        return {"total": len(rows), "categories": categories, "statuses": statuses, "latest_update": latest}
+    finally:
+        conn.close()
 
 
 @st.cache_data(ttl=15, show_spinner=False)
