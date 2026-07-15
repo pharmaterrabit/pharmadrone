@@ -14,8 +14,8 @@ load_dotenv(ROOT / ".env")
 
 
 def env(key: str, default: str = "") -> str:
-    """Read a config value from, in order: real environment variables (Render,
-    Railway, your local .env via python-dotenv), then Streamlit Community
+    """Read a config value from, in order: real environment variables (including
+    your local .env via python-dotenv), then Streamlit Community
     Cloud's st.secrets (its canonical secrets mechanism — not guaranteed to be
     mirrored into os.environ on every Streamlit version), then the default.
     """
