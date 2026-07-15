@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import streamlit as st
+
 from pharmadrone import db
 from pharmadrone.pipeline import human_audit, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
@@ -13,6 +15,7 @@ def connection():
     return db.connect()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def overview() -> dict[str, Any]:
     conn = connection()
     try:
@@ -31,6 +34,7 @@ def _active_where(include_hidden: bool) -> str:
     return "1=1" if include_hidden else "COALESCE(novelty_status,'') NOT IN ('archived','rejected / hidden') AND COALESCE(queue_status,'') NOT IN ('archived','rejected')"
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", source: str = "All", region: str = "All", include_hidden: bool = False) -> dict[str, Any]:
     conn = connection()
     try:
@@ -54,10 +58,23 @@ def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", so
             ORDER BY COALESCE(score,0) DESC, COALESCE(last_updated_at,last_checked_at) DESC LIMIT ? OFFSET ?""",
             tuple(params + [page_size, offset]),
         ).fetchall()
+        return {"rows": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def opportunity_facets() -> dict[str, list[str]]:
+    """Load stable filter choices separately from paginated result rows."""
+    conn = connection()
+    try:
         facets = {}
         for key in ("source_type", "region"):
-            facets[key] = [str(r[0]) for r in conn.execute(f"SELECT DISTINCT {key} FROM opportunity_index WHERE {_active_where(False)} AND COALESCE({key},'')<>'' ORDER BY {key}").fetchall()]
-        return {"rows": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size, "facets": facets}
+            facets[key] = [str(r[0]) for r in conn.execute(
+                f"SELECT DISTINCT {key} FROM opportunity_index WHERE {_active_where(False)} "
+                f"AND COALESCE({key},'')<>'' ORDER BY {key}"
+            ).fetchall()]
+        return facets
     finally:
         conn.close()
 
@@ -85,6 +102,7 @@ def all_opportunities() -> list[dict[str, Any]]:
     finally: conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def entity_summary(field: str, limit: int = 100) -> list[dict[str, Any]]:
     if field not in {"company", "product", "molecule", "problem_category"}:
         raise ValueError("Unsupported entity field")
@@ -99,6 +117,7 @@ def entity_summary(field: str, limit: int = 100) -> list[dict[str, Any]]:
         conn.close()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def audit_queue() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     conn = connection()
     try:
@@ -110,7 +129,11 @@ def audit_queue() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 def save_audit(record: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     conn = connection()
-    try: return human_audit.save_audit_version(conn, record, payload)
+    try:
+        result = human_audit.save_audit_version(conn, record, payload)
+        audit_queue.clear()
+        overview.clear()
+        return result
     finally: conn.close()
 
 
@@ -140,6 +163,7 @@ def build_seller_case_study(limit: int, principal: dict[str, Any] | None = None)
         conn.close()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def seller_case_study_history(principal: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     principal = principal or {}
     conn = connection()
@@ -151,6 +175,7 @@ def seller_case_study_history(principal: dict[str, Any] | None = None) -> list[d
         conn.close()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def source_health() -> dict[str, Any]:
     conn = connection()
     try:
