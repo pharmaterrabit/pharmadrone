@@ -1,6 +1,11 @@
 name: PharmaTune scheduled refresh
 
 on:
+  # One-time regulator bootstrap: changing this workflow on main runs the
+  # official EMA, MHRA and FDA jobs against the production DATABASE_URL.
+  push:
+    branches: [main]
+    paths: [.github/workflows/pharmatune_refresh.yml]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -77,6 +82,15 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Bootstrap EMA, MHRA and FDA production data
+        if: github.event_name == 'push'
+        run: |
+          status=0
+          for source in ema_medicines mhra_medicine_recalls fda_orange_book; do
+            python -m pharmadrone.scheduler run-source "$source" --force --lookback-days "${SCHEDULER_LOOKBACK_DAYS}" || status=1
+          done
+          exit "$status"
 
       - name: Run due sources on schedule
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'due')
