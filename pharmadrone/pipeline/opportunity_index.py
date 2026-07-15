@@ -59,12 +59,22 @@ def source_type(opp: dict[str, Any]) -> str:
             if stype == "recall":
                 source_name = _norm(e.get("source_name"))
                 regulator = _norm((e.get("entities") or {}).get("regulator"))
+                ema_labels = {
+                    "ema direct healthcare professional communication": "EMA safety communication",
+                    "ema safety referral": "EMA safety referral",
+                    "ema periodic safety assessment outcome": "EMA safety assessment outcome",
+                    "ema withdrawn post-authorisation application": "EMA post-authorisation withdrawal",
+                }
+                if regulator == "ema" and source_name in ema_labels:
+                    return ema_labels[source_name]
                 if "mhra" in source_name or regulator == "mhra":
                     return "MHRA medicine recall"
                 return "FDA recall"
             if stype == "trial":
                 return "ClinicalTrials.gov trial"
             if stype == "shortage":
+                if _norm((e.get("entities") or {}).get("regulator")) == "ema":
+                    return "EMA medicine shortage"
                 return "FDA drug shortage"
             return str(stype)
     return str(opp.get("source_type") or "indexed evidence")

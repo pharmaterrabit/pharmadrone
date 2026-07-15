@@ -24,6 +24,11 @@ on:
         options:
           - fda_orange_book
           - ema_medicines
+          - ema_shortages
+          - ema_dhpc
+          - ema_safety_referrals
+          - ema_psusa_outcomes
+          - ema_post_authorisation_withdrawals
           - mhra_medicine_recalls
           - openfda_enforcement
           - openfda_shortages
@@ -87,7 +92,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           status=0
-          for source in ema_medicines mhra_medicine_recalls fda_orange_book; do
+          for source in ema_medicines ema_shortages ema_dhpc ema_safety_referrals ema_psusa_outcomes ema_post_authorisation_withdrawals mhra_medicine_recalls fda_orange_book; do
             python -m pharmadrone.scheduler run-source "$source" --force --lookback-days "${SCHEDULER_LOOKBACK_DAYS}" || status=1
           done
           exit "$status"
