@@ -91,6 +91,37 @@ def repair_regulator_source_labels(conn) -> int:
     return max(0, int(getattr(result, "rowcount", 0) or 0))
 
 
+def backfill_missing_scores(conn) -> int:
+    """Deterministically score indexed previews whose score/grade was never set.
+
+    This deliberately does not claim that a full report exists. It fills only
+    the always-available preview score, grade, status and stored JSON fields.
+    """
+    from . import score as opportunity_score
+
+    rows = conn.execute(
+        "SELECT stable_lead_id,lead_status,data_json FROM opportunity_index "
+        "WHERE score IS NULL OR grade IS NULL OR grade=''"
+    ).fetchall()
+    updated = 0
+    for raw in rows:
+        row = dict(raw)
+        try:
+            data = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            data = {}
+        scored = opportunity_score.deterministic_score(data)
+        status = lead_status({**scored, "lead_status": row.get("lead_status")})
+        payload = json.dumps({**scored, "stable_lead_id": row["stable_lead_id"]}, ensure_ascii=False, default=str)
+        conn.execute(
+            "UPDATE opportunity_index SET score=?,grade=?,lead_status=?,data_json=? "
+            "WHERE stable_lead_id=?",
+            (int(scored["score"]), str(scored["grade"]), status, payload, row["stable_lead_id"]),
+        )
+        updated += 1
+    return updated
+
+
 def source_id(opp: dict[str, Any]) -> str:
     """Best stable regulatory/source identifier available for a lead."""
     # Prefer structured FDA recall number / NCT / regulatory ID.
