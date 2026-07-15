@@ -5,6 +5,7 @@ from .database import (
     DatabaseUnavailableError,
     DatabaseConstraintError,
     open_connection,
+    ensure_migrations_once,
     dispose_engines,
     last_successful_operation,
 )
@@ -12,5 +13,5 @@ from .database import (
 __all__ = [
     "DatabaseConfig", "DatabaseConfigurationError", "configured_database",
     "DatabaseConnection", "DatabaseUnavailableError", "DatabaseConstraintError",
-    "open_connection", "dispose_engines", "last_successful_operation",
+    "open_connection", "ensure_migrations_once", "dispose_engines", "last_successful_operation",
 ]
