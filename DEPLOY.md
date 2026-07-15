@@ -1,10 +1,10 @@
 # Deploying PharmaDrone to a private cloud dashboard
 
-Goal: open the dashboard from any browser, password-protected, keys stored
-server-side, 5-report cap. Target: **Render Free**. Backup: Railway $5 (ask first).
+Goal: open the dashboard from any browser, password-protected, with keys stored
+as Streamlit Community Cloud secrets and a 5-report cap.
 
-You do the clicks; the repo is already configured (`render.yaml`, password gate,
-run cap). Budget ~10 minutes.
+The repository is configured for Streamlit Community Cloud (`app.py`, pinned
+dependencies, password gate and run cap).
 
 ---
 
@@ -32,31 +32,9 @@ keys and no secrets get pushed**. (Double-check: `git status` should not list `.
 
 ## Runtime stability note
 
-This build targets **Python 3.12.13** and pins Streamlit, pandas, numpy and pyarrow in `requirements.txt`. This avoids accidental upgrades to latest native wheels on Streamlit Cloud/Render, which can produce hard runtime crashes such as segmentation faults rather than normal Python tracebacks.
+This build targets **Python 3.12.13** and pins Streamlit, pandas, numpy and pyarrow in `requirements.txt`. This avoids accidental upgrades to native wheels on Streamlit Community Cloud, which can produce hard runtime crashes such as segmentation faults rather than normal Python tracebacks.
 
-Two supported paths. Both read the same code; only where secrets live differs.
-
-### Option A — Render Free (env vars)
-
-1. Go to https://render.com and sign in with GitHub.
-2. Click **New +** → **Blueprint**.
-3. Select your private `pharmadrone` repo. Render reads `render.yaml` and shows a
-   `pharmadrone` web service on the **Free** plan.
-4. It will prompt for the secret env vars (the ones marked "sync: false"). You do
-   **not** need a Gemini key. Fill in only:
-   - `APP_PASSWORD` — **choose the password you'll type to open the dashboard**
-   - `OPENROUTER_API_KEY` — for the default provider (get it at openrouter.ai/keys)
-   - `TAVILY_API_KEY` — web search
-   - Leave the other LLM keys (`GROQ_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`)
-     **blank** unless you switch `LLM_PROVIDER` to one of them.
-   (The non-secret ones — `LLM_PROVIDER=openrouter`,
-   `LLM_MODEL=...:free`, `MAX_REPORTS_PER_RUN=5`, `ALLOW_SCALE_RUNS=false`,
-   `PYTHON_VERSION=3.12.13` — are already filled from the blueprint.)
-5. Click **Apply** / **Create**. First build takes a few minutes.
-6. When it's live, Render shows a URL like `https://pharmadrone.onrender.com`.
-   Open it → password screen → enter your `APP_PASSWORD`.
-
-### Option B — Streamlit Community Cloud (st.secrets)
+### Streamlit Community Cloud (`st.secrets`)
 
 Streamlit Cloud's secrets panel uses TOML and is read via `st.secrets`, not
 plain environment variables. The app already checks `st.secrets` automatically
@@ -73,15 +51,8 @@ as a fallback, so this works with no code changes.
 
 `requirements.txt` and `.python-version` are pinned for a stable Python 3.12 deployment. In Streamlit Cloud, select Python 3.12 in Advanced settings if shown, then deploy with the pinned `requirements.txt`.
 
-Whichever you pick, the app behaves identically: same password gate, same 5-report
-cap, same hidden scale buttons.
-
----
-
 ## Where to add or change keys later
 
-- **Render:** service → **Environment** tab → edit values → **Save Changes**
-  (auto-redeploys).
 - **Streamlit Community Cloud:** app → **⋮ → Settings → Secrets** → edit the
   TOML → **Save** (auto-reruns).
 
@@ -126,36 +97,23 @@ Scale runs stay locked until you set `ALLOW_SCALE_RUNS=true`.
 
 ---
 
-## Render Free / Streamlit Community Cloud — things to know
+## Streamlit Community Cloud — things to know
 
-Both are free tiers with similar tradeoffs:
-
-- **Sleeps when idle** (Render ~15 min; Streamlit Cloud similar). Cold start on
+- **Sleeps when idle.** A cold start on
   next visit takes ~30–60s. Fine for private use.
-- **Limited RAM** (Render 512 MB; Streamlit Cloud ~1 GB). v1 fits (no browser
+- **Limited RAM.** v1 fits (no browser
   automation). If a run ever gets killed for memory, keep to the 5-report cap
   or reduce active regions/sources.
-- **Disk is ephemeral** on both. Files in `./reports` are wiped on
+- **Disk is ephemeral.** Files in `./reports` are wiped on
   restart/redeploy/reboot, so **download the .zip during your session**. The
   dashboard makes this one click.
-
----
-
-## If Render Free won't cooperate (backup)
-
-If the free instance keeps OOM-ing or won't stay up, the usual fix is **Railway
-at ~$5/month** (more RAM, no sleep, persistent volume). That's paid, so **tell me
-first and I'll walk you through it** — I won't move you to paid hosting without
-your go-ahead. Railway steps are almost identical: connect the private repo, set
-the same env vars, start command
-`streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`.
 
 ---
 
 ## Security checklist
 
 - [x] `APP_PASSWORD` set → dashboard is gated
-- [x] Keys in Render env vars only (server-side), never in the repo
+- [x] Keys in Streamlit secrets only (server-side), never in the repo
 - [x] `.env` / secrets git-ignored
 - [x] Password compared in Python on the server — not exposed to frontend JS
 - [x] Run capped at 5 per click; scale buttons hidden
@@ -192,7 +150,7 @@ The human audit registry uses separate SQLite tables in `pharmadrone.db`. Audit 
 
 ## Production configuration
 
-Set these environment variables in Streamlit Cloud, Render, Railway, or the chosen host:
+Set these values in Streamlit Community Cloud secrets:
 
 ```text
 APP_ENV=production

@@ -1,5 +1,5 @@
-# Deployment-stable dependency set for Streamlit Cloud / Render.
-# Python target: 3.12.x (see .python-version and render.yaml).
+# Deployment-stable dependency set for Streamlit Community Cloud.
+# Python target: 3.12.x (see .python-version).
 # Pins intentionally avoid unbounded latest numpy/pandas/pyarrow/streamlit wheels,
 # which can cause native runtime instability on hosted Linux images.
 streamlit==1.40.2

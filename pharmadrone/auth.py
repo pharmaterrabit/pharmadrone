@@ -1,7 +1,7 @@
 """Server-side password gate and role resolution for PharmaTune.
 
-The password lives ONLY in the server-side config value APP_PASSWORD (a real env
-var on Render/Railway, or a Streamlit Community Cloud secret). It is compared in
+The password lives ONLY in the server-side config value APP_PASSWORD (a local
+environment variable or a Streamlit Community Cloud secret). It is compared in
 Python on the server; it is never sent to the browser or embedded in any
 frontend JavaScript. If APP_PASSWORD is unset, the app runs but warns loudly —
 so a cloud deploy is never accidentally left open.
@@ -33,8 +33,8 @@ def require_password() -> dict[str, str]:
 
     if not credentials:
         st.warning("⚠ No APP_PASSWORD set — this instance is UNPROTECTED. "
-                   "Set APP_PASSWORD as an environment variable (Render/Railway) "
-                   "or a Streamlit secret before sharing the URL.")
+                   "Set APP_PASSWORD as a Streamlit secret (or a local environment "
+                   "variable during development) before sharing the URL.")
         return {"role": "analyst_reviewer", "display_name": "Unprotected local user", "organisation_id": ""}
 
     principal = st.session_state.get("auth_principal")
