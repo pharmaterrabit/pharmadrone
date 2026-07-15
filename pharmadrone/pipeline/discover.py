@@ -34,6 +34,8 @@ PROBLEM_KEYWORDS = [
     "recall", "dose burden", "adherence burden",
     "drug shortage", "supply disruption", "manufacturing delay",
     "availability signal", "discontinuation signal",
+    "safety communication", "regulatory safety review",
+    "regulatory safety outcome", "withdrawn post-authorisation application",
     "failed assay", "assay", "potency", "subpotent", "superpotent",
     "content uniformity", "failed specifications", "out of specification",
     "oos", "particulate", "visible particles", "endotoxin",

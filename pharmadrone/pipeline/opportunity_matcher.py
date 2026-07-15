@@ -803,6 +803,15 @@ def _source_type_label(evidence: list[dict[str, Any]]) -> str:
         stype = _norm(e.get("source_type") or "")
         if stype == "recall" and "mhra" in _norm(e.get("source_name") or ""):
             label = "MHRA medicine recall"
+        elif stype == "recall" and "ema" in _norm(e.get("source_name") or ""):
+            label = {
+                "EMA direct healthcare professional communication": "EMA safety communication",
+                "EMA safety referral": "EMA safety referral",
+                "EMA periodic safety assessment outcome": "EMA safety assessment outcome",
+                "EMA withdrawn post-authorisation application": "EMA post-authorisation withdrawal",
+            }.get(e.get("source_name"), "EMA regulatory signal")
+        elif stype == "shortage" and "ema" in _norm(e.get("source_name") or ""):
+            label = "EMA medicine shortage"
         else:
             label = labels.get(stype, stype or _norm(e.get("source_category") or ""))
         if label and label not in seen:

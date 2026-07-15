@@ -22,6 +22,11 @@ class SourceSpec:
 SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec("fda_orange_book", "regulatory lifecycle", "monthly"),
     SourceSpec("ema_medicines", "regulatory catalogue", "daily"),
+    SourceSpec("ema_shortages", "regulatory shortage", "daily", creates_opportunities=True),
+    SourceSpec("ema_dhpc", "regulatory safety communication", "daily", creates_opportunities=True),
+    SourceSpec("ema_safety_referrals", "regulatory safety referral", "daily", creates_opportunities=True),
+    SourceSpec("ema_psusa_outcomes", "regulatory safety outcome", "daily", creates_opportunities=True),
+    SourceSpec("ema_post_authorisation_withdrawals", "regulatory withdrawal", "daily", creates_opportunities=True),
     SourceSpec("mhra_medicine_recalls", "regulatory recall", "daily", creates_opportunities=True),
     SourceSpec("openfda_enforcement", "regulatory", "daily", creates_opportunities=True),
     SourceSpec("openfda_shortages", "regulatory", "daily", creates_opportunities=True),

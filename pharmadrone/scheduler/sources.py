@@ -15,7 +15,7 @@ import httpx
 
 from .. import db, settings
 from ..connectors import (
-    fda_orange_book, ema_medicines, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
+    fda_orange_book, ema_medicines, ema_opportunities, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
     europepmc, openalex, crossref, tavily_search,
 )
 from ..cost import CostTracker
@@ -103,6 +103,39 @@ def fetch_ema_medicines(conn, state: dict[str, Any], guards: Guardrails, *, forc
         "watermark_after": watermark,
         "metadata": {**stats, "incremental_strategy": "EMA feed timestamp, record last-update watermark and bounded lookback"},
     }
+
+
+def fetch_ema_opportunity_feed(feed_name: str, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    res = ema_opportunities.fetch(feed_name, max_results=min(5000, guards.max_records_per_connector))
+    records, stats = _result_or_raise(res, feed_name)
+    previous = str(state.get("last_watermark") or "")
+    if previous and not force:
+        records = [item for item in records if _date_after_lookback(
+            str((item.get("entities") or {}).get("last_update_date") or ""), previous, guards.lookback_days
+        )]
+    watermark = max([str((item.get("entities") or {}).get("last_update_date") or "") for item in records] + [previous])
+    return {"records": records, "cursor_after": f"feed:{stats.get('feed_timestamp') or 'unknown'}",
+            "watermark_after": watermark, "metadata": {**stats, "incremental_strategy": "official EMA event feed, watermark, lookback and checksum"}}
+
+
+def fetch_ema_shortages(conn, state, guards, *, force=False):
+    return fetch_ema_opportunity_feed("ema_shortages", state, guards, force=force)
+
+
+def fetch_ema_dhpc(conn, state, guards, *, force=False):
+    return fetch_ema_opportunity_feed("ema_dhpc", state, guards, force=force)
+
+
+def fetch_ema_safety_referrals(conn, state, guards, *, force=False):
+    return fetch_ema_opportunity_feed("ema_safety_referrals", state, guards, force=force)
+
+
+def fetch_ema_psusa_outcomes(conn, state, guards, *, force=False):
+    return fetch_ema_opportunity_feed("ema_psusa_outcomes", state, guards, force=force)
+
+
+def fetch_ema_post_authorisation_withdrawals(conn, state, guards, *, force=False):
+    return fetch_ema_opportunity_feed("ema_post_authorisation_withdrawals", state, guards, force=force)
 
 
 def fetch_mhra_medicine_recalls(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
@@ -351,6 +384,11 @@ def fetch_tavily(conn, state: dict[str, Any], guards: Guardrails, *, force: bool
 FETCHERS = {
     "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
+    "ema_shortages": fetch_ema_shortages,
+    "ema_dhpc": fetch_ema_dhpc,
+    "ema_safety_referrals": fetch_ema_safety_referrals,
+    "ema_psusa_outcomes": fetch_ema_psusa_outcomes,
+    "ema_post_authorisation_withdrawals": fetch_ema_post_authorisation_withdrawals,
     "mhra_medicine_recalls": fetch_mhra_medicine_recalls,
     "openfda_enforcement": fetch_openfda_enforcement,
     "openfda_shortages": fetch_openfda_shortages,
