@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from .. import db
-from ..pipeline import discover, opportunity_index
+from ..pipeline import discover, opportunity_index, score
 from .config import guardrails, source_spec, source_names, utc_now
 from .errors import SchedulerError, classify_error, safe_summary
 from . import repository, sources
@@ -91,6 +91,11 @@ def _generate_opportunities(conn, material_records: list[dict[str, Any]]) -> dic
     candidates, _breakdown = discover.discover_candidates(eligible, min_cluster_evidence=1)
     if not candidates:
         return {"opportunities_created": 0, "opportunities_updated": 0, "candidates": 0}
+    # Every indexed preview must have a useful deterministic score and grade.
+    # Full LLM enrichment/report generation remains a separate, optional step.
+    for candidate in candidates:
+        if candidate.get("score") is None or not candidate.get("grade"):
+            score.deterministic_score(candidate)
     rank_row = conn.execute("SELECT COALESCE(MAX(queue_rank),0) AS n FROM opportunity_index").fetchone()
     counts = opportunity_index.upsert_index_records(
         conn, candidates, queue_status="waiting", has_full_report=False,
@@ -172,6 +177,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                         "opportunities_created": 0, "opportunities_updated": 0, "candidates": 0
                     }
                     repaired_labels = opportunity_index.repair_regulator_source_labels(conn)
+                    scoring_backfill = opportunity_index.backfill_missing_scores(conn)
                     result = {
                         "records_retrieved": ingest["retrieved"],
                         "records_created": ingest["created"],
@@ -184,7 +190,8 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                         "watermark_after": fetch_result.get("watermark_after") or ingest.get("watermark_after") or state.get("last_watermark"),
                         "estimated_spend": float(fetch_result.get("estimated_spend", 0) or 0),
                         "metadata": {**(fetch_result.get("metadata") or {}), **generated,
-                                     "regulator_source_labels_repaired": repaired_labels},
+                                     "regulator_source_labels_repaired": repaired_labels,
+                                     "missing_scores_backfilled": scoring_backfill},
                     }
                 after = _benchmark_snapshot(conn)
                 if before != after:
