@@ -15,6 +15,9 @@ NAV = {
 }
 
 HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}
+NAV_OPTIONS = [page for group in NAV.values() for page in group]
+NAVIGATION_KEY = "navigation_page"
+PENDING_NAVIGATION_KEY = "_pending_navigation_page"
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -25,16 +28,35 @@ def _database_status() -> dict:
 
 def _navigate(page: str) -> None:
     st.session_state["page"] = page
+    st.session_state[PENDING_NAVIGATION_KEY] = HIDDEN_ROUTE_PARENT.get(page, page)
     st.rerun()
+
+
+def _sync_navigation() -> None:
+    """Copy a sidebar click to the active route before Streamlit reruns."""
+    selected = st.session_state[NAVIGATION_KEY]
+    current = st.session_state.get("page", "Overview")
+    if HIDDEN_ROUTE_PARENT.get(current) != selected:
+        st.session_state["page"] = selected
 
 
 def _sidebar() -> str:
     with st.sidebar:
         st.markdown('<div class="pt-brand"><div class="pt-mark">P</div><div><b>PharmaTune</b><small>Intelligence Platform</small></div></div>',unsafe_allow_html=True)
         current=st.session_state.get("page","Overview")
-        options=[p for group in NAV.values() for p in group]
-        visible_current=current if current in options else HIDDEN_ROUTE_PARENT.get(current,"Overview")
-        selected=st.radio("Navigation",options,index=options.index(visible_current),label_visibility="collapsed")
+        visible_current=current if current in NAV_OPTIONS else HIDDEN_ROUTE_PARENT.get(current,"Overview")
+        pending = st.session_state.pop(PENDING_NAVIGATION_KEY, None)
+        if pending in NAV_OPTIONS:
+            st.session_state[NAVIGATION_KEY] = pending
+        elif NAVIGATION_KEY not in st.session_state:
+            st.session_state[NAVIGATION_KEY] = visible_current
+        selected=st.radio(
+            "Navigation",
+            NAV_OPTIONS,
+            key=NAVIGATION_KEY,
+            on_change=_sync_navigation,
+            label_visibility="collapsed",
+        )
         st.markdown("---")
         st.markdown(theme.badge("Analyst workspace","blue"),unsafe_allow_html=True)
         st.caption("Evidence-backed opportunity signals. Human validation required.")
@@ -52,13 +74,7 @@ def run(principal: dict | None = None) -> None:
         st.error("PharmaTune cannot connect to its durable database. Production remains closed rather than using a disposable fallback.")
         st.caption(str(exc)); st.stop()
     selected=_sidebar()
-    current=st.session_state.get("page","Overview")
-    if HIDDEN_ROUTE_PARENT.get(current) == selected:
-        page=current
-    else:
-        if selected!=current:
-            st.session_state["page"]=selected
-        page=st.session_state.get("page","Overview")
+    page=st.session_state.get("page",selected)
     routes={
         "Overview":pages.overview,
         "Opportunity Explorer":lambda:pages.explorer(_navigate),
