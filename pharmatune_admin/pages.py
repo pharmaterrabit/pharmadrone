@@ -22,6 +22,12 @@ def _safe_index(options: list[str], value: str, fallback: str) -> int:
     return options.index(value) if value in options else options.index(fallback)
 
 
+def _refresh_after_write() -> None:
+    """Invalidate bounded read caches only after a successful admin mutation."""
+    st.cache_data.clear()
+    st.rerun()
+
+
 def platform_overview(principal, state):
     theme.page_header("Platform Overview", "Live multi-tenant, persistence and source-operation status.", "Platform Admin")
     sched, dbs = state["scheduler"], state["database"]
@@ -42,7 +48,7 @@ def organisations(principal, state):
     with st.form("create_org"):
         name=st.text_input("Organisation name"); plan=st.selectbox("Plan",["Unassigned","Pilot","Enterprise"])
         if st.form_submit_button("Create organisation",type="primary"):
-            try: admin.create_organisation(principal,name,plan); st.success("Organisation created."); st.rerun()
+            try: admin.create_organisation(principal,name,plan); st.success("Organisation created."); _refresh_after_write()
             except Exception as exc: st.error(str(exc))
     _table(state["organisations"],"No organisations provisioned",["organisation_id","name","slug","plan_name","status","retention_days","created_at"])
 
@@ -54,7 +60,7 @@ def workspaces(principal, state):
         with st.form("create_ws"):
             label=st.selectbox("Organisation",list(orgs)); name=st.text_input("Workspace name")
             if st.form_submit_button("Create workspace",type="primary"):
-                try: admin.create_workspace(principal,orgs[label],name); st.success("Workspace created."); st.rerun()
+                try: admin.create_workspace(principal,orgs[label],name); st.success("Workspace created."); _refresh_after_write()
                 except Exception as exc: st.error(str(exc))
     _table(state["workspaces"],"No workspaces provisioned",["workspace_id","organisation_id","name","status","created_at"])
 
@@ -67,7 +73,7 @@ def users(principal, state):
             c1,c2=st.columns(2); name=c1.text_input("Display name"); email=c2.text_input("Email")
             org_label=st.selectbox("Organisation",list(orgs)); role=st.selectbox("Role",admin.ROLES)
             if st.form_submit_button("Invite user",type="primary"):
-                try: admin.invite_user(principal,orgs[org_label],email,name,role); st.success("Invitation recorded."); st.rerun()
+                try: admin.invite_user(principal,orgs[org_label],email,name,role); st.success("Invitation recorded."); _refresh_after_write()
                 except Exception as exc: st.error(str(exc))
     _table(state["users"],"No users provisioned",["user_id","display_name","email","organisation_id","role_name","status","mfa_enabled","last_login_at"])
 
@@ -89,8 +95,8 @@ def connectors(principal, state):
         names=[r["source_name"] for r in sources]; selected=st.selectbox("Source operation",names)
         row=next(r for r in sources if r["source_name"]==selected); c1,c2=st.columns(2)
         if c1.button("Disable" if int(row.get("enabled") or 0) else "Enable",use_container_width=True):
-            admin.set_source_enabled(principal,selected,not bool(int(row.get("enabled") or 0))); st.rerun()
-        if c2.button("Queue for next orchestrator run",use_container_width=True): admin.queue_source_run(principal,selected); st.rerun()
+            admin.set_source_enabled(principal,selected,not bool(int(row.get("enabled") or 0))); _refresh_after_write()
+        if c2.button("Queue for next orchestrator run",use_container_width=True): admin.queue_source_run(principal,selected); _refresh_after_write()
 
 
 def jobs(principal, state):
@@ -138,7 +144,7 @@ def feature_flags(principal, state):
     if state["flags"]:
         keys=[r["scope_key"] for r in state["flags"]]; key=st.selectbox("Flag operation",keys); row=next(r for r in state["flags"] if r["scope_key"]==key)
         if st.button("Disable flag" if int(row.get("enabled") or 0) else "Enable flag"):
-            admin.set_feature_flag(principal,key,not bool(int(row.get("enabled") or 0))); st.rerun()
+            admin.set_feature_flag(principal,key,not bool(int(row.get("enabled") or 0))); _refresh_after_write()
 
 
 def system_configuration(principal, state):
@@ -164,7 +170,7 @@ def workspace_administration(principal, state):
         c1,c2=st.columns(2); name=c1.text_input("Display name"); email=c2.text_input("Email")
         role=st.selectbox("Workspace role",[admin.WORKSPACE_ADMIN,admin.ANALYST,admin.READ_ONLY])
         if st.form_submit_button("Invite member",type="primary"):
-            try: admin.invite_user(principal,org_id,email,name,role); st.success("Invitation recorded."); st.rerun()
+            try: admin.invite_user(principal,org_id,email,name,role); st.success("Invitation recorded."); _refresh_after_write()
             except Exception as exc: st.error(str(exc))
     settings=state.get("settings") or {}
     with st.form("ws_settings"):
@@ -173,6 +179,6 @@ def workspace_administration(principal, state):
         notify=st.selectbox("Notifications",notification_options,index=_safe_index(notification_options,settings.get("notification_mode","daily_digest"),"daily_digest"))
         retention=st.number_input("Data retention days",30,3650,int(settings.get("retention_days",2555))); mfa=st.checkbox("Require MFA",value=bool(settings.get("mfa_required",1)))
         if st.form_submit_button("Save workspace settings"):
-            try: admin.update_workspace_settings(principal,org_id,export_policy=export,notification_mode=notify,retention_days=int(retention),mfa_required=mfa); st.success("Settings saved."); st.rerun()
+            try: admin.update_workspace_settings(principal,org_id,export_policy=export,notification_mode=notify,retention_days=int(retention),mfa_required=mfa); st.success("Settings saved."); _refresh_after_write()
             except Exception as exc: st.error(str(exc))
     st.markdown("### Workspace audit activity"); _table(state["events"],"No workspace administration events",["created_at","actor_name","event_type","severity","safe_summary"])

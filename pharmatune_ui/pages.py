@@ -54,9 +54,9 @@ def explorer(navigate: Callable[[str], None]) -> None:
     with st.container():
         q1,q2,q3,q4 = st.columns([2.2,1,1,0.8])
         search = q1.text_input("Search", placeholder="Company, product, problem or source ID", key="opp_search")
-        initial = data.opportunity_page(page=1,page_size=1)
-        source = q2.selectbox("Source", ["All"]+initial["facets"]["source_type"], key="opp_source")
-        region = q3.selectbox("Region", ["All"]+initial["facets"]["region"], key="opp_region")
+        facets = data.opportunity_facets()
+        source = q2.selectbox("Source", ["All"]+facets["source_type"], key="opp_source")
+        region = q3.selectbox("Region", ["All"]+facets["region"], key="opp_region")
         size = q4.selectbox("Rows", [10,25,50], index=1, key="opp_size")
     page = int(st.session_state.get("opp_page",1))
     result = data.opportunity_page(page=page,page_size=size,search=search,source=source,region=region)

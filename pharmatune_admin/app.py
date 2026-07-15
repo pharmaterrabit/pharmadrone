@@ -15,6 +15,16 @@ PLATFORM_NAV = (
 )
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _snapshot(role: str, display_name: str, organisation_id: str) -> dict:
+    """Reuse one bounded administration snapshot during warm navigation."""
+    return admin.snapshot({
+        "role": role,
+        "display_name": display_name,
+        "organisation_id": organisation_id,
+    })
+
+
 def run(principal: dict) -> None:
     theme.inject()
     role = principal.get("role")
@@ -35,7 +45,11 @@ def run(principal: dict) -> None:
         if st.button("Sign out", use_container_width=True):
             auth.sign_out()
     try:
-        state = admin.snapshot(principal)
+        state = _snapshot(
+            str(principal.get("role") or ""),
+            str(principal.get("display_name") or ""),
+            str(principal.get("organisation_id") or ""),
+        )
     except Exception as exc:
         st.error("Administration data could not be loaded safely.")
         st.caption(str(exc)); st.stop()
@@ -58,4 +72,3 @@ def run(principal: dict) -> None:
     }
     routes[selected](principal, state)
     st.markdown('<div class="pt-mono" style="margin-top:40px;border-top:1px solid rgba(151,168,205,.13);padding-top:14px">PharmaTune Administration · role-scoped server-side · secrets hidden</div>', unsafe_allow_html=True)
-

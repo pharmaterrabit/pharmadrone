@@ -17,6 +17,12 @@ NAV = {
 HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _database_status() -> dict:
+    """Bound shell health checks so navigation does not re-query Neon twice."""
+    return db.database_status()
+
+
 def _navigate(page: str) -> None:
     st.session_state["page"] = page
     st.rerun()
@@ -41,7 +47,7 @@ def run(principal: dict | None = None) -> None:
         st.error("This account is assigned to an administration workspace.")
         st.stop()
     try:
-        conn=db.connect(); conn.close(); status=db.database_status()
+        status=_database_status()
     except (DatabaseConfigurationError,DatabaseUnavailableError,RuntimeError) as exc:
         st.error("PharmaTune cannot connect to its durable database. Production remains closed rather than using a disposable fallback.")
         st.caption(str(exc)); st.stop()

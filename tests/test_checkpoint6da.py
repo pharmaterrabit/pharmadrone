@@ -41,6 +41,16 @@ class Checkpoint6DATests(unittest.TestCase):
         text = (ROOT / "pharmatune_ui" / "data.py").read_text(encoding="utf-8")
         self.assertIn("LIMIT ? OFFSET ?", text)
 
+    def test_warm_navigation_uses_bounded_caches_without_duplicate_explorer_query(self):
+        shell = (ROOT / "pharmatune_ui" / "app.py").read_text(encoding="utf-8")
+        data = (ROOT / "pharmatune_ui" / "data.py").read_text(encoding="utf-8")
+        page = (ROOT / "pharmatune_ui" / "pages.py").read_text(encoding="utf-8")
+        admin_app = (ROOT / "pharmatune_admin" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("@st.cache_data(ttl=30", shell)
+        self.assertIn("def opportunity_facets()", data)
+        self.assertNotIn("opportunity_page(page=1,page_size=1)", page)
+        self.assertIn("@st.cache_data(ttl=15", admin_app)
+
     def test_hidden_detail_route_preserves_explorer_parent(self):
         text = (ROOT / "pharmatune_ui" / "app.py").read_text(encoding="utf-8")
         self.assertIn('HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}', text)
