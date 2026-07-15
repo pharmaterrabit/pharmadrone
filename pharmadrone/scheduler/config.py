@@ -20,6 +20,7 @@ class SourceSpec:
 
 
 SOURCE_SPECS: tuple[SourceSpec, ...] = (
+    SourceSpec("fda_orange_book", "regulatory lifecycle", "monthly"),
     SourceSpec("ema_medicines", "regulatory catalogue", "daily"),
     SourceSpec("mhra_medicine_recalls", "regulatory recall", "daily", creates_opportunities=True),
     SourceSpec("openfda_enforcement", "regulatory", "daily", creates_opportunities=True),

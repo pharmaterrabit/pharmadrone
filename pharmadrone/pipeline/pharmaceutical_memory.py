@@ -135,6 +135,54 @@ def sync_ema_medicines(conn) -> dict[str, int]:
     return memory_metrics(conn)
 
 
+def sync_fda_orange_book(conn) -> dict[str, int]:
+    """Project official FDA product/lifecycle facts without creating problem signals."""
+    rows = conn.execute(
+        "SELECT source_id,official_source_url,record_json FROM source_records "
+        "WHERE source_type='fda_orange_book_product' AND active=1 ORDER BY source_id"
+    ).fetchall()
+    observed_at = _now()
+    for stored in rows:
+        item = dict(stored)
+        try:
+            regulatory = json.loads(item.get("record_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        entities = regulatory.get("entities") or {}
+        company_name = str(entities.get("company") or "").strip()
+        product_name = str(entities.get("product") or "").strip()
+        molecule_name = str(entities.get("molecule") or "").strip()
+        if not product_name:
+            continue
+        company = _upsert_entity(conn, "company", company_name, observed_at) if company_name else ""
+        product = _upsert_entity(conn, "product", product_name, observed_at)
+        molecule = _upsert_entity(conn, "molecule", molecule_name, observed_at) if molecule_name else ""
+        source_id = str(item.get("source_id") or "")
+        evidence = {"stable_lead_id": f"fda-ob:{source_id}", "source_type": "fda_orange_book_product",
+                    "source_id": source_id, "evidence_links_json": json.dumps([{"url": item.get("official_source_url") or ""}])}
+        if company:
+            _upsert_relationship(conn, company, "fda_application_holder_for", product, evidence, observed_at,
+                                 evidence_status="official FDA Orange Book fact")
+        if molecule:
+            _upsert_relationship(conn, product, "has_active_ingredient", molecule, evidence, observed_at,
+                                 evidence_status="official FDA Orange Book fact")
+        for patent in entities.get("patents") or []:
+            number = str((patent or {}).get("patent_number") or "").strip()
+            if number:
+                patent_entity = _upsert_entity(conn, "patent", number, observed_at)
+                _upsert_relationship(conn, product, "has_listed_patent", patent_entity, evidence, observed_at,
+                                     evidence_status="applicant-submitted FDA Orange Book listing")
+        for exclusivity in entities.get("exclusivities") or []:
+            code = str((exclusivity or {}).get("code") or "").strip()
+            expiry = str((exclusivity or {}).get("expiry_date") or "").strip()
+            if code:
+                entity = _upsert_entity(conn, "exclusivity", f"{code} · {expiry}" if expiry else code, observed_at)
+                _upsert_relationship(conn, product, "has_fda_exclusivity", entity, evidence, observed_at,
+                                     evidence_status="official FDA Orange Book fact")
+    conn.commit()
+    return memory_metrics(conn)
+
+
 def memory_metrics(conn) -> dict[str, int]:
     entity_counts = {
         str(row["entity_type"]): int(row["n"])

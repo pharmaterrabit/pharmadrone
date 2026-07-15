@@ -311,8 +311,16 @@ def sources() -> None:
             for alert_class, count in sorted(mhra["classes"].items())
         ]), use_container_width=True, hide_index=True)
     st.caption("Only explicit MHRA medicine recall or defect descriptions can support a problem signal. General safety and device alerts are not converted into medicine opportunities.")
+    fda = data.fda_orange_book_coverage()
+    st.markdown("### US Food and Drug Administration — Orange Book")
+    f1,f2,f3,f4 = st.columns(4)
+    f1.metric("FDA products retained", f"{fda.get('total', 0):,}")
+    f2.metric("Listed patents", f"{fda.get('patents', 0):,}")
+    f3.metric("Exclusivity entries", f"{fda.get('exclusivities', 0):,}")
+    f4.metric("Latest source update", fda.get("latest_update") or "Not ingested yet")
+    st.caption("Orange Book product, patent and exclusivity records are regulatory lifecycle context. Patent listings are not legal advice, proof of freedom to operate, product failure or commercial demand.")
     st.markdown("### Planned source families")
-    for name in ("PMDA and further global regulators","Company news, deals and funding","Patent families and ownership","University technology transfer"):
+    for name in ("PMDA and further global regulators","Company news, deals and funding","Global patent families and ownership","University technology transfer"):
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])
 
 
