@@ -546,6 +546,53 @@ def _seller_case_study_schema(conn) -> None:
     """)
 
 
+def _pharmaceutical_memory_schema(conn) -> None:
+    """Evidence-derived entities, relationships and append-only observations."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS memory_entities (
+        entity_id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        canonical_key TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_seen_at TEXT NOT NULL DEFAULT {ts},
+        UNIQUE(entity_type, canonical_key)
+    );
+    CREATE TABLE IF NOT EXISTS memory_relationships (
+        relationship_id TEXT PRIMARY KEY,
+        subject_entity_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL,
+        object_entity_id TEXT NOT NULL,
+        stable_lead_id TEXT NOT NULL,
+        source_type TEXT,
+        source_id TEXT,
+        evidence_url TEXT,
+        evidence_status TEXT NOT NULL DEFAULT 'requires validation',
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_seen_at TEXT NOT NULL DEFAULT {ts},
+        UNIQUE(subject_entity_id, relationship_type, object_entity_id, stable_lead_id),
+        FOREIGN KEY (subject_entity_id) REFERENCES memory_entities(entity_id),
+        FOREIGN KEY (object_entity_id) REFERENCES memory_entities(entity_id)
+    );
+    CREATE TABLE IF NOT EXISTS memory_observations (
+        id {ident},
+        stable_lead_id TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE(stable_lead_id, observation_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_entities_type ON memory_entities(entity_type, display_name);
+    CREATE INDEX IF NOT EXISTS idx_memory_relationship_subject ON memory_relationships(subject_entity_id, relationship_type);
+    CREATE INDEX IF NOT EXISTS idx_memory_relationship_object ON memory_relationships(object_entity_id, relationship_type);
+    CREATE INDEX IF NOT EXISTS idx_memory_relationship_lead ON memory_relationships(stable_lead_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_observation_lead ON memory_observations(stable_lead_id, observed_at DESC);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -554,6 +601,7 @@ MIGRATIONS = (
     Migration(5, "checkpoint_6c1_scheduler_schema", _scheduler_schema),
     Migration(6, "checkpoint_6db_administration_schema", _administration_schema),
     Migration(7, "checkpoint_7a_seller_case_study_schema", _seller_case_study_schema),
+    Migration(8, "phase_7_pharmaceutical_memory_schema", _pharmaceutical_memory_schema),
 )
 
 

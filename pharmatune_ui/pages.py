@@ -292,6 +292,42 @@ def sources() -> None:
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])
 
 
+def pharmaceutical_memory() -> None:
+    theme.page_header(
+        "Pharmaceutical Memory",
+        "Durable, evidence-derived relationships between companies, products, molecules and public problem signals.",
+        "Phase 7",
+    )
+    search = st.text_input("Find a company", placeholder="Search the remembered company index")
+    result = data.pharmaceutical_memory(search)
+    metrics = result["metrics"]
+    a,b,c,d = st.columns(4)
+    a.metric("Companies", metrics.get("company", 0))
+    b.metric("Products", metrics.get("product", 0))
+    c.metric("Relationships", metrics.get("relationships", 0))
+    d.metric("Historical observations", metrics.get("observations", 0))
+    st.info("Memory is derived only from stored PharmaTune evidence. A remembered relationship is not proof of current commercial need or confirmed root cause.")
+    companies = result["companies"]
+    if not companies:
+        theme.empty("No company memory found", "Try a broader company search or refresh the opportunity index.", "No results")
+        return
+    labels = {f"{row['display_name']} · {row['opportunity_signals']} signals": row for row in companies}
+    selected = labels[st.selectbox("Company memory", list(labels))]
+    relationships = data.pharmaceutical_memory_relationships(selected["entity_id"])
+    st.caption(f"{selected['opportunity_signals']} evidence-backed opportunity signals · last seen {selected.get('last_seen_at') or 'Not recorded'}")
+    if relationships:
+        frame = pd.DataFrame([{
+            "Relationship": row.get("relationship_type", "").replace("_", " ").title(),
+            "Entity type": row.get("entity_type", "").title(),
+            "Remembered entity": row.get("display_name"),
+            "Evidence source": row.get("source_type"),
+            "Source ID": row.get("source_id"),
+            "Status": row.get("evidence_status"),
+            "Lead ID": row.get("stable_lead_id"),
+        } for row in relationships])
+        st.dataframe(frame, use_container_width=True, hide_index=True)
+
+
 def health() -> None:
     theme.page_header("System Health", "Live persistence and scheduler telemetry. No credentials or connection strings are displayed.", "Platform")
     info=data.source_health(); dbs=info["database"]; sched=info["summary"]; latest=sched.get("latest_run") or {}

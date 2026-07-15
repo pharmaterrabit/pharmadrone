@@ -10,7 +10,7 @@ from . import pages, theme
 NAV = {
     "DISCOVER":["Overview","Opportunity Explorer","Companies","Products","Technologies"],
     "INTELLIGENCE":["Research & Innovation","Regulatory Signals","Deals & Funding","Patents"],
-    "WORKFLOW":["Human Validation","Case Studies"],
+    "WORKFLOW":["Human Validation","Case Studies","Pharmaceutical Memory"],
     "PLATFORM":["Data Sources","System Health","Settings"],
 }
 
@@ -84,6 +84,7 @@ def run(principal: dict | None = None) -> None:
         "Technologies":pages.technology_profile,
         "Human Validation":pages.validation,
         "Case Studies":lambda:pages.case_studies(principal,_navigate),
+        "Pharmaceutical Memory":pages.pharmaceutical_memory,
         "Data Sources":pages.sources,
         "System Health":pages.health,
         "Research & Innovation":lambda:pages.placeholder("Research & Innovation","Future university, research-group and technology-transfer intelligence."),
