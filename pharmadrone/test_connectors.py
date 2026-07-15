@@ -8,7 +8,7 @@ The dashboard's "④ Connectors" tab calls check_all() and shows the same result
 """
 from __future__ import annotations
 import sys
-from .connectors import (clinicaltrials, openfda, openfda_enforcement, openfda_shortages,
+from .connectors import (ema_medicines, clinicaltrials, openfda, openfda_enforcement, openfda_shortages,
                         europepmc, openalex, crossref, tavily_search)
 from . import settings
 
@@ -18,6 +18,7 @@ DEFAULT_QUERY = "poorly soluble oral small molecule"
 # event_query_override runs the EVENT-FIRST function with a concrete term so the
 # self-test verifies recall/stopped-trial discovery, not just generic keyword search.
 CHECKS = [
+    ("European Medicines Agency (Medicines)", ema_medicines.search, False, None),
     ("ClinicalTrials.gov", clinicaltrials.search, False, None),
     ("ClinicalTrials.gov (stopped-trial discovery)",
      lambda q, n: clinicaltrials.discover_stopped("bioavailability", n), False, ""),

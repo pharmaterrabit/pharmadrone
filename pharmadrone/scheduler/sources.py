@@ -15,7 +15,7 @@ import httpx
 
 from .. import db, settings
 from ..connectors import (
-    openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
+    ema_medicines, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
     europepmc, openalex, crossref, tavily_search,
 )
 from ..cost import CostTracker
@@ -85,6 +85,24 @@ def fetch_openfda_enforcement(conn, state: dict[str, Any], guards: Guardrails, *
         rf = ((rec.get("entities") or {}).get("recall_fields") or {})
         watermark = max(watermark, str(rf.get("report_date") or rf.get("center_classification_date") or ""))
     return {"records": records, "cursor_after": "bounded-taxonomy-sweep", "watermark_after": watermark, "metadata": stats}
+
+
+def fetch_ema_medicines(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    max_records = min(5000, max(1, int(settings.env("EMA_MEDICINES_MAX_RECORDS", "3000") or 3000)))
+    res = ema_medicines.fetch(max_results=max_records)
+    records, stats = _result_or_raise(res, "ema_medicines")
+    previous = str(state.get("last_watermark") or "")
+    if previous and not force:
+        records = [record for record in records if _date_after_lookback(
+            str((record.get("entities") or {}).get("last_update_date") or ""), previous, guards.lookback_days
+        )]
+    watermark = max([str((record.get("entities") or {}).get("last_update_date") or "") for record in records] + [previous])
+    return {
+        "records": records,
+        "cursor_after": f"feed:{stats.get('feed_timestamp') or 'unknown'}",
+        "watermark_after": watermark,
+        "metadata": {**stats, "incremental_strategy": "EMA feed timestamp, record last-update watermark and bounded lookback"},
+    }
 
 
 def fetch_openfda_shortages(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
@@ -301,6 +319,7 @@ def fetch_tavily(conn, state: dict[str, Any], guards: Guardrails, *, force: bool
 
 
 FETCHERS = {
+    "ema_medicines": fetch_ema_medicines,
     "openfda_enforcement": fetch_openfda_enforcement,
     "openfda_shortages": fetch_openfda_shortages,
     "openfda_labels": fetch_openfda_labels,

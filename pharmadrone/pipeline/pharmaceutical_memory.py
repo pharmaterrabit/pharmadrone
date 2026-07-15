@@ -48,7 +48,8 @@ def _upsert_entity(conn, entity_type: str, value: str, observed_at: str) -> str:
     return entity_id
 
 
-def _upsert_relationship(conn, subject: str, relation: str, object_id: str, row: dict[str, Any], observed_at: str) -> None:
+def _upsert_relationship(conn, subject: str, relation: str, object_id: str, row: dict[str, Any], observed_at: str,
+                         *, evidence_status: str = "requires human validation") -> None:
     stable_id = str(row.get("stable_lead_id") or "")
     relationship_id = _id("rel", subject, relation, object_id, stable_id)
     conn.execute(
@@ -59,7 +60,7 @@ def _upsert_relationship(conn, subject: str, relation: str, object_id: str, row:
         ON CONFLICT(relationship_id) DO UPDATE SET source_type=excluded.source_type,
         source_id=excluded.source_id,evidence_url=excluded.evidence_url,last_seen_at=excluded.last_seen_at""",
         (relationship_id, subject, relation, object_id, stable_id, row.get("source_type"),
-         row.get("source_id"), _evidence_url(row), "requires human validation", observed_at, observed_at),
+         row.get("source_id"), _evidence_url(row), evidence_status, observed_at, observed_at),
     )
 
 
@@ -97,6 +98,43 @@ def sync_from_opportunity_index(conn) -> dict[str, int]:
     return memory_metrics(conn)
 
 
+def sync_ema_medicines(conn) -> dict[str, int]:
+    """Project official EMA catalogue facts into memory without creating problem signals."""
+    rows = conn.execute(
+        "SELECT source_id,official_source_url,record_json,last_seen_at FROM source_records "
+        "WHERE source_type='ema_medicine' AND active=1 ORDER BY source_id"
+    ).fetchall()
+    observed_at = _now()
+    for stored in rows:
+        item = dict(stored)
+        try:
+            regulatory = json.loads(item.get("record_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        entities = regulatory.get("entities") or {}
+        company_name = str(entities.get("company") or "").strip()
+        product_name = str(entities.get("product") or "").strip()
+        molecule_name = str(entities.get("molecule") or "").strip()
+        if not product_name:
+            continue
+        company = _upsert_entity(conn, "company", company_name, observed_at) if company_name else ""
+        product = _upsert_entity(conn, "product", product_name, observed_at)
+        molecule = _upsert_entity(conn, "molecule", molecule_name, observed_at) if molecule_name else ""
+        source_id = str(item.get("source_id") or "")
+        evidence_row = {
+            "stable_lead_id": f"ema:{source_id}", "source_type": "ema_medicine", "source_id": source_id,
+            "evidence_links_json": json.dumps([{"url": item.get("official_source_url") or ""}]),
+        }
+        if company:
+            _upsert_relationship(conn, company, "ema_authorisation_holder_for", product, evidence_row, observed_at,
+                                 evidence_status="official EMA catalogue fact")
+        if molecule:
+            _upsert_relationship(conn, product, "has_active_substance", molecule, evidence_row, observed_at,
+                                 evidence_status="official EMA catalogue fact")
+    conn.commit()
+    return memory_metrics(conn)
+
+
 def memory_metrics(conn) -> dict[str, int]:
     entity_counts = {
         str(row["entity_type"]): int(row["n"])
@@ -119,10 +157,10 @@ def company_memories(conn, search: str = "", limit: int = 50) -> list[dict[str, 
     params.append(limit)
     rows = conn.execute(
         f"""SELECT e.entity_id,e.display_name,COUNT(DISTINCT r.relationship_id) AS relationships,
-        COUNT(DISTINCT r.stable_lead_id) AS opportunity_signals,MAX(r.last_seen_at) AS last_seen_at
+        COUNT(DISTINCT r.stable_lead_id) AS evidence_records,MAX(r.last_seen_at) AS last_seen_at
         FROM memory_entities e LEFT JOIN memory_relationships r ON r.subject_entity_id=e.entity_id
         WHERE {where} GROUP BY e.entity_id,e.display_name
-        ORDER BY opportunity_signals DESC,e.display_name LIMIT ?""",
+        ORDER BY evidence_records DESC,e.display_name LIMIT ?""",
         tuple(params),
     ).fetchall()
     return [dict(row) for row in rows]

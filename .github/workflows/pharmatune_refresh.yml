@@ -17,6 +17,7 @@ on:
         default: "openfda_enforcement"
         type: choice
         options:
+          - ema_medicines
           - openfda_enforcement
           - openfda_shortages
           - openfda_labels
