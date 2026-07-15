@@ -10,7 +10,7 @@ evidence to match product/problem signals to solution types, partner categories,
 technology-target hypotheses. It is **matched against currently indexed PharmaTune evidence**; use Generate/Refresh to add new signals. Matches are potential relevance signals and not proof that a company needs a specific technology.
 
 Not a chatbot. No accounts, no billing. Runs on your laptop **or** as a private
-password-protected cloud dashboard (see `DEPLOY.md` for Render Free). **Milestone 1
+password-protected Streamlit Community Cloud dashboard (see `DEPLOY.md`). **Milestone 1
 is just 5 real test reports** — you review those before generating any more.
 
 ---
