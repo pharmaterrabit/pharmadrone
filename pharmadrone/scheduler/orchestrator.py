@@ -171,6 +171,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                     generated = _generate_opportunities(conn, ingest.pop("material_records")) if spec.creates_opportunities else {
                         "opportunities_created": 0, "opportunities_updated": 0, "candidates": 0
                     }
+                    repaired_labels = opportunity_index.repair_regulator_source_labels(conn)
                     result = {
                         "records_retrieved": ingest["retrieved"],
                         "records_created": ingest["created"],
@@ -182,7 +183,8 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                         "cursor_after": fetch_result.get("cursor_after") or state.get("last_cursor"),
                         "watermark_after": fetch_result.get("watermark_after") or ingest.get("watermark_after") or state.get("last_watermark"),
                         "estimated_spend": float(fetch_result.get("estimated_spend", 0) or 0),
-                        "metadata": {**(fetch_result.get("metadata") or {}), **generated},
+                        "metadata": {**(fetch_result.get("metadata") or {}), **generated,
+                                     "regulator_source_labels_repaired": repaired_labels},
                     }
                 after = _benchmark_snapshot(conn)
                 if before != after:

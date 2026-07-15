@@ -57,6 +57,10 @@ def source_type(opp: dict[str, Any]) -> str:
         stype = e.get("source_type") or e.get("source_category")
         if stype:
             if stype == "recall":
+                source_name = _norm(e.get("source_name"))
+                regulator = _norm((e.get("entities") or {}).get("regulator"))
+                if "mhra" in source_name or regulator == "mhra":
+                    return "MHRA medicine recall"
                 return "FDA recall"
             if stype == "trial":
                 return "ClinicalTrials.gov trial"
@@ -64,6 +68,17 @@ def source_type(opp: dict[str, Any]) -> str:
                 return "FDA drug shortage"
             return str(stype)
     return str(opp.get("source_type") or "indexed evidence")
+
+
+def repair_regulator_source_labels(conn) -> int:
+    """Repair legacy recall rows that were incorrectly hard-coded as FDA."""
+    result = conn.execute(
+        "UPDATE opportunity_index SET source_type='MHRA medicine recall' "
+        "WHERE source_type='FDA recall' AND source_id IN ("
+        "SELECT source_id FROM source_records WHERE source_name='mhra_medicine_recalls'"
+        ")"
+    )
+    return max(0, int(getattr(result, "rowcount", 0) or 0))
 
 
 def source_id(opp: dict[str, Any]) -> str:

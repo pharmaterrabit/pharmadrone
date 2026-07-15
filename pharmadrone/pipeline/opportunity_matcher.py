@@ -801,7 +801,10 @@ def _source_type_label(evidence: list[dict[str, Any]]) -> str:
         if not isinstance(e, dict):
             continue
         stype = _norm(e.get("source_type") or "")
-        label = labels.get(stype, stype or _norm(e.get("source_category") or ""))
+        if stype == "recall" and "mhra" in _norm(e.get("source_name") or ""):
+            label = "MHRA medicine recall"
+        else:
+            label = labels.get(stype, stype or _norm(e.get("source_category") or ""))
         if label and label not in seen:
             seen.append(label)
     return ", ".join(seen[:3]) or "stored evidence"
