@@ -7,7 +7,7 @@ from typing import Any
 from .storage import (
     configured_database, open_connection, DatabaseConnection,
     DatabaseConfigurationError, DatabaseUnavailableError,
-    last_successful_operation,
+    last_successful_operation, ensure_migrations_once,
 )
 
 SCHEMA = """
@@ -112,7 +112,7 @@ def connect(db_path: Path | str | None = None) -> DatabaseConnection:
     else:
         config = configured_database()
     conn = open_connection(config)
-    conn.ensure_migrations()
+    ensure_migrations_once(conn)
     return conn
 
 
