@@ -15,7 +15,7 @@ import httpx
 
 from .. import db, settings
 from ..connectors import (
-    ema_medicines, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
+    fda_orange_book, ema_medicines, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
     europepmc, openalex, crossref, tavily_search,
 )
 from ..cost import CostTracker
@@ -118,6 +118,20 @@ def fetch_mhra_medicine_recalls(conn, state: dict[str, Any], guards: Guardrails,
     return {
         "records": records, "cursor_after": f"newest:{len(records)}", "watermark_after": watermark,
         "metadata": {**stats, "incremental_strategy": "full bounded MHRA medicine-recall index, publication watermark, lookback and checksum"},
+    }
+
+
+def fetch_fda_orange_book(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    max_records = min(5000, max(1, int(settings.env("FDA_ORANGE_BOOK_MAX_RECORDS", "5000") or 5000)))
+    res = fda_orange_book.fetch(max_results=max_records)
+    records, stats = _result_or_raise(res, "fda_orange_book")
+    newest = max([
+        str((item.get("entities") or {}).get("approval_date") or "") for item in records
+    ] + [str(state.get("last_watermark") or "")])
+    return {
+        "records": records, "cursor_after": f"archive:{stats.get('products_in_archive', 0)}",
+        "watermark_after": newest,
+        "metadata": {**stats, "incremental_strategy": "monthly official archive, deterministic record checksum and application/product key"},
     }
 
 
@@ -335,6 +349,7 @@ def fetch_tavily(conn, state: dict[str, Any], guards: Guardrails, *, force: bool
 
 
 FETCHERS = {
+    "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
     "mhra_medicine_recalls": fetch_mhra_medicine_recalls,
     "openfda_enforcement": fetch_openfda_enforcement,

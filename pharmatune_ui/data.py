@@ -183,6 +183,7 @@ def pharmaceutical_memory(search: str = "") -> dict[str, Any]:
     try:
         metrics = memory.sync_from_opportunity_index(conn)
         metrics = memory.sync_ema_medicines(conn)
+        metrics = memory.sync_fda_orange_book(conn)
         companies = memory.company_memories(conn, search=search)
         return {"metrics": metrics, "companies": companies}
     finally:
@@ -253,6 +254,31 @@ def mhra_coverage() -> dict[str, Any]:
             direct += int(bool(entities.get("direct_problem_evidence")))
             latest = max(latest, str(item.get("source_updated_at") or ""))
         return {"total": len(rows), "direct": direct, "classes": classes, "latest_update": latest}
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fda_orange_book_coverage() -> dict[str, Any]:
+    conn = connection()
+    try:
+        rows = conn.execute(
+            "SELECT record_json,source_updated_at FROM source_records "
+            "WHERE source_type='fda_orange_book_product' AND active=1"
+        ).fetchall()
+        patents = exclusivities = rld = 0
+        latest = ""
+        for stored in rows:
+            item = dict(stored)
+            try: regulatory = json.loads(item.get("record_json") or "{}")
+            except (TypeError, ValueError): continue
+            entities = regulatory.get("entities") or {}
+            patents += len(entities.get("patents") or [])
+            exclusivities += len(entities.get("exclusivities") or [])
+            rld += int(bool(entities.get("reference_listed_drug")))
+            latest = max(latest, str(item.get("source_updated_at") or ""))
+        return {"total": len(rows), "patents": patents, "exclusivities": exclusivities,
+                "reference_listed": rld, "latest_update": latest}
     finally:
         conn.close()
 

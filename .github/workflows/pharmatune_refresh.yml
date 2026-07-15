@@ -17,6 +17,7 @@ on:
         default: "openfda_enforcement"
         type: choice
         options:
+          - fda_orange_book
           - ema_medicines
           - mhra_medicine_recalls
           - openfda_enforcement
