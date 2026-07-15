@@ -7,6 +7,7 @@ from typing import Any
 import streamlit as st
 
 from pharmadrone import db
+from pharmadrone import production_readiness
 from pharmadrone.pipeline import human_audit, pharmaceutical_memory as memory, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
@@ -202,3 +203,20 @@ def source_health() -> dict[str, Any]:
     try:
         return {"summary": scheduler_repository.scheduler_summary(conn), "sources": scheduler_repository.source_status_rows(conn), "database": db.database_status()}
     finally: conn.close()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def readiness() -> dict[str, Any]:
+    """Evaluate Checkpoint 7B against current production telemetry."""
+    conn = connection()
+    try:
+        database = db.database_status()
+        scheduler = scheduler_repository.scheduler_summary(conn)
+        queue = human_audit.merge_queue_with_audits(
+            human_audit.benchmark_rows(conn), human_audit.latest_audit_map(conn)
+        )
+        audit = human_audit.audit_metrics(queue)
+        memory_metrics = memory.sync_from_opportunity_index(conn)
+        return production_readiness.evaluate(database, scheduler, audit, memory_metrics)
+    finally:
+        conn.close()

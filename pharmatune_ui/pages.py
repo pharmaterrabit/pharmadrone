@@ -336,6 +336,18 @@ def health() -> None:
     theme.card("GitHub Actions orchestrator",f"Latest run: {_safe(latest.get('started_at'))}",[(sched.get("scheduler_status","Unknown"),"green" if sched.get("failed_sources",0)==0 else "amber")],f"Next run {sched.get('next_orchestrator_run')} · {sched.get('failed_sources',0)} failed sources")
     st.success("Checkpoint 6C.1 — stable. Automatic scheduled refresh validated on 13 July 2026; frozen 100-record benchmark remained unchanged.")
     st.caption("Cold-start performance is measured separately from warm page navigation on Streamlit Community Cloud.")
+    st.markdown("### Checkpoint 7B production readiness")
+    readiness = data.readiness()
+    if readiness["ready"]:
+        st.success(f"Production ready · {readiness['passed']} of {readiness['total']} operational gates passed.")
+    else:
+        st.warning(f"Attention required · {readiness['passed']} of {readiness['total']} operational gates passed.")
+    st.dataframe(pd.DataFrame([{
+        "Gate": check["gate"],
+        "Status": "Passed" if check["passed"] else "Attention",
+        "Live evidence": check["detail"],
+    } for check in readiness["checks"]]), use_container_width=True, hide_index=True)
+    st.caption("This verdict uses live operational telemetry and never displays credentials or connection strings.")
 
 
 def placeholder(title: str, description: str) -> None:
