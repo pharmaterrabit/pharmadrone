@@ -15,7 +15,7 @@ import httpx
 
 from .. import db, settings
 from ..connectors import (
-    ema_medicines, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
+    ema_medicines, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
     europepmc, openalex, crossref, tavily_search,
 )
 from ..cost import CostTracker
@@ -102,6 +102,22 @@ def fetch_ema_medicines(conn, state: dict[str, Any], guards: Guardrails, *, forc
         "cursor_after": f"feed:{stats.get('feed_timestamp') or 'unknown'}",
         "watermark_after": watermark,
         "metadata": {**stats, "incremental_strategy": "EMA feed timestamp, record last-update watermark and bounded lookback"},
+    }
+
+
+def fetch_mhra_medicine_recalls(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    max_records = min(1000, max(1, int(settings.env("MHRA_RECALL_MAX_RECORDS", "1000") or 1000)))
+    res = mhra_alerts.fetch(max_results=max_records)
+    records, stats = _result_or_raise(res, "mhra_medicine_recalls")
+    previous = str(state.get("last_watermark") or "")
+    if previous and not force:
+        records = [record for record in records if _date_after_lookback(
+            str((record.get("entities") or {}).get("last_update_date") or ""), previous, guards.lookback_days
+        )]
+    watermark = max([str((record.get("entities") or {}).get("last_update_date") or "") for record in records] + [previous])
+    return {
+        "records": records, "cursor_after": f"newest:{len(records)}", "watermark_after": watermark,
+        "metadata": {**stats, "incremental_strategy": "full bounded MHRA medicine-recall index, publication watermark, lookback and checksum"},
     }
 
 
@@ -320,6 +336,7 @@ def fetch_tavily(conn, state: dict[str, Any], guards: Guardrails, *, force: bool
 
 FETCHERS = {
     "ema_medicines": fetch_ema_medicines,
+    "mhra_medicine_recalls": fetch_mhra_medicine_recalls,
     "openfda_enforcement": fetch_openfda_enforcement,
     "openfda_shortages": fetch_openfda_shortages,
     "openfda_labels": fetch_openfda_labels,
