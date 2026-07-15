@@ -232,6 +232,31 @@ def ema_coverage() -> dict[str, Any]:
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def mhra_coverage() -> dict[str, Any]:
+    conn = connection()
+    try:
+        rows = conn.execute(
+            "SELECT record_json,source_updated_at FROM source_records "
+            "WHERE source_name='MHRA Medicines Recalls' AND active=1"
+        ).fetchall()
+        classes: dict[str, int] = {}
+        latest = ""
+        direct = 0
+        for stored in rows:
+            item = dict(stored)
+            try: regulatory = json.loads(item.get("record_json") or "{}")
+            except (TypeError, ValueError): continue
+            entities = regulatory.get("entities") or {}
+            alert_class = str(entities.get("alert_class") or "Medicines recall/notification")
+            classes[alert_class] = classes.get(alert_class, 0) + 1
+            direct += int(bool(entities.get("direct_problem_evidence")))
+            latest = max(latest, str(item.get("source_updated_at") or ""))
+        return {"total": len(rows), "direct": direct, "classes": classes, "latest_update": latest}
+    finally:
+        conn.close()
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def readiness() -> dict[str, Any]:
     """Evaluate Checkpoint 7B against current production telemetry."""

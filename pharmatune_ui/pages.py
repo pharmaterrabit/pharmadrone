@@ -299,6 +299,18 @@ def sources() -> None:
             for category, count in sorted(ema["categories"].items())
         ]), use_container_width=True, hide_index=True)
     st.caption("EMA catalogue records confirm published regulatory facts only. They do not prove product failure, customer need or solution fit.")
+    mhra = data.mhra_coverage()
+    st.markdown("### UK Medicines and Healthcare products Regulatory Agency")
+    m1,m2,m3 = st.columns(3)
+    m1.metric("MHRA medicine alerts retained", f"{mhra.get('total', 0):,}")
+    m2.metric("Explicit problem descriptions", f"{mhra.get('direct', 0):,}")
+    m3.metric("Latest source update", mhra.get("latest_update") or "Not ingested yet")
+    if mhra.get("classes"):
+        st.dataframe(pd.DataFrame([
+            {"Alert class": alert_class, "Records": count}
+            for alert_class, count in sorted(mhra["classes"].items())
+        ]), use_container_width=True, hide_index=True)
+    st.caption("Only explicit MHRA medicine recall or defect descriptions can support a problem signal. General safety and device alerts are not converted into medicine opportunities.")
     st.markdown("### Planned source families")
     for name in ("PMDA and further global regulators","Company news, deals and funding","Patent families and ownership","University technology transfer"):
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])

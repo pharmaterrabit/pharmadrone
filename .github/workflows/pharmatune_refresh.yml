@@ -18,6 +18,7 @@ on:
         type: choice
         options:
           - ema_medicines
+          - mhra_medicine_recalls
           - openfda_enforcement
           - openfda_shortages
           - openfda_labels

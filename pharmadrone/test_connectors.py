@@ -8,7 +8,7 @@ The dashboard's "④ Connectors" tab calls check_all() and shows the same result
 """
 from __future__ import annotations
 import sys
-from .connectors import (ema_medicines, clinicaltrials, openfda, openfda_enforcement, openfda_shortages,
+from .connectors import (ema_medicines, mhra_alerts, clinicaltrials, openfda, openfda_enforcement, openfda_shortages,
                         europepmc, openalex, crossref, tavily_search)
 from . import settings
 
@@ -19,6 +19,7 @@ DEFAULT_QUERY = "poorly soluble oral small molecule"
 # self-test verifies recall/stopped-trial discovery, not just generic keyword search.
 CHECKS = [
     ("European Medicines Agency (Medicines)", ema_medicines.search, False, None),
+    ("MHRA Medicines Recalls", mhra_alerts.search, False, None),
     ("ClinicalTrials.gov", clinicaltrials.search, False, None),
     ("ClinicalTrials.gov (stopped-trial discovery)",
      lambda q, n: clinicaltrials.discover_stopped("bioavailability", n), False, ""),
