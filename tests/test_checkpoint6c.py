@@ -55,6 +55,14 @@ class Checkpoint6CTests(unittest.TestCase):
         rows = self.conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         self.assertEqual([r["version"] for r in rows], versions)
 
+    def test_runtime_connect_checks_migrations_once_per_engine(self):
+        from pharmadrone.storage.migrations import run_migrations
+        dispose_engines()
+        with patch("pharmadrone.storage.migrations.run_migrations", wraps=run_migrations) as runner:
+            first = db.connect(self.db_path); first.close()
+            second = db.connect(self.db_path); second.close()
+        self.assertEqual(runner.call_count, 1)
+
 
     def test_postgresql_schema_ddl_uses_postgres_identity_and_constraints(self):
         from pharmadrone.storage.migrations import _core_schema, _audit_schema, _infrastructure_schema
