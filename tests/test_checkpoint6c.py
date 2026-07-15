@@ -72,7 +72,12 @@ class Checkpoint6CTests(unittest.TestCase):
 
     def test_postgresql_migration_manifest_contains_complete_schemas(self):
         manifest = migration_manifest()
-        self.assertEqual([m["version"] for m in manifest], [1, 2, 3, 4, 5, 6])
+        # Checkpoint 6C owns the first five migrations. Later checkpoints may
+        # append migrations, so preserve the frozen prefix without making this
+        # regression test reject valid schema evolution.
+        versions = [m["version"] for m in manifest]
+        self.assertEqual(versions[:5], [1, 2, 3, 4, 5])
+        self.assertEqual(versions, list(range(1, max(versions) + 1)))
         names = " ".join(m["name"] for m in manifest)
         self.assertIn("core_schema", names)
         self.assertIn("audit_schema", names)
