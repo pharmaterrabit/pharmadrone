@@ -91,7 +91,7 @@ class Checkpoint7ATests(unittest.TestCase):
         self.assertEqual(result["metrics"]["candidate_count"], 5)
 
     def test_migration_7_persists_immutable_case_study_snapshot(self):
-        self.assertEqual(max(m.version for m in MIGRATIONS), 7)
+        self.assertIn(7, [m.version for m in MIGRATIONS])
         conn = db.connect(self.path)
         for table in ("seller_profiles", "seller_case_studies", "seller_case_study_targets"):
             self.assertTrue(conn.has_table(table), table)

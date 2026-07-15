@@ -7,7 +7,7 @@ from typing import Any
 import streamlit as st
 
 from pharmadrone import db
-from pharmadrone.pipeline import human_audit, seller_case_study
+from pharmadrone.pipeline import human_audit, pharmaceutical_memory as memory, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -171,6 +171,27 @@ def seller_case_study_history(principal: dict[str, Any] | None = None) -> list[d
         return seller_case_study.history(
             conn, organisation_id=str(principal.get("organisation_id") or "platform")
         )
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def pharmaceutical_memory(search: str = "") -> dict[str, Any]:
+    """Synchronise and read the governed Phase 7 memory projection."""
+    conn = connection()
+    try:
+        metrics = memory.sync_from_opportunity_index(conn)
+        companies = memory.company_memories(conn, search=search)
+        return {"metrics": metrics, "companies": companies}
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def pharmaceutical_memory_relationships(entity_id: str) -> list[dict[str, Any]]:
+    conn = connection()
+    try:
+        return memory.company_relationships(conn, entity_id)
     finally:
         conn.close()
 
