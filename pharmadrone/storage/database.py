@@ -69,6 +69,8 @@ class ResultAdapter:
 
 _ENGINE_CACHE: dict[str, Engine] = {}
 _ENGINE_LOCK = threading.Lock()
+_MIGRATED_ENGINE_URLS: set[str] = set()
+_MIGRATION_LOCK = threading.Lock()
 _LAST_SUCCESS: dict[str, str] = {"timestamp": "", "operation": ""}
 
 _CONFLICT_KEYS = {
@@ -131,6 +133,25 @@ def dispose_engines() -> None:
         for engine in _ENGINE_CACHE.values():
             engine.dispose()
         _ENGINE_CACHE.clear()
+    with _MIGRATION_LOCK:
+        _MIGRATED_ENGINE_URLS.clear()
+
+
+def ensure_migrations_once(conn: "DatabaseConnection") -> dict[str, Any]:
+    """Apply migrations once per configured engine during this process.
+
+    Streamlit reruns the application script for every interaction. Rechecking
+    the complete migration manifest on every page click adds avoidable remote
+    database round trips. A new process, engine disposal, or distinct database
+    URL still performs the full ordered migration check before serving data.
+    """
+    key = conn.config.url
+    with _MIGRATION_LOCK:
+        if key in _MIGRATED_ENGINE_URLS:
+            return {"schema_version": None, "newly_applied": [], "cached": True}
+        result = conn.ensure_migrations()
+        _MIGRATED_ENGINE_URLS.add(key)
+        return result
 
 
 def _qmark_to_named(sql: str, params: Iterable[Any] | Mapping[str, Any] | None):
