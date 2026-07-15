@@ -43,6 +43,27 @@ def _title_fields(title: str) -> tuple[str, str, str, str]:
     return alert_class, company, product, reference
 
 
+def _description_company(description: str) -> str:
+    """Recover the company from older notices whose title has no CSV fields."""
+    text = _clean(description)
+    patterns = (
+        r"^(.{2,120}?)\s+(?:are|is)\s+recalling\b",
+        r"^(.{2,120}?)\s+(?:has|have)\s+(?:informed|notified|identified|reported)\b",
+        r"^(.{2,120}?)\s+(?:is|are)\s+(?:initiating|reporting)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1).strip(" ,.-")
+    return ""
+
+
+def _legacy_product(title: str) -> str:
+    text = re.sub(r"^UPDATE:\s*", "", _clean(title), flags=re.I)
+    text = re.sub(r"^(?:Class\s+\d+\s+)?Medicines?\s+(?:Recall|Defect Notification)\s*:?\s*", "", text, flags=re.I)
+    return re.sub(r"^(?:specific\s+)?batches?\s+of\s+", "", text, flags=re.I).strip(" ,.-")
+
+
 def _issue_category(description: str) -> str:
     text = description.casefold()
     rules = (
@@ -75,6 +96,10 @@ def parse_payload(payload: dict[str, Any], *, max_results: int = 1000) -> Connec
         source_id = _identity(link)
         description = _clean(row.get("description"))
         alert_class, company, product, reference = _title_fields(title)
+        if not company:
+            company = _description_company(description)
+        if not product:
+            product = _legacy_product(title)
         published = _iso(row.get("public_timestamp"))
         url = f"{GOVUK}{link}"
         direct = bool(description and company and product)

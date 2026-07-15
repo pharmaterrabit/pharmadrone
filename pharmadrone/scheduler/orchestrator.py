@@ -91,6 +91,7 @@ def _generate_opportunities(conn, material_records: list[dict[str, Any]]) -> dic
     candidates, _breakdown = discover.discover_candidates(eligible, min_cluster_evidence=1)
     if not candidates:
         return {"opportunities_created": 0, "opportunities_updated": 0, "candidates": 0}
+    opportunity_index.enrich_ema_companies(conn, candidates)
     # Every indexed preview must have a useful deterministic score and grade.
     # Full LLM enrichment/report generation remains a separate, optional step.
     for candidate in candidates:
@@ -177,6 +178,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                         "opportunities_created": 0, "opportunities_updated": 0, "candidates": 0
                     }
                     repaired_labels = opportunity_index.repair_regulator_source_labels(conn)
+                    entity_repairs = opportunity_index.repair_regulator_entities(conn)
                     scoring_backfill = opportunity_index.backfill_missing_scores(conn)
                     result = {
                         "records_retrieved": ingest["retrieved"],
@@ -191,6 +193,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                         "estimated_spend": float(fetch_result.get("estimated_spend", 0) or 0),
                         "metadata": {**(fetch_result.get("metadata") or {}), **generated,
                                      "regulator_source_labels_repaired": repaired_labels,
+                                     "regulator_entities_repaired": entity_repairs,
                                      "missing_scores_backfilled": scoring_backfill},
                     }
                 after = _benchmark_snapshot(conn)

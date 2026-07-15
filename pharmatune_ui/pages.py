@@ -64,7 +64,7 @@ def explorer(navigate: Callable[[str], None]) -> None:
     if page > pages: st.session_state["opp_page"] = 1; st.rerun()
     st.caption(f"{result['total']:,} matching records · page {page} of {pages}")
     if not result["rows"]: theme.empty("No matching opportunities", "Try a broader search or remove one of the filters.", "No results"); return
-    frame = pd.DataFrame([{ "Company":r.get("company"),"Product":r.get("product"),"Problem":r.get("problem_category"),"Source":r.get("source_type"),"Region":r.get("region"),"Score":r.get("score"),"Grade":r.get("grade"),"Status":r.get("lead_status"),"Lead ID":r.get("stable_lead_id")} for r in result["rows"]])
+    frame = pd.DataFrame([{ "Company":r.get("company") or "Not stated by source","Product":r.get("product") or "Not stated by source","Problem":r.get("problem_category"),"Source":r.get("source_type"),"Region":r.get("region"),"Score":r.get("score"),"Grade":r.get("grade"),"Status":r.get("lead_status"),"Lead ID":r.get("stable_lead_id")} for r in result["rows"]])
     event = st.dataframe(frame, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="opp_table")
     selected = event.selection.rows if event and hasattr(event,"selection") else []
     if selected:

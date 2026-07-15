@@ -81,14 +81,126 @@ def source_type(opp: dict[str, Any]) -> str:
 
 
 def repair_regulator_source_labels(conn) -> int:
-    """Repair legacy recall rows that were incorrectly hard-coded as FDA."""
-    result = conn.execute(
-        "UPDATE opportunity_index SET source_type='MHRA medicine recall' "
-        "WHERE source_type='FDA recall' AND source_id IN ("
-        "SELECT source_id FROM source_records WHERE source_name='mhra_medicine_recalls'"
-        ")"
-    )
-    return max(0, int(getattr(result, "rowcount", 0) or 0))
+    """Repair legacy UK recall rows that were incorrectly hard-coded as FDA."""
+    known_mhra_ids = {
+        str(dict(item).get("source_id") or "") for item in conn.execute(
+            "SELECT source_id FROM source_records WHERE source_name='mhra_medicine_recalls'"
+        ).fetchall()
+    }
+    rows = conn.execute(
+        "SELECT stable_lead_id,source_type,source_id,data_json FROM opportunity_index "
+        "WHERE source_type IN ('FDA recall','MHRA medicine recall')"
+    ).fetchall()
+    repaired = 0
+    for raw in rows:
+        row = dict(raw)
+        try:
+            data = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        evidence = next(_evidence_iter(data), {})
+        entities = evidence.get("entities") or {}
+        fingerprint = _norm(" ".join((
+            str(evidence.get("source_name") or ""), str(evidence.get("url") or ""),
+            str(entities.get("regulator") or ""), str((entities.get("official_source_url") or "")),
+        )))
+        if ("mhra" not in fingerprint and "gov.uk" not in fingerprint
+                and str(row.get("source_id") or "") not in known_mhra_ids):
+            continue
+        if row.get("source_type") != "MHRA medicine recall":
+            conn.execute("UPDATE opportunity_index SET source_type='MHRA medicine recall' WHERE stable_lead_id=?",
+                         (row["stable_lead_id"],))
+            repaired += 1
+    return repaired
+
+
+def _ema_company_indexes(conn) -> tuple[dict[str, str], dict[str, str]]:
+    rows = conn.execute(
+        "SELECT record_json FROM source_records WHERE source_type='ema_medicine' AND active=1"
+    ).fetchall()
+    products: dict[str, set[str]] = {}
+    molecules: dict[str, set[str]] = {}
+    for raw in rows:
+        try:
+            record = json.loads(dict(raw).get("record_json") or "{}")
+        except Exception:
+            continue
+        entities = record.get("entities") or {}
+        company = str(entities.get("company") or "").strip()
+        if not company:
+            continue
+        for target, value in ((products, entities.get("product")), (molecules, entities.get("molecule"))):
+            key = _norm(value)
+            if key:
+                target.setdefault(key, set()).add(company)
+    unique = lambda values: {key: next(iter(names)) for key, names in values.items() if len(names) == 1}
+    return unique(products), unique(molecules)
+
+
+def enrich_ema_companies(conn, candidates: list[dict[str, Any]]) -> int:
+    """Attach only unambiguous EMA authorisation holders from the catalogue."""
+    by_product, by_molecule = _ema_company_indexes(conn)
+    enriched = 0
+    for candidate in candidates:
+        if candidate.get("company"):
+            continue
+        evidence = _first_evidence(candidate)
+        entities = evidence.get("entities") or {}
+        if _norm(entities.get("regulator")) != "ema":
+            continue
+        product_key = _norm(candidate.get("product") or entities.get("product"))
+        molecule_key = _norm(candidate.get("molecule") or entities.get("molecule"))
+        company = by_product.get(product_key) or by_molecule.get(molecule_key)
+        if company:
+            candidate["company"] = company
+            entities["company"] = company
+            enriched += 1
+    return enriched
+
+
+def repair_regulator_entities(conn) -> dict[str, int]:
+    """Repair existing EMA holders and regulator company/product columns."""
+    by_product, by_molecule = _ema_company_indexes(conn)
+    counts = {"ema_companies": 0, "regulator_entities": 0}
+    rows = conn.execute(
+        "SELECT stable_lead_id,company,product,source_type,data_json FROM opportunity_index"
+    ).fetchall()
+    for raw in rows:
+        row = dict(raw)
+        try:
+            data = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        evidence = _first_evidence(data)
+        entities = evidence.get("entities") or {}
+        rf = entities.get("recall_fields") or {}
+        company = str(entities.get("company") or rf.get("recalling_firm") or "").strip()
+        product = str(entities.get("product") or rf.get("product_description") or row.get("product") or "").strip()
+        regulator = _norm(entities.get("regulator"))
+        if regulator == "ema" and not company:
+            company = by_product.get(_norm(product)) or by_molecule.get(_norm(entities.get("molecule"))) or ""
+            if company:
+                entities["company"] = company
+                counts["ema_companies"] += 1
+        if not company and not product:
+            continue
+        # Never preserve the old bug where a medicine description was copied
+        # into Company. A missing company is more honest than a false one.
+        if company and product and _norm(company) == _norm(product):
+            company = ""
+        if company != str(row.get("company") or "") or product != str(row.get("product") or ""):
+            data["company"] = company
+            data["product"] = product
+            conn.execute(
+                "UPDATE opportunity_index SET company=?,product=?,data_json=? WHERE stable_lead_id=?",
+                (company, product, json.dumps(data, ensure_ascii=False, default=str), row["stable_lead_id"]),
+            )
+            counts["regulator_entities"] += 1
+    return counts
 
 
 def backfill_missing_scores(conn) -> int:
@@ -446,6 +558,20 @@ def upsert_index_records(
             report_path=report_paths.get(sid, ""),
             report_opportunity_id=sid,
         )
+        # Entity enrichment can improve a company name without creating a
+        # second lead for the same official event.
+        existing = conn.execute(
+            "SELECT stable_lead_id FROM opportunity_index WHERE source_id=? ORDER BY first_seen_at LIMIT 2",
+            (rec.get("source_id"),),
+        ).fetchall()
+        if len(existing) == 1:
+            preserved_sid = dict(existing[0])["stable_lead_id"]
+            rec["stable_lead_id"] = preserved_sid
+            try:
+                payload = json.loads(rec.get("data_json") or "{}")
+            except Exception:
+                payload = {}
+            rec["data_json"] = json.dumps({**payload, "stable_lead_id": preserved_sid}, ensure_ascii=False, default=str)
         status = db.upsert_index_record(conn, rec)
         counts[status] = counts.get(status, 0) + 1
         if rec.get("lead_status") == "monitor only":
