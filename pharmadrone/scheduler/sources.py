@@ -390,6 +390,14 @@ def fetch_account_intelligence(conn, state: dict[str, Any], guards: Guardrails, 
     }
 
 
+def fetch_patent_lifecycle(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    return {
+        "records": [], "cursor_after": "weekly-patent-lifecycle-projection",
+        "watermark_after": state.get("last_watermark") or "",
+        "metadata": {"mode": "stored FDA Orange Book lifecycle projection"},
+    }
+
+
 FETCHERS = {
     "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
@@ -408,6 +416,7 @@ FETCHERS = {
     "crossref": fetch_crossref,
     "tavily": fetch_tavily,
     "account_intelligence": fetch_account_intelligence,
+    "patent_lifecycle": fetch_patent_lifecycle,
     "monthly_maintenance": fetch_monthly_maintenance,
 }
 

@@ -17,6 +17,7 @@ NAV = {
 HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}
 HIDDEN_ROUTE_PARENT["Company Detail"] = "Companies"
 HIDDEN_ROUTE_PARENT["Regulatory Detail"] = "Regulatory Signals"
+HIDDEN_ROUTE_PARENT["Patent Detail"] = "Patents"
 NAV_OPTIONS = [page for group in NAV.values() for page in group]
 NAVIGATION_KEY = "navigation_page"
 PENDING_NAVIGATION_KEY = "_pending_navigation_page"
@@ -94,7 +95,8 @@ def run(principal: dict | None = None) -> None:
         "Regulatory Signals":lambda:pages.regulatory_signals(_navigate),
         "Regulatory Detail":lambda:pages.regulatory_detail(_navigate),
         "Deals & Funding":lambda:pages.placeholder("Deals & Funding","Future company, partnership, financing and commercial-signal intelligence."),
-        "Patents":lambda:pages.placeholder("Patents","Future patent-family, ownership and technology-position intelligence."),
+        "Patents":lambda:pages.patents(_navigate),
+        "Patent Detail":lambda:pages.patent_detail(_navigate),
         "Settings":lambda:pages.placeholder("Settings","Workspace preferences will be introduced with authenticated workspace administration."),
     }
     routes.get(page,pages.overview)()
