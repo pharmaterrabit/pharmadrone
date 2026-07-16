@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import json
 from typing import Any, Callable
+from urllib.parse import quote_plus
 
 import pandas as pd
 import streamlit as st
@@ -509,14 +510,19 @@ def patents(navigate: Callable[[str], None]) -> None:
     g4.metric("UK / GB", f"{gm.get('uk_documents', 0):,}")
     g5.metric("Officially reported parties", f"{gm.get('parties', 0):,}")
     st.markdown("### Global patent documents")
-    gf1, gf2 = st.columns([3, 1])
+    gf1, gf2, gf3 = st.columns([2, 1, 1])
     global_search = gf1.text_input("Search global patents", placeholder="Publication, title, applicant or inventor")
     global_jurisdiction = gf2.selectbox(
         "Jurisdiction", ["All"] + list(global_initial["facets"].get("jurisdiction") or []), key="global_patent_jurisdiction"
     )
-    global_result = data.global_patent_directory(global_search, global_jurisdiction)
+    global_source = gf3.selectbox("Database", ["All", "FDA Orange Book", "EPO / EP", "UK / GB", "Google Patents"], key="global_patent_source")
+    global_result = data.global_patent_directory(global_search, global_jurisdiction, global_source)
     global_rows = global_result["documents"]
-    if global_rows:
+    if global_source == "Google Patents":
+        query = quote_plus(global_search.strip() or "pharmaceutical patent")
+        st.info("Google Patents is a discovery search. Results are not imported into PharmaTune until an official patent-office record is retained.")
+        st.link_button("Search this in Google Patents ↗", f"https://patents.google.com/?q={query}")
+    elif global_rows:
         global_labels = {
             f"{row['publication_number']} · {row.get('title') or 'Title unavailable'}": row for row in global_rows
         }
@@ -543,7 +549,7 @@ def patents(navigate: Callable[[str], None]) -> None:
             st.session_state.pop("patent_lifecycle_id", None)
             navigate("Patent Detail")
     else:
-        st.caption("No global records match these filters. EPO/UK records populate after the authorised weekly OPS job runs.")
+        st.caption("No retained records match these filters. EPO/UK records populate after the authorised weekly OPS job runs; Google Patents can be opened with the database selector.")
     st.divider()
     st.markdown("### FDA Orange Book product lifecycle")
     initial = data.patent_lifecycle_directory()
@@ -639,7 +645,7 @@ def patent_detail(navigate: Callable[[str], None]) -> None:
     }])
     st.dataframe(facts, use_container_width=True, hide_index=True)
     if str(profile.get("official_source_url") or "").startswith("http"):
-        st.link_button("Open official FDA Orange Book evidence ↗", profile["official_source_url"])
+        st.link_button("Open FDA application evidence ↗", profile["official_source_url"])
     st.caption("The application holder submitted or holds the FDA application. This field is not presented as the patent owner.")
 
     timeline = []
@@ -666,12 +672,12 @@ def patent_detail(navigate: Callable[[str], None]) -> None:
             "drug_product_flag": "Drug product", "use_code": "Use code", "delist_requested": "Delist requested",
             "application_holder_context": "FDA application holder context", "ownership_status": "Ownership evidence",
             "family_status": "Family evidence", "family_id": "Verified family ID",
-            "family_lookup_url": "Espacenet investigation", "official_source_url": "FDA evidence",
+            "family_lookup_url": "Espacenet investigation", "official_source_url": "FDA application evidence",
             "last_verified_at": "Last verified",
         })
         st.dataframe(patent_frame, use_container_width=True, hide_index=True, column_config={
             "Espacenet investigation": st.column_config.LinkColumn("Espacenet investigation", display_text="Investigate ↗"),
-            "FDA evidence": st.column_config.LinkColumn("FDA evidence", display_text="FDA source ↗"),
+            "FDA application evidence": st.column_config.LinkColumn("FDA application evidence", display_text="FDA application ↗"),
         })
         st.warning("Patent ownership and family identifiers remain unresolved until supported by official patent-office evidence. An Espacenet search link is an investigation route, not verification.")
     else:
