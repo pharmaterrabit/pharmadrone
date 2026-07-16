@@ -820,6 +820,157 @@ def _patent_lifecycle_schema(conn) -> None:
     """)
 
 
+def _research_innovation_schema(conn) -> None:
+    """Phase 10 evidence-governed research, publication and collaboration graph."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS research_organisations (
+        research_organisation_id TEXT PRIMARY KEY,
+        canonical_name TEXT NOT NULL,
+        organisation_type TEXT,
+        country_code TEXT,
+        ror_id TEXT,
+        openalex_id TEXT,
+        official_url TEXT,
+        identity_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS research_publications (
+        research_publication_id TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        doi TEXT,
+        pmid TEXT,
+        pmcid TEXT,
+        openalex_id TEXT,
+        journal TEXT,
+        publication_type TEXT,
+        publication_date TEXT,
+        publication_year TEXT,
+        abstract_text TEXT,
+        citation_count INTEGER NOT NULL DEFAULT 0,
+        open_access INTEGER NOT NULL DEFAULT 0,
+        sources_json TEXT NOT NULL DEFAULT '[]',
+        evidence_urls_json TEXT NOT NULL DEFAULT '[]',
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS research_authors (
+        research_author_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        orcid TEXT,
+        openalex_id TEXT,
+        profile_url TEXT,
+        identity_status TEXT NOT NULL,
+        current_role_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS research_publication_authors (
+        research_publication_id TEXT NOT NULL,
+        research_author_id TEXT NOT NULL,
+        affiliation_text TEXT,
+        research_organisation_id TEXT,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        PRIMARY KEY (research_publication_id, research_author_id, affiliation_text),
+        FOREIGN KEY (research_publication_id) REFERENCES research_publications(research_publication_id),
+        FOREIGN KEY (research_author_id) REFERENCES research_authors(research_author_id),
+        FOREIGN KEY (research_organisation_id) REFERENCES research_organisations(research_organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS research_organisation_publications (
+        research_organisation_id TEXT NOT NULL,
+        research_publication_id TEXT NOT NULL,
+        affiliation_evidence TEXT,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        PRIMARY KEY (research_organisation_id, research_publication_id),
+        FOREIGN KEY (research_organisation_id) REFERENCES research_organisations(research_organisation_id),
+        FOREIGN KEY (research_publication_id) REFERENCES research_publications(research_publication_id)
+    );
+    CREATE TABLE IF NOT EXISTS research_partnerships (
+        research_partnership_id TEXT PRIMARY KEY,
+        party_a_name TEXT NOT NULL,
+        party_b_name TEXT NOT NULL,
+        party_a_organisation_id TEXT,
+        party_b_organisation_id TEXT,
+        partnership_type TEXT NOT NULL,
+        programme_name TEXT,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        formal_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS research_technologies (
+        research_technology_id TEXT PRIMARY KEY,
+        research_organisation_id TEXT,
+        title TEXT NOT NULL,
+        summary TEXT,
+        technology_category TEXT,
+        licensing_status TEXT NOT NULL,
+        transfer_contact TEXT,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (research_organisation_id) REFERENCES research_organisations(research_organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS research_organisation_observations (
+        id {ident},
+        research_organisation_id TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE(research_organisation_id, observation_hash),
+        FOREIGN KEY (research_organisation_id) REFERENCES research_organisations(research_organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS research_monitor_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        organisations_seen INTEGER NOT NULL DEFAULT 0,
+        organisations_changed INTEGER NOT NULL DEFAULT 0,
+        publications_seen INTEGER NOT NULL DEFAULT 0,
+        authors_seen INTEGER NOT NULL DEFAULT 0,
+        partnerships_seen INTEGER NOT NULL DEFAULT 0,
+        technologies_seen INTEGER NOT NULL DEFAULT 0,
+        transfer_resolution_required INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_research_org_name ON research_organisations(canonical_name);
+    CREATE INDEX IF NOT EXISTS idx_research_org_ror ON research_organisations(ror_id);
+    CREATE INDEX IF NOT EXISTS idx_research_pub_doi ON research_publications(doi);
+    CREATE INDEX IF NOT EXISTS idx_research_pub_year ON research_publications(publication_year);
+    CREATE INDEX IF NOT EXISTS idx_research_author_orcid ON research_authors(orcid);
+    CREATE INDEX IF NOT EXISTS idx_research_parties ON research_partnerships(party_a_name, party_b_name);
+    CREATE INDEX IF NOT EXISTS idx_research_technology_org ON research_technologies(research_organisation_id);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -831,6 +982,7 @@ MIGRATIONS = (
     Migration(8, "phase_7_pharmaceutical_memory_schema", _pharmaceutical_memory_schema),
     Migration(9, "checkpoint_8_3_account_intelligence_schema", _account_intelligence_schema),
     Migration(10, "phase_9_patent_lifecycle_schema", _patent_lifecycle_schema),
+    Migration(11, "phase_10_research_innovation_schema", _research_innovation_schema),
 )
 
 

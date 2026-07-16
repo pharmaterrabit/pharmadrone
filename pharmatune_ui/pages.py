@@ -69,7 +69,8 @@ def overview() -> None:
         {"Area":"Human audit","Status":"Live","Detail":f"{audit.get('total_queue_records',0)} frozen benchmark records"},
         {"Area":"Scheduled refresh","Status":"Healthy" if sched.get('failed_sources',0)==0 else "Attention","Detail":f"{sched.get('enabled_sources',0)} enabled source jobs"},
         {"Area":"Patent & lifecycle","Status":"Live","Detail":"FDA Orange Book applications, listed patents, exclusivities and weekly expiry monitoring"},
-        {"Area":"Research and deals","Status":"Planned","Detail":"Placeholders until genuine production connectors are available"},
+        {"Area":"Research & innovation","Status":"Live","Detail":"Research organisations, publications, authors, collaborations and evidence-gated technology transfer"},
+        {"Area":"Deals & funding","Status":"Planned","Detail":"Placeholder until genuine production connectors are available"},
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -593,6 +594,212 @@ def patent_detail(navigate: Callable[[str], None]) -> None:
         st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
 
 
+def _first_json_url(value: Any) -> str:
+    try:
+        values = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        values = []
+    return next((str(item) for item in values if str(item).startswith("http")), "")
+
+
+def research_innovation(navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Research & Innovation Intelligence",
+        "Evidence-linked research organisations, publications, authors, scientific collaborations and technology-transfer records.",
+        "Phase 10",
+    )
+    st.info(
+        "A publication proves published research—not technology availability. Co-authorship proves a shared publication—not a formal partnership. "
+        "Technology-transfer availability appears only when an official transfer source explicitly states it."
+    )
+    initial = data.research_innovation_directory()
+    f1, f2 = st.columns([3, 1])
+    search = f1.text_input("Search research intelligence", placeholder="Organisation, publication, DOI, programme or technology")
+    country = f2.selectbox("Country", ["All"] + list(initial["facets"].get("country") or []))
+    result = data.research_innovation_directory(search, country)
+    metrics = result["metrics"]
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Research organisations", f"{metrics.get('organisations', 0):,}")
+    m2.metric("Publications", f"{metrics.get('publications', 0):,}")
+    m3.metric("Evidence-linked authors", f"{metrics.get('authors', 0):,}")
+    m4.metric("Research relationships", f"{metrics.get('partnerships', 0):,}")
+    m5.metric("Verified transfer records", f"{metrics.get('technologies', 0):,}")
+    monitor = metrics.get("latest_monitor") or {}
+    if monitor:
+        st.caption(
+            f"Latest weekly monitor {_safe(monitor.get('completed_at'))} · "
+            f"{int(monitor.get('organisations_changed') or 0):,} changed organisations · "
+            f"{int(monitor.get('transfer_resolution_required') or 0):,} organisations without verified transfer inventory"
+        )
+
+    organisations_tab, publications_tab, partnerships_tab, transfer_tab = st.tabs([
+        "Research organisations", "Publications", "Scientific relationships", "Technology transfer",
+    ])
+    with organisations_tab:
+        rows = result["organisations"]
+        if rows:
+            labels = {f"{row['canonical_name']} · {row.get('publication_count', 0)} publications": row for row in rows}
+            selected = st.selectbox("Organisation profile", list(labels))
+            frame = pd.DataFrame(rows)[[
+                "canonical_name", "organisation_type", "country_code", "identity_status", "publication_count",
+                "partnership_count", "technology_count", "last_verified_at", "next_review_at",
+            ]].rename(columns={
+                "canonical_name": "Organisation", "organisation_type": "Type", "country_code": "Country",
+                "identity_status": "Identity evidence", "publication_count": "Publications",
+                "partnership_count": "Research relationships", "technology_count": "Transfer records",
+                "last_verified_at": "Last verified", "next_review_at": "Next review",
+            })
+            st.dataframe(frame, use_container_width=True, hide_index=True)
+            left, right = st.columns([1, 4])
+            if left.button("Open research profile", type="primary"):
+                st.session_state["research_organisation_id"] = labels[selected]["research_organisation_id"]
+                navigate("Research Detail")
+            right.download_button("Export organisations (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_organisations.csv", "text/csv")
+        else:
+            theme.empty("No research organisations found", "Run the literature sources and then research_innovation, or broaden the filters.", "No matches")
+
+    with publications_tab:
+        rows = result["publications"]
+        if rows:
+            frame = pd.DataFrame([{
+                "Title": row.get("title"), "Year": row.get("publication_year"), "Journal": row.get("journal"),
+                "DOI": row.get("doi"), "Authors": row.get("author_count"), "Organisations": row.get("organisation_count"),
+                "Citations": row.get("citation_count"), "Open access": bool(row.get("open_access")),
+                "Evidence sources": ", ".join(json.loads(row.get("sources_json") or "[]")),
+                "Official publication": _first_json_url(row.get("evidence_urls_json")),
+            } for row in rows])
+            st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+                "Official publication": st.column_config.LinkColumn("Official publication", display_text="Open evidence ↗")
+            })
+            st.download_button("Export publications (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_publications.csv", "text/csv")
+        else:
+            st.caption("No publications match these filters.")
+
+    with partnerships_tab:
+        rows = result["partnerships"]
+        if rows:
+            frame = pd.DataFrame(rows)[[
+                "party_a_name", "party_b_name", "partnership_type", "programme_name", "evidence_status",
+                "formal_status", "source_type", "source_id", "evidence_url", "last_verified_at",
+            ]].rename(columns={
+                "party_a_name": "Party A", "party_b_name": "Party B", "partnership_type": "Evidence relationship",
+                "programme_name": "Publication / programme", "evidence_status": "What the source confirms",
+                "formal_status": "Boundary", "source_type": "Source type", "source_id": "Source ID",
+                "evidence_url": "Official evidence", "last_verified_at": "Last verified",
+            })
+            st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+                "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open evidence ↗")
+            })
+            st.download_button("Export relationships (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_scientific_relationships.csv", "text/csv")
+        else:
+            st.caption("No explicit registry collaborations or multi-institution publication relationships match these filters.")
+
+    with transfer_tab:
+        rows = result["technologies"]
+        if rows:
+            frame = pd.DataFrame(rows)[[
+                "organisation_name", "title", "technology_category", "licensing_status", "transfer_contact",
+                "evidence_status", "evidence_url", "last_verified_at", "next_review_at",
+            ]].rename(columns={
+                "organisation_name": "Organisation", "title": "Technology", "technology_category": "Category",
+                "licensing_status": "Published licensing status", "transfer_contact": "Published transfer contact",
+                "evidence_status": "Evidence status", "evidence_url": "Official transfer evidence",
+                "last_verified_at": "Last verified", "next_review_at": "Next review",
+            })
+            st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+                "Official transfer evidence": st.column_config.LinkColumn("Official transfer evidence", display_text="Open transfer page ↗")
+            })
+            st.download_button("Export transfer records (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_technology_transfer.csv", "text/csv")
+        else:
+            theme.empty(
+                "No verified technology-transfer inventory yet",
+                "Research publications remain visible, but PharmaTune will not claim that a technology is licensable until an official transfer source states it.",
+                "Evidence required",
+            )
+
+
+def research_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Research & Innovation Intelligence"):
+        navigate("Research & Innovation")
+    organisation_id = str(st.session_state.get("research_organisation_id") or "")
+    profile = data.research_organisation_profile(organisation_id) if organisation_id else None
+    if not profile:
+        theme.empty("Research organisation not found", "Return to Research & Innovation and select an organisation.", "Missing")
+        return
+    theme.page_header(profile["canonical_name"], "Publication, author, collaboration and technology-transfer evidence.", "Research & Innovation")
+    a, b, c, d = st.columns(4)
+    a.metric("Identity", _safe(profile.get("identity_status")))
+    b.metric("Publications", len(profile.get("publications") or []))
+    c.metric("Research relationships", len(profile.get("partnerships") or []))
+    d.metric("Verified transfer records", len(profile.get("technologies") or []))
+    links = [
+        ("Open official organisation site ↗", profile.get("official_url")),
+        ("Open ROR identity ↗", profile.get("ror_id")),
+        ("Open OpenAlex identity ↗", profile.get("openalex_id")),
+    ]
+    for label, url in links:
+        if str(url or "").startswith("http"):
+            st.link_button(label, url)
+
+    st.markdown("### Evidence-linked publications")
+    publications = profile.get("publications") or []
+    if publications:
+        frame = pd.DataFrame([{
+            "Title": row.get("title"), "Year": row.get("publication_year"), "Journal": row.get("journal"),
+            "DOI": row.get("doi"), "Citations": row.get("citation_count"), "Open access": bool(row.get("open_access")),
+            "Affiliation evidence": row.get("affiliation_evidence"), "Official evidence": row.get("affiliation_url"),
+        } for row in publications])
+        st.dataframe(frame, use_container_width=True, hide_index=True, column_config={"Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open publication ↗")})
+    else:
+        st.caption("No structured publication affiliation is currently linked.")
+
+    st.markdown("### Published authors")
+    st.warning("Authorship and a publication affiliation do not prove current employment, decision authority or responsibility for technology transfer. Reconfirm before contact.")
+    authors = profile.get("authors") or []
+    if authors:
+        frame = pd.DataFrame(authors)[[
+            "display_name", "orcid", "affiliation_text", "identity_status", "current_role_status",
+            "profile_url", "evidence_url", "last_verified_at",
+        ]].rename(columns={
+            "display_name": "Author", "orcid": "ORCID", "affiliation_text": "Published affiliation",
+            "identity_status": "Identity evidence", "current_role_status": "Current-role boundary",
+            "profile_url": "Researcher profile", "evidence_url": "Publication evidence", "last_verified_at": "Last verified",
+        })
+        st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+            "Researcher profile": st.column_config.LinkColumn("Researcher profile", display_text="Open profile ↗"),
+            "Publication evidence": st.column_config.LinkColumn("Publication evidence", display_text="Open evidence ↗"),
+        })
+
+    st.markdown("### Scientific relationships")
+    partnerships = profile.get("partnerships") or []
+    if partnerships:
+        st.dataframe(pd.DataFrame(partnerships)[[
+            "party_a_name", "party_b_name", "partnership_type", "programme_name", "evidence_status",
+            "formal_status", "evidence_url", "last_verified_at",
+        ]].rename(columns={
+            "party_a_name": "Party A", "party_b_name": "Party B", "partnership_type": "Relationship",
+            "programme_name": "Publication / programme", "evidence_status": "Confirmed evidence",
+            "formal_status": "Boundary", "evidence_url": "Evidence", "last_verified_at": "Last verified",
+        }), use_container_width=True, hide_index=True, column_config={"Evidence": st.column_config.LinkColumn("Evidence", display_text="Open evidence ↗")})
+
+    st.markdown("### Technology-transfer evidence")
+    technologies = profile.get("technologies") or []
+    if technologies:
+        st.dataframe(pd.DataFrame(technologies)[[
+            "title", "technology_category", "licensing_status", "transfer_contact", "evidence_status",
+            "evidence_url", "last_verified_at", "next_review_at",
+        ]].rename(columns={
+            "title": "Technology", "technology_category": "Category", "licensing_status": "Published status",
+            "transfer_contact": "Published contact", "evidence_status": "Evidence status", "evidence_url": "Official evidence",
+            "last_verified_at": "Last verified", "next_review_at": "Next review",
+        }), use_container_width=True, hide_index=True, column_config={"Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open transfer page ↗")})
+    else:
+        st.info("No official technology-transfer page is currently linked. Publications are not silently converted into licensable technologies.")
+    with st.expander("Append-only organisation history"):
+        history = profile.get("history") or []
+        st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
+
+
 def validation() -> None:
     theme.page_header("Human Validation", "Review immutable evidence, deterministic interpretation and append-only human decisions.", "Workflow")
     rows, metrics = data.audit_queue()
@@ -810,7 +1017,7 @@ def sources() -> None:
         st.info("FDA is currently serving product records through the official daily Drugs@FDA fallback. Patent and exclusivity fields remain empty until FDA restores the Orange Book archive.")
     st.caption("Orange Book product, patent and exclusivity records are regulatory lifecycle context. Patent listings are not legal advice, proof of freedom to operate, product failure or commercial demand.")
     st.markdown("### Planned source families")
-    for name in ("PMDA and further global regulators","Company news, deals and funding","Official patent-office family and ownership enrichment","University technology transfer"):
+    for name in ("PMDA and further global regulators","Company news, deals and funding","Official patent-office family and ownership enrichment","Further official university technology-transfer catalogues"):
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])
 
 

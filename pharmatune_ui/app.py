@@ -18,6 +18,7 @@ HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}
 HIDDEN_ROUTE_PARENT["Company Detail"] = "Companies"
 HIDDEN_ROUTE_PARENT["Regulatory Detail"] = "Regulatory Signals"
 HIDDEN_ROUTE_PARENT["Patent Detail"] = "Patents"
+HIDDEN_ROUTE_PARENT["Research Detail"] = "Research & Innovation"
 NAV_OPTIONS = [page for group in NAV.values() for page in group]
 NAVIGATION_KEY = "navigation_page"
 PENDING_NAVIGATION_KEY = "_pending_navigation_page"
@@ -91,7 +92,8 @@ def run(principal: dict | None = None) -> None:
         "Pharmaceutical Memory":pages.pharmaceutical_memory,
         "Data Sources":pages.sources,
         "System Health":pages.health,
-        "Research & Innovation":lambda:pages.placeholder("Research & Innovation","Future university, research-group and technology-transfer intelligence."),
+        "Research & Innovation":lambda:pages.research_innovation(_navigate),
+        "Research Detail":lambda:pages.research_detail(_navigate),
         "Regulatory Signals":lambda:pages.regulatory_signals(_navigate),
         "Regulatory Detail":lambda:pages.regulatory_detail(_navigate),
         "Deals & Funding":lambda:pages.placeholder("Deals & Funding","Future company, partnership, financing and commercial-signal intelligence."),

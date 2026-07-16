@@ -9,7 +9,7 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, seller_case_study
+from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -312,6 +312,31 @@ def patent_lifecycle_profile(lifecycle_id: str) -> dict[str, Any] | None:
     conn = connection()
     try:
         return patent_lifecycle.profile(conn, lifecycle_id)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def research_innovation_directory(search: str = "", country: str = "All") -> dict[str, Any]:
+    """Read the weekly-built research graph without network work during navigation."""
+    conn = connection()
+    try:
+        return {
+            "metrics": research_innovation.metrics(conn), "facets": research_innovation.facets(conn),
+            "organisations": research_innovation.organisations(conn, search=search, country=country),
+            "publications": research_innovation.publications(conn, search=search),
+            "partnerships": research_innovation.partnerships(conn, search=search),
+            "technologies": research_innovation.technologies(conn, search=search),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def research_organisation_profile(organisation_id: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return research_innovation.profile(conn, organisation_id)
     finally:
         conn.close()
 
