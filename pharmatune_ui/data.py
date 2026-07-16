@@ -54,12 +54,24 @@ def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", so
         offset = max(0, page - 1) * page_size
         rows = conn.execute(
             f"""SELECT stable_lead_id,company,product,molecule,problem_category,source_type,source_id,region,
-            score,grade,lead_status,novelty_status,queue_status,has_full_report,first_seen_at,last_checked_at,last_updated_at,data_json
+            score,grade,lead_status,novelty_status,queue_status,has_full_report,first_seen_at,last_checked_at,last_updated_at,
+            evidence_links_json,data_json
             FROM opportunity_index WHERE {where}
             ORDER BY COALESCE(score,0) DESC, COALESCE(last_updated_at,last_checked_at) DESC LIMIT ? OFFSET ?""",
             tuple(params + [page_size, offset]),
         ).fetchall()
-        return {"rows": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+        items = []
+        for raw in rows:
+            item = dict(raw)
+            try:
+                links = json.loads(item.get("evidence_links_json") or "[]")
+            except Exception:
+                links = []
+            item["official_source_url"] = next(
+                (str(link) for link in links if str(link).startswith(("https://", "http://"))), ""
+            )
+            items.append(item)
+        return {"rows": items, "total": total, "page": page, "page_size": page_size}
     finally:
         conn.close()
 
@@ -204,6 +216,16 @@ def source_health() -> dict[str, Any]:
     conn = connection()
     try:
         return {"summary": scheduler_repository.scheduler_summary(conn), "sources": scheduler_repository.source_status_rows(conn), "database": db.database_status()}
+    finally: conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def regulator_quality() -> dict[str, Any]:
+    """Keep the heavier JSON quality audit off normal health/navigation reads."""
+    from pharmadrone.pipeline import opportunity_index
+    conn = connection()
+    try:
+        return opportunity_index.regulator_data_quality(conn)
     finally: conn.close()
 
 

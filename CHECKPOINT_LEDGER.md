@@ -21,6 +21,7 @@ Repository commits and regression tests are the completion evidence.
 | Checkpoint 7A/7A.1 — Real case study and performance | Complete | Hovione workflow and warm-navigation optimisation |
 | Phase 7 memory slice | Complete | canonical entities, evidence relationships and observations |
 | Checkpoint 7B — Production Readiness | Complete in code; live verdict required | seven fail-closed System Health gates |
+| Checkpoint 8.1 A–D — Sales-useful regulatory intelligence | Complete in code; production refresh required | source-quality telemetry, authoritative entity repair, official links and deterministic qualification briefs |
 
 Labels such as “1A” and “2A” were not used in the repository and are not silently
 invented here. The canonical sequence above is the permanent source of truth.
