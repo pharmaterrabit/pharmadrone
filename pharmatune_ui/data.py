@@ -9,7 +9,7 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, pharmaceutical_memory as memory, regulatory_intelligence, seller_case_study
+from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -289,6 +289,29 @@ def account_profile(organisation_id: str) -> dict[str, Any] | None:
     conn = connection()
     try:
         return account_intelligence.profile(conn, organisation_id)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def patent_lifecycle_directory(search: str = "", status: str = "All", holder: str = "All") -> dict[str, Any]:
+    """Read the pre-built lifecycle projection; normal page loads never call FDA."""
+    conn = connection()
+    try:
+        return {
+            "metrics": patent_lifecycle.metrics(conn),
+            "facets": patent_lifecycle.facets(conn),
+            "products": patent_lifecycle.products(conn, search=search, status=status, holder=holder),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def patent_lifecycle_profile(lifecycle_id: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return patent_lifecycle.profile(conn, lifecycle_id)
     finally:
         conn.close()
 

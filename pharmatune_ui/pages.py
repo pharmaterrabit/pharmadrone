@@ -68,7 +68,8 @@ def overview() -> None:
         {"Area":"Opportunity index","Status":"Live","Detail":f"{stats.get('indexed_total',0):,} indexed; {stats.get('waiting_queue',0):,} waiting"},
         {"Area":"Human audit","Status":"Live","Detail":f"{audit.get('total_queue_records',0)} frozen benchmark records"},
         {"Area":"Scheduled refresh","Status":"Healthy" if sched.get('failed_sources',0)==0 else "Attention","Detail":f"{sched.get('enabled_sources',0)} enabled source jobs"},
-        {"Area":"Research, deals, patents","Status":"Planned","Detail":"Placeholders until genuine production connectors are available"},
+        {"Area":"Patent & lifecycle","Status":"Live","Detail":"FDA Orange Book applications, listed patents, exclusivities and weekly expiry monitoring"},
+        {"Area":"Research and deals","Status":"Planned","Detail":"Placeholders until genuine production connectors are available"},
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -444,6 +445,154 @@ def technology_profile() -> None:
     theme.empty("Persistent technology catalogue", "A genuine technology-ownership catalogue is planned for the Research & Innovation and Patents checkpoints. Current matching uses the approved service-provider profile.", "Planned")
 
 
+def patents(navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Patent & Lifecycle Intelligence",
+        "FDA Orange Book applications, listed patents, regulatory exclusivities and evidence-gated expiry monitoring.",
+        "Phase 9",
+    )
+    st.warning(
+        "An Orange Book application holder is the FDA listing organisation—not proof of patent ownership. "
+        "Listings and expiry dates are regulatory lifecycle context, not a validity or freedom-to-operate opinion."
+    )
+    initial = data.patent_lifecycle_directory()
+    facets = initial["facets"]
+    f1, f2, f3 = st.columns([2, 1, 1])
+    search = f1.text_input("Search lifecycle records", placeholder="Product, ingredient or application number")
+    status = f2.selectbox("Lifecycle state", ["All"] + list(facets.get("status") or []))
+    holder = f3.selectbox("Application holder", ["All"] + list(facets.get("holder") or []))
+    result = data.patent_lifecycle_directory(search, status, holder)
+    metrics = result["metrics"]
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Products", f"{metrics.get('products', 0):,}")
+    m2.metric("Listed patents", f"{metrics.get('patents', 0):,}")
+    m3.metric("Exclusivities", f"{metrics.get('exclusivities', 0):,}")
+    m4.metric("Expiry ≤24 months", f"{metrics.get('approaching_expiry', 0):,}")
+    m5.metric("Family resolution queue", f"{metrics.get('family_resolution_required', 0):,}")
+    monitor = metrics.get("latest_monitor") or {}
+    if monitor:
+        st.info(
+            f"Latest weekly lifecycle monitor: {_safe(monitor.get('completed_at'))} · "
+            f"{int(monitor.get('products_changed') or 0):,} changed products · "
+            f"{int(monitor.get('family_resolution_required') or 0):,} patents awaiting official family evidence"
+        )
+    rows = result["products"]
+    if not rows:
+        theme.empty("No lifecycle records found", "Run FDA Orange Book, then the patent_lifecycle projection, or broaden the filters.", "No matches")
+        return
+    labels = {
+        f"{row['trade_name']} · {row['application_number']}-{row['product_number']} · {row.get('lifecycle_status')}": row
+        for row in rows
+    }
+    selected = st.selectbox("Lifecycle profile", list(labels))
+    columns = [
+        "trade_name", "ingredient", "application_number", "product_number", "application_holder",
+        "application_type", "reference_listed_drug", "reference_standard", "patent_count",
+        "exclusivity_count", "lifecycle_status", "next_expiry_date", "evidence_status", "last_verified_at",
+    ]
+    frame = pd.DataFrame(rows)[columns].rename(columns={
+        "trade_name": "Product", "ingredient": "Ingredient", "application_number": "Application",
+        "product_number": "Product no.", "application_holder": "FDA application holder",
+        "application_type": "Application type", "reference_listed_drug": "RLD",
+        "reference_standard": "RS", "patent_count": "Listed patents",
+        "exclusivity_count": "Exclusivities", "lifecycle_status": "Lifecycle state",
+        "next_expiry_date": "Next listed expiry", "evidence_status": "Evidence status",
+        "last_verified_at": "Last verified",
+    })
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+    left, right = st.columns([1, 4])
+    if left.button("Open lifecycle detail", type="primary"):
+        st.session_state["patent_lifecycle_id"] = labels[selected]["lifecycle_id"]
+        navigate("Patent Detail")
+    right.download_button(
+        "Export filtered lifecycle records (.csv)", frame.to_csv(index=False).encode("utf-8"),
+        "pharmatune_patent_lifecycle.csv", "text/csv",
+    )
+
+
+def patent_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Patent & Lifecycle Intelligence"):
+        navigate("Patents")
+    lifecycle_id = str(st.session_state.get("patent_lifecycle_id") or "")
+    profile = data.patent_lifecycle_profile(lifecycle_id) if lifecycle_id else None
+    if not profile:
+        theme.empty("Lifecycle record not found", "Return to Patent & Lifecycle Intelligence and select a product.", "Missing")
+        return
+    theme.page_header(
+        profile["trade_name"],
+        f"{_safe(profile.get('ingredient'))} · {profile['application_number']}-{profile['product_number']}",
+        "Patent & Lifecycle",
+    )
+    a, b, c, d = st.columns(4)
+    a.metric("Lifecycle state", _safe(profile.get("lifecycle_status")))
+    b.metric("Next listed expiry", _safe(profile.get("next_expiry_date"), "None listed"))
+    c.metric("Listed patents", len(profile.get("patents") or []))
+    d.metric("Exclusivities", len(profile.get("exclusivities") or []))
+    st.markdown("### FDA application and product")
+    facts = pd.DataFrame([{
+        "FDA application holder": profile.get("application_holder"),
+        "Application type": profile.get("application_type"),
+        "Dosage form / route": profile.get("dosage_form_route"),
+        "Strength": profile.get("strength"),
+        "Approval date": profile.get("approval_date"),
+        "RLD": profile.get("reference_listed_drug"),
+        "RS": profile.get("reference_standard"),
+        "TE code": profile.get("therapeutic_equivalence_code"),
+    }])
+    st.dataframe(facts, use_container_width=True, hide_index=True)
+    if str(profile.get("official_source_url") or "").startswith("http"):
+        st.link_button("Open official FDA Orange Book evidence ↗", profile["official_source_url"])
+    st.caption("The application holder submitted or holds the FDA application. This field is not presented as the patent owner.")
+
+    timeline = []
+    if profile.get("approval_date"):
+        timeline.append({"Date": profile["approval_date"], "Event": "FDA approval", "Identifier": profile["application_number"], "Evidence": profile["official_source_url"]})
+    for patent in profile.get("patents") or []:
+        timeline.append({"Date": patent.get("expiry_date"), "Event": "Orange Book listed patent expiry", "Identifier": patent.get("patent_number"), "Evidence": patent.get("official_source_url")})
+    for exclusivity in profile.get("exclusivities") or []:
+        timeline.append({"Date": exclusivity.get("expiry_date"), "Event": "FDA exclusivity expiry", "Identifier": exclusivity.get("exclusivity_code"), "Evidence": exclusivity.get("official_source_url")})
+    st.markdown("### Lifecycle timeline")
+    if timeline:
+        timeline.sort(key=lambda item: str(item.get("Date") or "9999"))
+        st.dataframe(pd.DataFrame(timeline), use_container_width=True, hide_index=True, column_config={"Evidence": st.column_config.LinkColumn("Evidence", display_text="FDA source ↗")})
+
+    st.markdown("### Listed patents")
+    patents = profile.get("patents") or []
+    if patents:
+        patent_frame = pd.DataFrame(patents)[[
+            "patent_number", "expiry_date", "drug_substance_flag", "drug_product_flag", "use_code",
+            "delist_requested", "application_holder_context", "ownership_status", "family_status", "family_id",
+            "family_lookup_url", "official_source_url", "last_verified_at",
+        ]].rename(columns={
+            "patent_number": "Patent number", "expiry_date": "Listed expiry", "drug_substance_flag": "Drug substance",
+            "drug_product_flag": "Drug product", "use_code": "Use code", "delist_requested": "Delist requested",
+            "application_holder_context": "FDA application holder context", "ownership_status": "Ownership evidence",
+            "family_status": "Family evidence", "family_id": "Verified family ID",
+            "family_lookup_url": "Espacenet investigation", "official_source_url": "FDA evidence",
+            "last_verified_at": "Last verified",
+        })
+        st.dataframe(patent_frame, use_container_width=True, hide_index=True, column_config={
+            "Espacenet investigation": st.column_config.LinkColumn("Espacenet investigation", display_text="Investigate ↗"),
+            "FDA evidence": st.column_config.LinkColumn("FDA evidence", display_text="FDA source ↗"),
+        })
+        st.warning("Patent ownership and family identifiers remain unresolved until supported by official patent-office evidence. An Espacenet search link is an investigation route, not verification.")
+    else:
+        st.info("No listed patent evidence is present in the retained FDA dataset for this product.")
+
+    st.markdown("### FDA regulatory exclusivities")
+    exclusivities = profile.get("exclusivities") or []
+    if exclusivities:
+        exclusivity_frame = pd.DataFrame(exclusivities)[[
+            "exclusivity_code", "expiry_date", "official_source_url", "last_verified_at",
+        ]].rename(columns={"exclusivity_code": "Code", "expiry_date": "Expiry", "official_source_url": "FDA evidence", "last_verified_at": "Last verified"})
+        st.dataframe(exclusivity_frame, use_container_width=True, hide_index=True, column_config={"FDA evidence": st.column_config.LinkColumn("FDA evidence", display_text="FDA source ↗")})
+    else:
+        st.caption("No regulatory exclusivity entry is present in the retained FDA dataset.")
+    with st.expander("Append-only lifecycle history"):
+        history = profile.get("history") or []
+        st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
+
+
 def validation() -> None:
     theme.page_header("Human Validation", "Review immutable evidence, deterministic interpretation and append-only human decisions.", "Workflow")
     rows, metrics = data.audit_queue()
@@ -661,7 +810,7 @@ def sources() -> None:
         st.info("FDA is currently serving product records through the official daily Drugs@FDA fallback. Patent and exclusivity fields remain empty until FDA restores the Orange Book archive.")
     st.caption("Orange Book product, patent and exclusivity records are regulatory lifecycle context. Patent listings are not legal advice, proof of freedom to operate, product failure or commercial demand.")
     st.markdown("### Planned source families")
-    for name in ("PMDA and further global regulators","Company news, deals and funding","Global patent families and ownership","University technology transfer"):
+    for name in ("PMDA and further global regulators","Company news, deals and funding","Official patent-office family and ownership enrichment","University technology transfer"):
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])
 
 

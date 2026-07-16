@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from .. import db
-from ..pipeline import account_intelligence, discover, opportunity_index, score
+from ..pipeline import account_intelligence, discover, opportunity_index, patent_lifecycle, score
 from .config import guardrails, source_spec, source_names, utc_now
 from .errors import SchedulerError, classify_error, safe_summary
 from . import repository, sources
@@ -95,6 +95,19 @@ def _account_intelligence_refresh(conn, run_id: str, fetch_result: dict[str, Any
         "opportunities_created": 0, "duplicate_records_prevented": 0,
         "watermark_after": "",
         "cursor_after": "weekly-account-projection",
+        "metadata": {**(fetch_result.get("metadata") or {}), **projection},
+    }
+
+
+def _patent_lifecycle_refresh(conn, run_id: str, fetch_result: dict[str, Any]) -> dict[str, Any]:
+    projection = patent_lifecycle.sync(conn, run_id=run_id)
+    return {
+        "records_retrieved": int(projection.get("products_seen", 0)),
+        "records_created": int(projection.get("products_changed", 0)),
+        "records_updated": 0,
+        "records_unchanged": max(0, int(projection.get("products_seen", 0)) - int(projection.get("products_changed", 0))),
+        "records_rejected": 0, "opportunities_created": 0, "duplicate_records_prevented": 0,
+        "watermark_after": "", "cursor_after": "weekly-patent-lifecycle-projection",
         "metadata": {**(fetch_result.get("metadata") or {}), **projection},
     }
 
@@ -187,6 +200,8 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                     result = _monthly_maintenance(conn, run_id, fetch_result)
                 elif source_name == "account_intelligence":
                     result = _account_intelligence_refresh(conn, run_id, fetch_result)
+                elif source_name == "patent_lifecycle":
+                    result = _patent_lifecycle_refresh(conn, run_id, fetch_result)
                 else:
                     ingest = repository.ingest_source_records(
                         conn, run_id=run_id, source_name=source_name, records=fetch_result.get("records") or []

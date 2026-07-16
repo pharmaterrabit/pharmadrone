@@ -721,6 +721,105 @@ def _account_intelligence_schema(conn) -> None:
     """)
 
 
+def _patent_lifecycle_schema(conn) -> None:
+    """Phase 9 evidence-governed FDA patent and exclusivity lifecycle model."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS lifecycle_products (
+        lifecycle_id TEXT PRIMARY KEY,
+        application_number TEXT NOT NULL,
+        product_number TEXT NOT NULL,
+        trade_name TEXT NOT NULL,
+        ingredient TEXT,
+        application_holder TEXT,
+        application_type TEXT,
+        dosage_form_route TEXT,
+        strength TEXT,
+        approval_date TEXT,
+        reference_listed_drug TEXT,
+        reference_standard TEXT,
+        therapeutic_equivalence_code TEXT,
+        market_category TEXT,
+        dataset_mode TEXT,
+        official_source_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        lifecycle_status TEXT NOT NULL,
+        next_expiry_date TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(application_number, product_number)
+    );
+    CREATE TABLE IF NOT EXISTS lifecycle_patents (
+        lifecycle_patent_id TEXT PRIMARY KEY,
+        lifecycle_id TEXT NOT NULL,
+        patent_number TEXT NOT NULL,
+        expiry_date TEXT,
+        drug_substance_flag TEXT,
+        drug_product_flag TEXT,
+        use_code TEXT,
+        delist_requested TEXT,
+        submission_date TEXT,
+        application_holder_context TEXT,
+        ownership_status TEXT NOT NULL,
+        family_status TEXT NOT NULL,
+        family_id TEXT,
+        official_source_url TEXT NOT NULL,
+        family_lookup_url TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(lifecycle_id, patent_number, use_code),
+        FOREIGN KEY (lifecycle_id) REFERENCES lifecycle_products(lifecycle_id)
+    );
+    CREATE TABLE IF NOT EXISTS lifecycle_exclusivities (
+        lifecycle_exclusivity_id TEXT PRIMARY KEY,
+        lifecycle_id TEXT NOT NULL,
+        exclusivity_code TEXT NOT NULL,
+        expiry_date TEXT,
+        official_source_url TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        UNIQUE(lifecycle_id, exclusivity_code, expiry_date),
+        FOREIGN KEY (lifecycle_id) REFERENCES lifecycle_products(lifecycle_id)
+    );
+    CREATE TABLE IF NOT EXISTS lifecycle_observations (
+        id {ident},
+        lifecycle_id TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE(lifecycle_id, observation_hash),
+        FOREIGN KEY (lifecycle_id) REFERENCES lifecycle_products(lifecycle_id)
+    );
+    CREATE TABLE IF NOT EXISTS lifecycle_monitor_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        products_seen INTEGER NOT NULL DEFAULT 0,
+        products_changed INTEGER NOT NULL DEFAULT 0,
+        patents_seen INTEGER NOT NULL DEFAULT 0,
+        exclusivities_seen INTEGER NOT NULL DEFAULT 0,
+        family_resolution_required INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_lifecycle_product_name ON lifecycle_products(trade_name, ingredient);
+    CREATE INDEX IF NOT EXISTS idx_lifecycle_holder ON lifecycle_products(application_holder);
+    CREATE INDEX IF NOT EXISTS idx_lifecycle_expiry ON lifecycle_products(next_expiry_date, lifecycle_status);
+    CREATE INDEX IF NOT EXISTS idx_lifecycle_patent_number ON lifecycle_patents(patent_number);
+    CREATE INDEX IF NOT EXISTS idx_lifecycle_patent_expiry ON lifecycle_patents(expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_lifecycle_exclusivity_expiry ON lifecycle_exclusivities(expiry_date);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -731,6 +830,7 @@ MIGRATIONS = (
     Migration(7, "checkpoint_7a_seller_case_study_schema", _seller_case_study_schema),
     Migration(8, "phase_7_pharmaceutical_memory_schema", _pharmaceutical_memory_schema),
     Migration(9, "checkpoint_8_3_account_intelligence_schema", _account_intelligence_schema),
+    Migration(10, "phase_9_patent_lifecycle_schema", _patent_lifecycle_schema),
 )
 
 
