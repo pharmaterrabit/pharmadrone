@@ -332,14 +332,14 @@ def patent_lifecycle_profile(lifecycle_id: str) -> dict[str, Any] | None:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def global_patent_directory(search: str = "", jurisdiction: str = "All") -> dict[str, Any]:
+def global_patent_directory(search: str = "", jurisdiction: str = "All", source: str = "All") -> dict[str, Any]:
     """Read the weekly-built global projection; never call patent services here."""
     conn = connection()
     try:
         return {
             "metrics": patent_lifecycle.global_metrics(conn),
             "facets": patent_lifecycle.global_facets(conn),
-            "documents": patent_lifecycle.global_documents(conn, search=search, jurisdiction=jurisdiction),
+            "documents": patent_lifecycle.global_documents(conn, search=search, jurisdiction=jurisdiction, source=source),
         }
     finally:
         conn.close()

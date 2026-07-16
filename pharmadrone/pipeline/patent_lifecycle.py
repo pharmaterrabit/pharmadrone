@@ -59,6 +59,11 @@ def uk_register_url(publication_number: str) -> str:
     return "https://www.gov.uk/search-for-patent" if re.search(r"\d", _text(publication_number)) else ""
 
 
+def fda_application_url(application_number: str) -> str:
+    number = re.sub(r"\D", "", _text(application_number))
+    return f"https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.process&ApplNo={number}" if number else FDA_SOURCE
+
+
 def lifecycle_state(patents: list[dict[str, Any]], exclusivities: list[dict[str, Any]], *, today: date | None = None,
                     dataset_mode: str = "") -> tuple[str, str]:
     today = today or date.today()
@@ -168,7 +173,7 @@ def sync(conn, *, run_id: str = "manual-patent-lifecycle", observed_at: datetime
                  _text(patent.get("use_code")), _text(patent.get("delist_requested")),
                  _text(patent.get("submission_date")), _text(entities.get("company")),
                  "Patent owner not established by Orange Book", "Family resolution required from patent-office evidence",
-                 "", evidence_url, family_lookup_url(number), observed, observed, next_review, "{}"),
+                 "", fda_application_url(application), family_lookup_url(number), observed, observed, next_review, "{}"),
             )
         for exclusivity in exclusivities:
             code = _text(exclusivity.get("code")); expiry = _text(exclusivity.get("expiry_date"))
@@ -351,7 +356,7 @@ def sync_global(conn, *, run_id: str = "manual-global-patents", observed_at: dat
     document_ids: set[str] = set()
     # Orange Book patent numbers become US documents with an explicit regulatory link.
     rows = conn.execute(
-        "SELECT pt.*,p.trade_name FROM lifecycle_patents pt JOIN lifecycle_products p ON p.lifecycle_id=pt.lifecycle_id "
+        "SELECT pt.*,p.trade_name,p.application_number FROM lifecycle_patents pt JOIN lifecycle_products p ON p.lifecycle_id=pt.lifecycle_id "
         "WHERE pt.active=1 AND p.active=1"
     ).fetchall()
     for row in rows:
@@ -360,7 +365,7 @@ def sync_global(conn, *, run_id: str = "manual-global-patents", observed_at: dat
             "publication_number": publication, "jurisdiction": "US", "title": "",
             "family_status": _text(row["family_status"]), "family_id": _text(row["family_id"]),
             "legal_status_summary": "Not established by Orange Book listing",
-            "official_source_url": _text(row["official_source_url"]),
+            "official_source_url": fda_application_url(_text(row["application_number"])),
             "google_patents_url": google_patents_url(publication),
         }
         document_id = _upsert_document(conn, entities, source_name="FDA Orange Book", authority="official",
@@ -374,7 +379,7 @@ def sync_global(conn, *, run_id: str = "manual-global-patents", observed_at: dat
             official_source_url=excluded.official_source_url,observed_at=excluded.observed_at""",
             (_id("patlink", document_id, row["lifecycle_id"], "orange-book-listed"), document_id,
              row["lifecycle_id"], "Patent number listed for FDA application/product",
-             "Verified Orange Book listing; scope, validity and ownership not inferred", row["official_source_url"], 1, observed),
+             "Verified Orange Book listing; scope, validity and ownership not inferred", fda_application_url(_text(row["application_number"])), 1, observed),
         )
     # EPO OPS records include EP and GB publications and official reported parties.
     stored = conn.execute(
@@ -431,7 +436,7 @@ def global_facets(conn) -> dict[str, list[str]]:
     ).fetchall()]}
 
 
-def global_documents(conn, *, search: str = "", jurisdiction: str = "All", limit: int = 500) -> list[dict[str, Any]]:
+def global_documents(conn, *, search: str = "", jurisdiction: str = "All", source: str = "All", limit: int = 500) -> list[dict[str, Any]]:
     clauses = ["d.active=1"]; params: list[Any] = []
     if search.strip():
         q = f"%{search.strip().casefold()}%"
@@ -440,6 +445,9 @@ def global_documents(conn, *, search: str = "", jurisdiction: str = "All", limit
                        "AND LOWER(pt.party_name) LIKE ?))")
         params.extend([q, q, q])
     if jurisdiction != "All": clauses.append("d.jurisdiction=?"); params.append(jurisdiction)
+    if source == "FDA Orange Book": clauses.append("d.source_name=?"); params.append(source)
+    elif source == "EPO / EP": clauses.append("d.jurisdiction='EP'")
+    elif source == "UK / GB": clauses.append("d.jurisdiction='GB'")
     params.append(max(1, min(int(limit), 1000)))
     rows = [dict(row) for row in conn.execute(
         f"SELECT d.* FROM patent_documents d WHERE {' AND '.join(clauses)} "
