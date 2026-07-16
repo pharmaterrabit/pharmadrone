@@ -165,7 +165,7 @@ def repair_regulator_entities(conn) -> dict[str, int]:
     by_product, by_molecule = _ema_company_indexes(conn)
     counts = {"ema_companies": 0, "regulator_entities": 0}
     rows = conn.execute(
-        "SELECT stable_lead_id,company,product,source_type,data_json FROM opportunity_index"
+        "SELECT stable_lead_id,company,product,region,source_type,data_json FROM opportunity_index"
     ).fetchall()
     for raw in rows:
         row = dict(raw)
@@ -181,6 +181,7 @@ def repair_regulator_entities(conn) -> dict[str, int]:
         company = str(entities.get("company") or rf.get("recalling_firm") or "").strip()
         product = str(entities.get("product") or rf.get("product_description") or row.get("product") or "").strip()
         regulator = _norm(entities.get("regulator"))
+        region = str(entities.get("region") or entities.get("country") or row.get("region") or "").strip()
         if regulator == "ema" and not company:
             company = by_product.get(_norm(product)) or by_molecule.get(_norm(entities.get("molecule"))) or ""
             if company:
@@ -192,15 +193,62 @@ def repair_regulator_entities(conn) -> dict[str, int]:
         # into Company. A missing company is more honest than a false one.
         if company and product and _norm(company) == _norm(product):
             company = ""
-        if company != str(row.get("company") or "") or product != str(row.get("product") or ""):
+        if company != str(row.get("company") or "") or product != str(row.get("product") or "") or region != str(row.get("region") or ""):
             data["company"] = company
             data["product"] = product
             conn.execute(
-                "UPDATE opportunity_index SET company=?,product=?,data_json=? WHERE stable_lead_id=?",
-                (company, product, json.dumps(data, ensure_ascii=False, default=str), row["stable_lead_id"]),
+                "UPDATE opportunity_index SET company=?,product=?,region=?,data_json=? WHERE stable_lead_id=?",
+                (company, product, region, json.dumps(data, ensure_ascii=False, default=str), row["stable_lead_id"]),
             )
             counts["regulator_entities"] += 1
     return counts
+
+
+def repair_evidence_urls(conn) -> int:
+    """Restore official source URLs in legacy opportunity evidence payloads."""
+    source_urls: dict[str, str] = {}
+    for raw in conn.execute(
+        "SELECT source_id,official_source_url FROM source_records WHERE COALESCE(official_source_url,'')<>''"
+    ).fetchall():
+        item = dict(raw)
+        source_urls.setdefault(str(item.get("source_id") or ""), str(item.get("official_source_url") or ""))
+    repaired = 0
+    rows = conn.execute(
+        "SELECT stable_lead_id,source_id,data_json,evidence_links_json FROM opportunity_index"
+    ).fetchall()
+    for raw in rows:
+        row = dict(raw)
+        try:
+            data = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            continue
+        evidence = _first_evidence(data)
+        if not evidence:
+            continue
+        entities = evidence.get("entities") or {}
+        if not isinstance(entities, dict):
+            entities = {}
+        url = str(evidence.get("url") or entities.get("official_source_url") or "").strip()
+        if not url.startswith(("https://", "http://")):
+            url = source_urls.get(str(row.get("source_id") or ""), "") or source_urls.get(
+                str(evidence.get("record_id") or ""), ""
+            )
+        if not url:
+            continue
+        changed = evidence.get("url") != url or entities.get("official_source_url") != url
+        evidence["url"] = url
+        entities["official_source_url"] = url
+        evidence["entities"] = entities
+        links = [url]
+        if changed or row.get("evidence_links_json") != json.dumps(links, ensure_ascii=False):
+            conn.execute(
+                "UPDATE opportunity_index SET evidence_links_json=?,data_json=? WHERE stable_lead_id=?",
+                (json.dumps(links, ensure_ascii=False), json.dumps(data, ensure_ascii=False, default=str), row["stable_lead_id"]),
+            )
+            repaired += 1
+    return repaired
 
 
 def backfill_missing_scores(conn) -> int:
@@ -378,8 +426,9 @@ def evidence_hash(opp: dict[str, Any]) -> str:
 def _evidence_links(opp: dict[str, Any]) -> list[str]:
     links: list[str] = []
     for e in _evidence_iter(opp):
-        link = e.get("url") or e.get("record_id")
-        if link and str(link) not in links:
+        entities = e.get("entities") or {}
+        link = e.get("url") or entities.get("official_source_url")
+        if link and str(link).startswith(("https://", "http://")) and str(link) not in links:
             links.append(str(link))
     return links
 

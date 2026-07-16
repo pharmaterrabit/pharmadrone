@@ -46,6 +46,9 @@ def _title_fields(title: str) -> tuple[str, str, str, str]:
 def _description_company(description: str) -> str:
     """Recover the company from older notices whose title has no CSV fields."""
     text = _clean(description)
+    parenthesised = re.search(r"^\((.+)\)\s*(?:Recall|Class\s+\d+\s+action)\b", text, flags=re.I)
+    if parenthesised:
+        return parenthesised.group(1).strip(" ,.-")
     patterns = (
         r"^(.{2,120}?)\s+(?:are|is)\s+recalling\b",
         r"^(.{2,120}?)\s+(?:has|have)\s+(?:informed|notified|identified|reported)\b",
@@ -61,6 +64,7 @@ def _description_company(description: str) -> str:
 def _legacy_product(title: str) -> str:
     text = re.sub(r"^UPDATE:\s*", "", _clean(title), flags=re.I)
     text = re.sub(r"^(?:Class\s+\d+\s+)?Medicines?\s+(?:Recall|Defect Notification)\s*:?\s*", "", text, flags=re.I)
+    text = re.sub(r"^Recall\s+of\s+", "", text, flags=re.I)
     return re.sub(r"^(?:specific\s+)?batches?\s+of\s+", "", text, flags=re.I).strip(" ,.-")
 
 
@@ -104,7 +108,7 @@ def parse_payload(payload: dict[str, Any], *, max_results: int = 1000) -> Connec
         url = f"{GOVUK}{link}"
         direct = bool(description and company and product)
         category = _issue_category(description)
-        records.append(record(
+        item = record(
             "recall", NAME, source_id, title, url,
             f"Official MHRA {alert_class}. Company: {company or 'not parsed from title'}. "
             f"Product: {product or 'not parsed from title'}. Published: {published}. "
@@ -127,7 +131,9 @@ def parse_payload(payload: dict[str, Any], *, max_results: int = 1000) -> Connec
                     "product_description": product,
                 },
             },
-        ))
+        )
+        item["region_hint"] = "United Kingdom"
+        records.append(item)
     return ConnectorResult(
         NAME, "MHRA medicines recalls", ok=True, count=len(records), records=records,
         warnings=["Only explicit MHRA medicine recall/defect descriptions can support a problem signal; other alerts remain context."],
