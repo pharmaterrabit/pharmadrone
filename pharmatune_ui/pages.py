@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import json
 from typing import Any, Callable
 
 import pandas as pd
@@ -21,6 +22,25 @@ def _qualitative_evidence(row: dict[str, Any]) -> str:
     if source in {"clinicaltrials", "clinicaltrials.gov"}: return "Strongly supported"
     if source in {"europepmc", "openalex", "crossref"}: return "Plausible"
     return "Requires validation"
+
+
+def _official_evidence_url(row: dict[str, Any]) -> str:
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    evidence_rows = details.get("evidence") or []
+    if not isinstance(evidence_rows, list):
+        evidence_rows = []
+    for evidence in evidence_rows:
+        if not isinstance(evidence, dict):
+            continue
+        entities = evidence.get("entities") if isinstance(evidence.get("entities"), dict) else {}
+        url = str(evidence.get("url") or entities.get("official_source_url") or "").strip()
+        if url.startswith(("https://", "http://")):
+            return url
+    try:
+        links = json.loads(row.get("evidence_links_json") or "[]")
+    except Exception:
+        links = []
+    return next((str(url) for url in links if str(url).startswith(("https://", "http://"))), "")
 
 
 def overview() -> None:
@@ -89,6 +109,7 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
     if st.button("← Opportunity Explorer"): navigate("Opportunity Explorer")
     theme.page_header(_safe(row.get("product"),"Unnamed product"), f"{_safe(row.get('company'),'Unknown organisation')} · {_safe(row.get('region'),'Region not recorded')}", "Opportunity detail")
     evidence = _qualitative_evidence(row)
+    official_url = _official_evidence_url(row)
     st.markdown(theme.badge(evidence,"green")+theme.badge(_safe(row.get("lead_status"),"Requires validation"),"blue")+theme.badge("Human validation required","violet"),unsafe_allow_html=True)
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Opportunity score", _safe(row.get("score"),"—")); c2.metric("Grade",_safe(row.get("grade"),"—")); c3.metric("Source",_safe(row.get("source_type"))); c4.metric("Full report","Available" if row.get("has_full_report") else "Not generated")
@@ -96,6 +117,10 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
     a,b,c = st.columns(3)
     with a:
         st.markdown(f'<div class="pt-card pt-evidence"><h4 style="color:#3DBE8B">A · Confirmed source evidence</h4><p><b>{_safe(row.get("source_type"))}</b><br>{_safe(row.get("source_id"))}</p><p>{_safe(row.get("problem_category"),"No direct problem category recorded")}</p><div class="pt-mono">Last checked {_safe(row.get("last_checked_at"))}</div></div>',unsafe_allow_html=True)
+        if official_url:
+            st.link_button("Open official source ↗", official_url, use_container_width=True)
+        else:
+            st.caption("Official source URL is not available for this legacy record.")
     with b:
         st.markdown(f'<div class="pt-card pt-evidence"><h4 style="color:#4D8DFF">B · PharmaTune interpretation</h4><p><b>{evidence}</b></p><p>This is a deterministic opportunity signal. It does not establish commercial need, urgency, budget or buying intent.</p></div>',unsafe_allow_html=True)
     with c:

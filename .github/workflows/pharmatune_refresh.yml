@@ -1,7 +1,7 @@
 name: PharmaTune scheduled refresh
 
 on:
-  # Regulator bootstrap/entity repair/scoring backfill: changing this workflow on main runs the
+  # Regulator bootstrap/entity/link repair/scoring backfill: changing this workflow on main runs the
   # official EMA, MHRA and FDA jobs against the production DATABASE_URL.
   push:
     branches: [main]

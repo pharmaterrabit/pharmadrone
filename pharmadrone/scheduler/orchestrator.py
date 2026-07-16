@@ -179,6 +179,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                     }
                     repaired_labels = opportunity_index.repair_regulator_source_labels(conn)
                     entity_repairs = opportunity_index.repair_regulator_entities(conn)
+                    evidence_url_repairs = opportunity_index.repair_evidence_urls(conn)
                     scoring_backfill = opportunity_index.backfill_missing_scores(conn)
                     result = {
                         "records_retrieved": ingest["retrieved"],
@@ -194,6 +195,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                         "metadata": {**(fetch_result.get("metadata") or {}), **generated,
                                      "regulator_source_labels_repaired": repaired_labels,
                                      "regulator_entities_repaired": entity_repairs,
+                                     "evidence_urls_repaired": evidence_url_repairs,
                                      "missing_scores_backfilled": scoring_backfill},
                     }
                 after = _benchmark_snapshot(conn)
