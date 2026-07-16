@@ -25,7 +25,7 @@ def test_phase12_schema_and_daily_alert_job_are_installed(tmp_path):
         "customer_alert_events", "customer_exports", "customer_activity_events",
     }.issubset(tables)
     assert config.source_spec("customer_alerts").cadence == "daily"
-    assert conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone()["version"] == 13
+    assert conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone()["version"] >= 13
 
 
 def test_saved_lists_are_scope_isolated_and_read_only_role_cannot_write(tmp_path):

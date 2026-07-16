@@ -72,6 +72,8 @@ any JavaScript.
 | `OPENAI_API_KEY` | LLM key — needed if provider=openai |
 | `GEMINI_API_KEY` | LLM key — optional, needed only if provider=gemini |
 | `TAVILY_API_KEY` | web discovery (required) |
+| `EPO_OPS_KEY` | EPO Open Patent Services application key (optional; enables official EP/GB patent refresh) |
+| `EPO_OPS_SECRET` | EPO Open Patent Services application secret (required with `EPO_OPS_KEY`) |
 | `CONTACT_EMAIL` | optional, politer Crossref/OpenAlex |
 | `MAX_REPORTS_PER_RUN` | hard cap per click (default 5) |
 | `ALLOW_SCALE_RUNS` | `false` hides the 20/80 buttons; set `true` to unlock |

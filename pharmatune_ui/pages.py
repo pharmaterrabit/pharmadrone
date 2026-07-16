@@ -489,13 +489,63 @@ def technology_profile() -> None:
 def patents(navigate: Callable[[str], None]) -> None:
     theme.page_header(
         "Patent & Lifecycle Intelligence",
-        "FDA Orange Book applications, listed patents, regulatory exclusivities and evidence-gated expiry monitoring.",
+        "US Orange Book lifecycle plus official EPO/EU and UK patent records, families, parties and legal events.",
         "Phase 9",
     )
     st.warning(
         "An Orange Book application holder is the FDA listing organisation—not proof of patent ownership. "
         "Listings and expiry dates are regulatory lifecycle context, not a validity or freedom-to-operate opinion."
     )
+    st.info(
+        "EPO OPS and the UK register are official evidence routes. Google Patents is included for discovery and "
+        "cross-checking only; it is never treated as authority for ownership, legal status, expiry or enforceability."
+    )
+    global_initial = data.global_patent_directory()
+    gm = global_initial["metrics"]
+    g1, g2, g3, g4, g5 = st.columns(5)
+    g1.metric("Global documents", f"{gm.get('documents', 0):,}")
+    g2.metric("US documents", f"{gm.get('us_documents', 0):,}")
+    g3.metric("EPO / EP", f"{gm.get('eu_documents', 0):,}")
+    g4.metric("UK / GB", f"{gm.get('uk_documents', 0):,}")
+    g5.metric("Officially reported parties", f"{gm.get('parties', 0):,}")
+    st.markdown("### Global patent documents")
+    gf1, gf2 = st.columns([3, 1])
+    global_search = gf1.text_input("Search global patents", placeholder="Publication, title, applicant or inventor")
+    global_jurisdiction = gf2.selectbox(
+        "Jurisdiction", ["All"] + list(global_initial["facets"].get("jurisdiction") or []), key="global_patent_jurisdiction"
+    )
+    global_result = data.global_patent_directory(global_search, global_jurisdiction)
+    global_rows = global_result["documents"]
+    if global_rows:
+        global_labels = {
+            f"{row['publication_number']} · {row.get('title') or 'Title unavailable'}": row for row in global_rows
+        }
+        global_selected = st.selectbox("Global patent profile", list(global_labels))
+        global_frame = pd.DataFrame(global_rows)[[
+            "publication_number", "jurisdiction", "title", "reported_parties", "publication_date",
+            "family_status", "legal_status_summary", "source_name", "source_authority", "official_source_url",
+            "google_patents_url", "uk_register_url", "last_verified_at",
+        ]].rename(columns={
+            "publication_number": "Publication", "jurisdiction": "Office", "title": "Title",
+            "reported_parties": "Reported applicants / inventors", "publication_date": "Published",
+            "family_status": "Family evidence", "legal_status_summary": "Legal-status evidence",
+            "source_name": "Source", "source_authority": "Authority", "official_source_url": "Official evidence",
+            "google_patents_url": "Google Patents discovery", "uk_register_url": "UK register",
+            "last_verified_at": "Last verified",
+        })
+        st.dataframe(global_frame, use_container_width=True, hide_index=True, column_config={
+            "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Official source ↗"),
+            "Google Patents discovery": st.column_config.LinkColumn("Google Patents discovery", display_text="Discover ↗"),
+            "UK register": st.column_config.LinkColumn("UK register", display_text="UK register ↗"),
+        })
+        if st.button("Open global patent detail", type="primary"):
+            st.session_state["patent_document_id"] = global_labels[global_selected]["patent_document_id"]
+            st.session_state.pop("patent_lifecycle_id", None)
+            navigate("Patent Detail")
+    else:
+        st.caption("No global records match these filters. EPO/UK records populate after the authorised weekly OPS job runs.")
+    st.divider()
+    st.markdown("### FDA Orange Book product lifecycle")
     initial = data.patent_lifecycle_directory()
     facets = initial["facets"]
     f1, f2, f3 = st.columns([2, 1, 1])
@@ -544,6 +594,7 @@ def patents(navigate: Callable[[str], None]) -> None:
     left, right = st.columns([1, 4])
     if left.button("Open lifecycle detail", type="primary"):
         st.session_state["patent_lifecycle_id"] = labels[selected]["lifecycle_id"]
+        st.session_state.pop("patent_document_id", None)
         navigate("Patent Detail")
     if _can_export():
         right.download_button(
@@ -555,6 +606,10 @@ def patents(navigate: Callable[[str], None]) -> None:
 def patent_detail(navigate: Callable[[str], None]) -> None:
     if st.button("← Patent & Lifecycle Intelligence"):
         navigate("Patents")
+    patent_document_id = str(st.session_state.get("patent_document_id") or "")
+    if patent_document_id:
+        _global_patent_detail(patent_document_id)
+        return
     lifecycle_id = str(st.session_state.get("patent_lifecycle_id") or "")
     profile = data.patent_lifecycle_profile(lifecycle_id) if lifecycle_id else None
     if not profile:
@@ -634,6 +689,67 @@ def patent_detail(navigate: Callable[[str], None]) -> None:
     with st.expander("Append-only lifecycle history"):
         history = profile.get("history") or []
         st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
+
+
+def _global_patent_detail(patent_document_id: str) -> None:
+    profile = data.global_patent_profile(patent_document_id)
+    if not profile:
+        theme.empty("Patent document not found", "Return to Patent & Lifecycle Intelligence and select a document.", "Missing")
+        return
+    theme.page_header(
+        profile.get("publication_number") or "Patent document",
+        f"{_safe(profile.get('jurisdiction'))} · {_safe(profile.get('title'), 'Title unavailable')}",
+        "Global Patent Intelligence",
+    )
+    _save_to_workspace("patent", profile.get("patent_document_id"), profile.get("publication_number"),
+                       profile.get("official_source_url"), profile)
+    a, b, c, d = st.columns(4)
+    a.metric("Jurisdiction", _safe(profile.get("jurisdiction")))
+    b.metric("Published", _safe(profile.get("publication_date"), "Not reported"))
+    c.metric("Family", _safe(profile.get("family_id"), "Not established"))
+    d.metric("Reported parties", len(profile.get("parties") or []))
+    st.warning("This is patent intelligence, not a validity, enforceability, infringement or freedom-to-operate opinion.")
+    links = st.columns(3)
+    if str(profile.get("official_source_url") or "").startswith("http"):
+        links[0].link_button("Open official evidence ↗", profile["official_source_url"])
+    if str(profile.get("google_patents_url") or "").startswith("http"):
+        links[1].link_button("Google Patents discovery ↗", profile["google_patents_url"])
+    if str(profile.get("uk_register_url") or "").startswith("http"):
+        links[2].link_button("Open UK register ↗", profile["uk_register_url"])
+    st.markdown("### Document evidence")
+    st.dataframe(pd.DataFrame([{
+        "Application": profile.get("application_number"), "Kind": profile.get("document_kind"),
+        "Filed": profile.get("filing_date"), "Published": profile.get("publication_date"),
+        "Granted": profile.get("grant_date"), "Family evidence": profile.get("family_status"),
+        "Legal-status evidence": profile.get("legal_status_summary"), "Status as of": profile.get("legal_status_as_of"),
+        "Source authority": profile.get("source_authority"), "Last verified": profile.get("last_verified_at"),
+    }]), use_container_width=True, hide_index=True)
+    if profile.get("abstract_text"):
+        st.markdown("### Abstract")
+        st.write(profile["abstract_text"])
+    parties = profile.get("parties") or []
+    st.markdown("### Officially reported parties")
+    if parties:
+        st.dataframe(pd.DataFrame(parties)[[
+            "party_type", "party_name", "country_code", "evidence_status", "official_source_url", "last_verified_at"
+        ]], use_container_width=True, hide_index=True, column_config={
+            "official_source_url": st.column_config.LinkColumn("Official evidence", display_text="Open ↗")
+        })
+        st.caption("Applicant, inventor and assignee labels are shown exactly as reported. A reported applicant is not silently relabelled as the current owner.")
+    else:
+        st.caption("No party evidence is present in the retained official response.")
+    families = profile.get("family_members") or []
+    st.markdown("### Patent family")
+    st.dataframe(pd.DataFrame(families), use_container_width=True, hide_index=True) if families else st.caption("No official family members retained yet.")
+    events = profile.get("legal_events") or []
+    st.markdown("### Official legal events")
+    st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True) if events else st.caption("No official legal-event records retained yet; no status is inferred.")
+    links = profile.get("product_links") or []
+    st.markdown("### Product links")
+    if links:
+        st.dataframe(pd.DataFrame(links)[["trade_name", "ingredient", "link_basis", "evidence_status", "verified", "official_source_url"]], use_container_width=True, hide_index=True)
+    else:
+        st.caption("No evidence-governed product link is established for this document.")
 
 
 def _first_json_url(value: Any) -> str:

@@ -1169,6 +1169,115 @@ def _customer_product_schema(conn) -> None:
     """)
 
 
+def _global_patent_schema(conn) -> None:
+    """Phase 9 global patent documents, parties, families and legal events."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS patent_documents (
+        patent_document_id TEXT PRIMARY KEY,
+        publication_number TEXT NOT NULL,
+        application_number TEXT,
+        jurisdiction TEXT NOT NULL,
+        document_kind TEXT,
+        title TEXT,
+        abstract_text TEXT,
+        filing_date TEXT,
+        publication_date TEXT,
+        grant_date TEXT,
+        family_id TEXT,
+        family_status TEXT NOT NULL,
+        legal_status_summary TEXT,
+        legal_status_as_of TEXT,
+        source_name TEXT NOT NULL,
+        source_authority TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        google_patents_url TEXT NOT NULL,
+        uk_register_url TEXT,
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(jurisdiction, publication_number)
+    );
+    CREATE TABLE IF NOT EXISTS patent_parties (
+        patent_party_id TEXT PRIMARY KEY,
+        patent_document_id TEXT NOT NULL,
+        party_type TEXT NOT NULL,
+        party_name TEXT NOT NULL,
+        country_code TEXT,
+        sequence_number TEXT,
+        evidence_status TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        UNIQUE(patent_document_id, party_type, party_name),
+        FOREIGN KEY (patent_document_id) REFERENCES patent_documents(patent_document_id)
+    );
+    CREATE TABLE IF NOT EXISTS patent_family_members (
+        patent_family_member_id TEXT PRIMARY KEY,
+        family_id TEXT NOT NULL,
+        patent_document_id TEXT,
+        publication_number TEXT NOT NULL,
+        jurisdiction TEXT,
+        relationship_type TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        UNIQUE(family_id, publication_number),
+        FOREIGN KEY (patent_document_id) REFERENCES patent_documents(patent_document_id)
+    );
+    CREATE TABLE IF NOT EXISTS patent_legal_events (
+        patent_legal_event_id TEXT PRIMARY KEY,
+        patent_document_id TEXT NOT NULL,
+        event_code TEXT,
+        event_date TEXT,
+        event_text TEXT NOT NULL,
+        authority TEXT,
+        evidence_status TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        UNIQUE(patent_document_id, event_code, event_date, event_text),
+        FOREIGN KEY (patent_document_id) REFERENCES patent_documents(patent_document_id)
+    );
+    CREATE TABLE IF NOT EXISTS patent_product_links (
+        patent_product_link_id TEXT PRIMARY KEY,
+        patent_document_id TEXT NOT NULL,
+        lifecycle_id TEXT NOT NULL,
+        link_basis TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        verified INTEGER NOT NULL DEFAULT 0,
+        observed_at TEXT NOT NULL,
+        UNIQUE(patent_document_id, lifecycle_id, link_basis),
+        FOREIGN KEY (patent_document_id) REFERENCES patent_documents(patent_document_id),
+        FOREIGN KEY (lifecycle_id) REFERENCES lifecycle_products(lifecycle_id)
+    );
+    CREATE TABLE IF NOT EXISTS patent_global_monitor_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        documents_seen INTEGER NOT NULL DEFAULT 0,
+        eu_documents_seen INTEGER NOT NULL DEFAULT 0,
+        uk_documents_seen INTEGER NOT NULL DEFAULT 0,
+        parties_seen INTEGER NOT NULL DEFAULT 0,
+        families_seen INTEGER NOT NULL DEFAULT 0,
+        legal_events_seen INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_jurisdiction ON patent_documents(jurisdiction, publication_date);
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_publication ON patent_documents(publication_number);
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_family ON patent_documents(family_id);
+    CREATE INDEX IF NOT EXISTS idx_patent_party_name ON patent_parties(party_name, party_type);
+    CREATE INDEX IF NOT EXISTS idx_patent_legal_event_date ON patent_legal_events(event_date);
+    CREATE INDEX IF NOT EXISTS idx_patent_product_lifecycle ON patent_product_links(lifecycle_id);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -1183,6 +1292,7 @@ MIGRATIONS = (
     Migration(11, "phase_10_research_innovation_schema", _research_innovation_schema),
     Migration(12, "phase_11_deals_funding_schema", _deals_funding_schema),
     Migration(13, "phase_12_customer_product_schema", _customer_product_schema),
+    Migration(14, "phase_9_global_patent_intelligence_schema", _global_patent_schema),
 )
 
 

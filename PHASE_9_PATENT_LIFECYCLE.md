@@ -1,6 +1,6 @@
 # Phase 9 — Patent & Lifecycle Intelligence
 
-Phase 9 converts the already-ingested official FDA Orange Book dataset into a fast, stored lifecycle workspace. Streamlit reads the projection from PostgreSQL; it does not download or parse FDA files during page navigation.
+Phase 9 converts official FDA, EPO and UK patent evidence into a fast, stored lifecycle workspace. Streamlit reads the PostgreSQL projection; it does not download or parse external patent services during page navigation.
 
 ## 9A — Orange Book product and application lifecycle
 
@@ -32,6 +32,15 @@ These classifications describe regulatory lifecycle context. They are not findin
 - Provides detailed FDA facts, lifecycle timeline, patent/exclusivity tables, official evidence links, family investigation routes and observation history.
 - Exports the filtered lifecycle directory to CSV.
 
+## 9E — EPO, UK and Google Patents coverage
+
+- Uses the official EPO Open Patent Services OAuth interface for bounded weekly EP and GB publication searches. OPS records are stored before the UI reads them.
+- Stores patent documents, officially reported applicants and inventors, patent-family members, legal events and evidence-governed product links in separate tables.
+- Links GB records to the official UK patent search/register route. UK register evidence is authoritative for UK ownership and register changes; missing fields remain missing.
+- Adds Google Patents document links to every retained patent as a discovery and cross-check route. Google is not treated as patent-office authority and is never used alone to assert ownership, legal status, expiry, enforceability or product coverage.
+- Keeps EPO/UK search context separate from verified product-patent links. A keyword match does not establish that a patent protects a product.
+- Runs `epo_ops_patents` before the weekly `patent_lifecycle` projection whenever `EPO_OPS_KEY` and `EPO_OPS_SECRET` are configured.
+
 ## Production activation
 
-After deployment, run `fda_orange_book` and then `patent_lifecycle`, or run the bootstrap workflow. The first projection applies schema migration 10 and populates the workspace from stored Orange Book records. If the FDA archive is temporarily unavailable, PharmaTune retains product fallback records but explicitly leaves lifecycle evidence unavailable.
+After deployment, run `fda_orange_book`, `epo_ops_patents`, and then `patent_lifecycle`, or allow the scheduled workflow to run due sources. Migration 14 adds the global model. EPO OPS requires free developer credentials stored as GitHub secrets `EPO_OPS_KEY` and `EPO_OPS_SECRET`. Without them, Orange Book and Google discovery links still work, while EP/GB ingestion remains visibly unpopulated rather than fabricated.
