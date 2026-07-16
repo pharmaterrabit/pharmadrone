@@ -8,7 +8,7 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import human_audit, opportunity_index, pharmaceutical_memory as memory, seller_case_study
+from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, pharmaceutical_memory as memory, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -167,6 +167,28 @@ def entity_summary(field: str, limit: int = 100) -> list[dict[str, Any]]:
             FROM opportunity_index WHERE COALESCE({field},'')<>'' AND {_active_where(False)}
             GROUP BY {field} ORDER BY opportunities DESC, {field} LIMIT ?""", (limit,)).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def account_directory(search: str = "") -> dict[str, Any]:
+    """Read the weekly-built organisation projection without slowing page navigation."""
+    conn = connection()
+    try:
+        return {
+            "metrics": account_intelligence.metrics(conn),
+            "organisations": account_intelligence.organisations(conn, search=search, limit=250),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def account_profile(organisation_id: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return account_intelligence.profile(conn, organisation_id)
     finally:
         conn.close()
 

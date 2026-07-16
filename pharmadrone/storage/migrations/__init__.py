@@ -593,6 +593,134 @@ def _pharmaceutical_memory_schema(conn) -> None:
     """)
 
 
+def _account_intelligence_schema(conn) -> None:
+    """Evidence-governed organisation, contact-route and monitoring records."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS account_organisations (
+        organisation_id TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL UNIQUE,
+        canonical_name TEXT NOT NULL,
+        organisation_type TEXT NOT NULL DEFAULT 'commercial organisation',
+        country TEXT,
+        official_website_url TEXT,
+        identity_status TEXT NOT NULL DEFAULT 'source-derived',
+        source_count INTEGER NOT NULL DEFAULT 0,
+        relationship_count INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT,
+        next_review_at TEXT,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS account_aliases (
+        alias_id TEXT PRIMARY KEY,
+        organisation_id TEXT NOT NULL,
+        alias_name TEXT NOT NULL,
+        alias_key TEXT NOT NULL,
+        source_type TEXT,
+        source_id TEXT,
+        evidence_url TEXT,
+        verification_status TEXT NOT NULL DEFAULT 'source-derived',
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_seen_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (organisation_id) REFERENCES account_organisations(organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS account_relationships (
+        relationship_id TEXT PRIMARY KEY,
+        organisation_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL,
+        object_type TEXT NOT NULL,
+        object_name TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        stable_lead_id TEXT,
+        source_type TEXT,
+        source_id TEXT,
+        evidence_url TEXT,
+        evidence_status TEXT NOT NULL DEFAULT 'requires validation',
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_seen_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (organisation_id) REFERENCES account_organisations(organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS account_contact_routes (
+        route_id TEXT PRIMARY KEY,
+        organisation_id TEXT NOT NULL,
+        contact_function TEXT NOT NULL,
+        product_scope TEXT,
+        signal_scope TEXT,
+        rationale TEXT NOT NULL,
+        stable_lead_id TEXT,
+        source_type TEXT,
+        source_id TEXT,
+        evidence_url TEXT,
+        route_status TEXT NOT NULL DEFAULT 'function inferred from evidence',
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        FOREIGN KEY (organisation_id) REFERENCES account_organisations(organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS account_contacts (
+        contact_id TEXT PRIMARY KEY,
+        organisation_id TEXT NOT NULL,
+        person_name TEXT NOT NULL,
+        job_title TEXT,
+        contact_function TEXT,
+        email TEXT,
+        phone TEXT,
+        product_scope TEXT,
+        source_type TEXT,
+        source_id TEXT,
+        evidence_url TEXT NOT NULL,
+        verification_status TEXT NOT NULL,
+        confidence_note TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (organisation_id) REFERENCES account_organisations(organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS account_contact_observations (
+        id {ident},
+        contact_id TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE(contact_id, observation_hash),
+        FOREIGN KEY (contact_id) REFERENCES account_contacts(contact_id)
+    );
+    CREATE TABLE IF NOT EXISTS account_organisation_observations (
+        id {ident},
+        organisation_id TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE(organisation_id, observation_hash),
+        FOREIGN KEY (organisation_id) REFERENCES account_organisations(organisation_id)
+    );
+    CREATE TABLE IF NOT EXISTS account_monitor_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        organisations_seen INTEGER NOT NULL DEFAULT 0,
+        organisations_changed INTEGER NOT NULL DEFAULT 0,
+        contacts_seen INTEGER NOT NULL DEFAULT 0,
+        contacts_changed INTEGER NOT NULL DEFAULT 0,
+        contacts_due_review INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_account_org_name ON account_organisations(canonical_name);
+    CREATE INDEX IF NOT EXISTS idx_account_alias_key ON account_aliases(alias_key);
+    CREATE INDEX IF NOT EXISTS idx_account_relationship_org ON account_relationships(organisation_id, relationship_type);
+    CREATE INDEX IF NOT EXISTS idx_account_route_org ON account_contact_routes(organisation_id, contact_function);
+    CREATE INDEX IF NOT EXISTS idx_account_contact_org ON account_contacts(organisation_id, active, next_review_at);
+    CREATE INDEX IF NOT EXISTS idx_account_monitor_completed ON account_monitor_runs(completed_at DESC);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -602,6 +730,7 @@ MIGRATIONS = (
     Migration(6, "checkpoint_6db_administration_schema", _administration_schema),
     Migration(7, "checkpoint_7a_seller_case_study_schema", _seller_case_study_schema),
     Migration(8, "phase_7_pharmaceutical_memory_schema", _pharmaceutical_memory_schema),
+    Migration(9, "checkpoint_8_3_account_intelligence_schema", _account_intelligence_schema),
 )
 
 

@@ -162,11 +162,141 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
         st.json(fields, expanded=False)
 
 
-def entity_page(title: str, subtitle: str, field: str) -> None:
+def entity_page(title: str, subtitle: str, field: str, navigate: Callable[[str], None] | None = None) -> None:
+    if field == "company" and navigate is not None:
+        companies(navigate)
+        return
     theme.page_header(title, subtitle, "Discover")
     rows = data.entity_summary(field)
     if not rows: theme.empty(f"No {title.lower()} available", "Entity profiles will appear when indexed records contain this information.", "Empty")
     else: st.dataframe(pd.DataFrame(rows).rename(columns={"name":title.rstrip("s"),"opportunities":"Linked opportunities","highest_score":"Highest opportunity score","latest_signal":"Latest signal"}),use_container_width=True,hide_index=True)
+
+
+def companies(navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Account Intelligence",
+        "Evidence-governed organisations, linked products and signals, and weekly-reviewed contact routes.",
+        "Discover",
+    )
+    search = st.text_input("Find an organisation", placeholder="Company, university, hospital, agency or known alias")
+    result = data.account_directory(search)
+    metrics = result["metrics"]
+    a, b, c, d = st.columns(4)
+    a.metric("Organisations", f"{metrics.get('organisations', 0):,}")
+    b.metric("Evidence links", f"{metrics.get('relationships', 0):,}")
+    c.metric("Function routes", f"{metrics.get('contact_routes', 0):,}")
+    d.metric("Public named contacts", f"{metrics.get('named_contacts', 0):,}")
+    monitor = metrics.get("latest_monitor") or {}
+    st.caption(
+        "Named contacts appear only when a public source contains a person and an evidence URL. "
+        "A function route is not a verified person; every contact must be reconfirmed before outreach."
+    )
+    if monitor:
+        st.info(
+            f"Latest weekly monitor: {_safe(monitor.get('completed_at'))} · "
+            f"{int(monitor.get('organisations_changed') or 0):,} organisation changes · "
+            f"{int(monitor.get('contacts_due_review') or 0):,} contacts due revalidation"
+        )
+    rows = result["organisations"]
+    if not rows:
+        theme.empty("No organisations found", "Run the weekly Account Intelligence source job after source evidence is loaded.", "No matches")
+        return
+    labels = {
+        f"{row['canonical_name']} · {row.get('organisation_type') or 'organisation'} · {row.get('relationship_count', 0)} links": row
+        for row in rows
+    }
+    selected = st.selectbox("Organisation profile", list(labels))
+    table = pd.DataFrame(rows)[[
+        "canonical_name", "organisation_type", "country", "relationship_count",
+        "source_count", "named_contacts", "contact_routes", "last_verified_at",
+    ]].rename(columns={
+        "canonical_name": "Organisation", "organisation_type": "Type", "country": "Country",
+        "relationship_count": "Linked evidence", "source_count": "Sources",
+        "named_contacts": "Named contacts", "contact_routes": "Function routes",
+        "last_verified_at": "Last reviewed",
+    })
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    if st.button("Open organisation profile", type="primary"):
+        st.session_state["account_organisation_id"] = labels[selected]["organisation_id"]
+        navigate("Company Detail")
+
+
+def company_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Account Intelligence"):
+        navigate("Companies")
+    organisation_id = str(st.session_state.get("account_organisation_id") or "")
+    profile = data.account_profile(organisation_id) if organisation_id else None
+    if not profile:
+        theme.empty("Organisation not found", "Return to Account Intelligence and select a profile.", "Missing")
+        return
+    theme.page_header(profile["canonical_name"], "Organisation identity, product/signal links and contact evidence.", "Account Intelligence")
+    a, b, c, d = st.columns(4)
+    a.metric("Identity", _safe(profile.get("identity_status")))
+    b.metric("Type", _safe(profile.get("organisation_type")))
+    c.metric("Evidence sources", int(profile.get("source_count") or 0))
+    d.metric("Weekly review", _safe(profile.get("next_review_at")))
+    if profile.get("official_website_url"):
+        st.link_button("Open official organisation website ↗", profile["official_website_url"])
+
+    st.markdown("### Linked products, programmes and signals")
+    relationships = profile.get("relationships") or []
+    if relationships:
+        frame = pd.DataFrame(relationships)[[
+            "relationship_type", "object_name", "source_type", "source_id",
+            "evidence_status", "evidence_url", "last_seen_at",
+        ]].rename(columns={
+            "relationship_type": "Relationship", "object_name": "Product / programme",
+            "source_type": "Source", "source_id": "Source ID", "evidence_status": "Evidence status",
+            "evidence_url": "Official evidence", "last_seen_at": "Last seen",
+        })
+        st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+            "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open source ↗")
+        })
+    else:
+        st.caption("No current product or signal relationships.")
+
+    st.markdown("### Publicly listed named contacts")
+    st.warning("A public listing is evidence that the person was listed—not a guarantee they still own the responsibility. Reconfirm before outreach.")
+    contacts = profile.get("contacts") or []
+    if contacts:
+        frame = pd.DataFrame(contacts)[[
+            "person_name", "job_title", "contact_function", "email", "phone", "product_scope",
+            "verification_status", "evidence_url", "last_verified_at", "next_review_at",
+        ]].rename(columns={
+            "person_name": "Person", "job_title": "Published role", "contact_function": "Function",
+            "email": "Public email", "phone": "Public phone", "product_scope": "Scope",
+            "verification_status": "Status", "evidence_url": "Evidence", "last_verified_at": "Last checked",
+            "next_review_at": "Next review",
+        })
+        st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+            "Evidence": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    else:
+        st.info("No named person is supported by current public evidence. Use the verified function routes below.")
+
+    st.markdown("### Responsible function routes")
+    routes = profile.get("routes") or []
+    if routes:
+        st.dataframe(pd.DataFrame(routes)[[
+            "contact_function", "product_scope", "signal_scope", "rationale", "route_status",
+            "evidence_url", "last_verified_at", "next_review_at",
+        ]].rename(columns={
+            "contact_function": "Function", "product_scope": "Product", "signal_scope": "Signal",
+            "rationale": "Why this function", "route_status": "Status", "evidence_url": "Evidence",
+            "last_verified_at": "Last checked", "next_review_at": "Next review",
+        }), use_container_width=True, hide_index=True, column_config={
+            "Evidence": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    st.markdown("### Identity aliases and change history")
+    left, right = st.columns(2)
+    with left:
+        aliases = profile.get("aliases") or []
+        if aliases:
+            st.dataframe(pd.DataFrame(aliases)[["alias_name", "source_type", "source_id", "last_seen_at"]], hide_index=True, use_container_width=True)
+    with right:
+        changes = profile.get("changes") or []
+        if changes:
+            st.dataframe(pd.DataFrame(changes)[["observed_at", "snapshot_json"]], hide_index=True, use_container_width=True)
 
 
 def technology_profile() -> None:
