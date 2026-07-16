@@ -24,6 +24,7 @@ Repository commits and regression tests are the completion evidence.
 | Checkpoint 8.1 A–D — Sales-useful regulatory intelligence | Complete in code; production refresh required | source-quality telemetry, authoritative entity repair, official links and deterministic qualification briefs |
 | Checkpoint 8.2 A–D — Commercial qualification routing | Complete in code; production refresh required | readiness tiers, database filters, contact-function routing and explicit qualification gaps |
 | Checkpoint 8.3 A–D — Account Intelligence | Complete in code; production refresh required | canonical organisations and aliases, MAH/manufacturer/product/signal relationships, public-evidence contact governance and weekly monitoring |
+| Checkpoint 8.4 A–D — Regulatory Intelligence workspace | Complete in code; production refresh required | dedicated FDA/EMA/MHRA event workspace, database filters, official-evidence detail, monitoring and export |
 
 Labels such as “1A” and “2A” were not used in the repository and are not silently
 invented here. The canonical sequence above is the permanent source of truth.
