@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, pharmaceutical_memory as memory, seller_case_study
+from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, pharmaceutical_memory as memory, regulatory_intelligence, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -128,6 +129,105 @@ def opportunity_facets() -> dict[str, list[str]]:
         facets["priority"] = ["P1 · Ready to qualify", "P2 · Account research", "P3 · Evidence repair"]
         facets["contact_role"] = list(opportunity_index.CONTACT_ROLES)
         return facets
+    finally:
+        conn.close()
+
+
+def _regulatory_family_sql() -> str:
+    text = "LOWER(COALESCE(source_type,'') || ' ' || COALESCE(problem_category,''))"
+    return (
+        f"CASE WHEN {text} LIKE '%recall%' OR {text} LIKE '%quality defect%' OR {text} LIKE '%impurity%' OR {text} LIKE '%contamination%' THEN 'Recall / quality defect' "
+        f"WHEN {text} LIKE '%shortage%' OR {text} LIKE '%availability%' THEN 'Medicine shortage' "
+        f"WHEN {text} LIKE '%communication%' OR {text} LIKE '%dhpc%' THEN 'Safety communication' "
+        f"WHEN {text} LIKE '%referral%' OR {text} LIKE '%safety outcome%' OR {text} LIKE '%safety assessment%' OR {text} LIKE '%psusa%' THEN 'Safety review / referral' "
+        f"WHEN {text} LIKE '%withdraw%' OR {text} LIKE '%post-authorisation%' THEN 'Post-authorisation withdrawal' "
+        "ELSE 'Other regulatory event' END"
+    )
+
+
+def _regulator_sql() -> str:
+    return (
+        "CASE WHEN UPPER(COALESCE(source_type,'')) LIKE 'FDA %' THEN 'FDA' "
+        "WHEN UPPER(COALESCE(source_type,'')) LIKE 'EMA %' THEN 'EMA' "
+        "WHEN UPPER(COALESCE(source_type,'')) LIKE 'MHRA %' THEN 'MHRA' ELSE 'Other' END"
+    )
+
+
+def _first_official_url(value: Any) -> str:
+    return next(iter(regulatory_intelligence.evidence_urls({"evidence_links_json": value})), "")
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def regulatory_page(*, page: int = 1, page_size: int = 25, search: str = "",
+                    regulator: str = "All", event_family: str = "All", source: str = "All",
+                    region: str = "All", account_status: str = "All",
+                    evidence_status: str = "All", review_status: str = "All",
+                    include_hidden: bool = False) -> dict[str, Any]:
+    conn = connection()
+    try:
+        clauses = [_active_where(include_hidden), "(source_type LIKE 'FDA %' OR source_type LIKE 'EMA %' OR source_type LIKE 'MHRA %')"]
+        params: list[Any] = []
+        if search.strip():
+            q = f"%{search.strip().lower()}%"
+            clauses.append("(LOWER(COALESCE(company,'')) LIKE ? OR LOWER(COALESCE(product,'')) LIKE ? OR LOWER(COALESCE(problem_category,'')) LIKE ? OR LOWER(COALESCE(source_id,'')) LIKE ?)")
+            params.extend([q, q, q, q])
+        family_sql, regulator_sql = _regulatory_family_sql(), _regulator_sql()
+        if regulator != "All": clauses.append(f"({regulator_sql})=?"); params.append(regulator)
+        if event_family != "All": clauses.append(f"({family_sql})=?"); params.append(event_family)
+        if source != "All": clauses.append("source_type=?"); params.append(source)
+        if region != "All": clauses.append("region=?"); params.append(region)
+        if account_status == "Resolved organisation": clauses.append("TRIM(COALESCE(company,''))<>''")
+        elif account_status == "Organisation missing": clauses.append("TRIM(COALESCE(company,''))='' ")
+        if evidence_status == "Official link present": clauses.append("LOWER(COALESCE(evidence_links_json,'')) LIKE '%http%'")
+        elif evidence_status == "Evidence repair required": clauses.append("LOWER(COALESCE(evidence_links_json,'')) NOT LIKE '%http%'")
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        current_cutoff = (now - timedelta(days=7)).isoformat()
+        stale_cutoff = (now - timedelta(days=30)).isoformat()
+        if review_status == "Current": clauses.append("COALESCE(last_checked_at,'')>=?"); params.append(current_cutoff)
+        elif review_status == "Review due":
+            clauses.append("COALESCE(last_checked_at,'')<? AND COALESCE(last_checked_at,'')>=?")
+            params.extend([current_cutoff, stale_cutoff])
+        elif review_status == "Stale": clauses.append("COALESCE(last_checked_at,'')<>'' AND last_checked_at<?"); params.append(stale_cutoff)
+        elif review_status == "Review date missing": clauses.append("COALESCE(last_checked_at,'')='' ")
+        where = " AND ".join(clauses)
+        total = int(conn.execute(f"SELECT COUNT(*) AS n FROM opportunity_index WHERE {where}", tuple(params)).fetchone()["n"])
+        offset = max(0, page - 1) * page_size
+        rows = conn.execute(
+            f"""SELECT stable_lead_id,company,product,molecule,problem_category,source_type,source_id,region,
+            score,grade,lead_status,novelty_status,queue_status,evidence_links_json,last_checked_at,last_updated_at,
+            ({regulator_sql}) AS regulator,({family_sql}) AS event_family
+            FROM opportunity_index WHERE {where}
+            ORDER BY COALESCE(last_updated_at,last_checked_at) DESC,COALESCE(score,0) DESC LIMIT ? OFFSET ?""",
+            tuple(params + [page_size, offset]),
+        ).fetchall()
+        items = []
+        for raw in rows:
+            item = dict(raw)
+            item["official_source_url"] = _first_official_url(item.get("evidence_links_json"))
+            item["freshness"] = regulatory_intelligence.freshness(item.get("last_checked_at"))
+            item.update(regulatory_intelligence.action_route(item))
+            items.append(item)
+        grouped = [dict(row) for row in conn.execute(
+            f"SELECT ({regulator_sql}) AS regulator,({family_sql}) AS event_family,COUNT(*) AS total "
+            f"FROM opportunity_index WHERE {_active_where(False)} AND (source_type LIKE 'FDA %' OR source_type LIKE 'EMA %' OR source_type LIKE 'MHRA %') "
+            "GROUP BY 1,2 ORDER BY 1,2"
+        ).fetchall()]
+        return {"rows": items, "total": total, "page": page, "page_size": page_size, "coverage": grouped}
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def regulatory_facets() -> dict[str, list[str]]:
+    conn = connection()
+    try:
+        base = "(source_type LIKE 'FDA %' OR source_type LIKE 'EMA %' OR source_type LIKE 'MHRA %')"
+        return {
+            "regulator": list(regulatory_intelligence.REGULATORS),
+            "event_family": list(regulatory_intelligence.EVENT_FAMILIES),
+            "source": [str(row[0]) for row in conn.execute(f"SELECT DISTINCT source_type FROM opportunity_index WHERE {base} ORDER BY source_type").fetchall()],
+            "region": [str(row[0]) for row in conn.execute(f"SELECT DISTINCT region FROM opportunity_index WHERE {base} AND COALESCE(region,'')<>'' ORDER BY region").fetchall()],
+        }
     finally:
         conn.close()
 
@@ -290,6 +390,15 @@ def regulator_quality() -> dict[str, Any]:
     try:
         return opportunity_index.regulator_data_quality(conn)
     finally: conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def regulatory_workspace_quality() -> dict[str, Any]:
+    conn = connection()
+    try:
+        return opportunity_index.regulator_data_quality(conn, include_trials=False)
+    finally:
+        conn.close()
 
 
 @st.cache_data(ttl=60, show_spinner=False)

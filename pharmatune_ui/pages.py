@@ -40,7 +40,11 @@ def _official_evidence_url(row: dict[str, Any]) -> str:
         links = json.loads(row.get("evidence_links_json") or "[]")
     except Exception:
         links = []
-    return next((str(url) for url in links if str(url).startswith(("https://", "http://"))), "")
+    for link in links:
+        url = link.get("url") if isinstance(link, dict) else link
+        if str(url or "").startswith(("https://", "http://")):
+            return str(url)
+    return ""
 
 
 def overview() -> None:
@@ -160,6 +164,137 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
     with st.expander("Technical record"):
         fields = {k:v for k,v in row.items() if k not in {"data_json","details"} and v not in (None,"")}
         st.json(fields, expanded=False)
+
+
+def regulatory_signals(navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Regulatory Intelligence",
+        "A dedicated workspace for official shortages, recalls, safety actions and withdrawals.",
+        "Intelligence",
+    )
+    facets = data.regulatory_facets()
+    q1, q2, q3, q4 = st.columns([2, 1, 1.2, 0.7])
+    search = q1.text_input("Search regulatory events", placeholder="Organisation, medicine, issue or source ID", key="reg_search")
+    regulator = q2.selectbox("Regulator", ["All"] + facets["regulator"], key="reg_regulator")
+    family = q3.selectbox("Event type", ["All"] + facets["event_family"], key="reg_family")
+    size = q4.selectbox("Rows", [10, 25, 50], index=1, key="reg_size")
+    q5, q6, q7, q8, q9 = st.columns(5)
+    source = q5.selectbox("Official source", ["All"] + facets["source"], key="reg_source")
+    region = q6.selectbox("Market / region", ["All"] + facets["region"], key="reg_region")
+    account_status = q7.selectbox("Organisation identity", ["All", "Resolved organisation", "Organisation missing"], key="reg_account")
+    evidence_status = q8.selectbox("Evidence status", ["All", "Official link present", "Evidence repair required"], key="reg_evidence")
+    review_status = q9.selectbox("Review status", ["All", "Current", "Review due", "Stale", "Review date missing"], key="reg_review")
+    page = int(st.session_state.get("reg_page", 1))
+    result = data.regulatory_page(
+        page=page, page_size=size, search=search, regulator=regulator,
+        event_family=family, source=source, region=region,
+        account_status=account_status, evidence_status=evidence_status, review_status=review_status,
+    )
+    pages = max(1, math.ceil(result["total"] / size))
+    if page > pages:
+        st.session_state["reg_page"] = 1
+        st.rerun()
+
+    quality = data.regulatory_workspace_quality()
+    coverage = result.get("coverage") or []
+    a, b, c, d = st.columns(4)
+    a.metric("Regulatory events", f"{quality.get('total', 0):,}")
+    b.metric("Current matches", f"{result['total']:,}")
+    c.metric("Missing organisation", f"{quality.get('missing_company', 0):,}")
+    d.metric("Evidence links to repair", f"{quality.get('missing_official_link', 0):,}")
+    st.caption("Regulatory events are confirmed public records. Commercial need, urgency and buying intent still require human qualification.")
+
+    if not result["rows"]:
+        theme.empty("No matching regulatory events", "Broaden the filters or remove the organisation/evidence restriction.", "No results")
+        return
+    frame = pd.DataFrame([{
+        "Regulator": row.get("regulator"), "Event": row.get("event_family"),
+        "Organisation": row.get("company") or "Not stated by official source",
+        "Medicine / product": row.get("product") or row.get("molecule") or "Not stated",
+        "Issue": row.get("problem_category"), "Market": row.get("region"),
+        "Review status": row.get("freshness"), "Responsible function": row.get("responsible_function"),
+        "Official evidence": row.get("official_source_url"), "Lead ID": row.get("stable_lead_id"),
+    } for row in result["rows"]])
+    event = st.dataframe(
+        frame, use_container_width=True, hide_index=True, on_select="rerun",
+        selection_mode="single-row", key="reg_table",
+        column_config={"Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open source ↗")},
+    )
+    selected_rows = event.selection.rows if event and hasattr(event, "selection") else []
+    controls = st.columns([1, 1, 3])
+    if selected_rows and controls[0].button("Open regulatory detail", type="primary"):
+        selected_row = result["rows"][selected_rows[0]]
+        st.session_state["regulatory_lead_id"] = selected_row["stable_lead_id"]
+        navigate("Regulatory Detail")
+    controls[1].download_button(
+        "Export this page (.csv)", frame.to_csv(index=False).encode("utf-8"),
+        "pharmatune_regulatory_intelligence.csv", "text/csv",
+    )
+    prev, counter, nxt = st.columns([1, 4, 1])
+    if prev.button("← Previous", disabled=page <= 1, key="reg_prev"):
+        st.session_state["reg_page"] = page - 1; st.rerun()
+    counter.markdown(f"<div style='text-align:center;padding:12px'>Page {page} / {pages}</div>", unsafe_allow_html=True)
+    if nxt.button("Next →", disabled=page >= pages, key="reg_next"):
+        st.session_state["reg_page"] = page + 1; st.rerun()
+    with st.expander("Regulator and event coverage"):
+        st.dataframe(pd.DataFrame(coverage), use_container_width=True, hide_index=True)
+    with st.expander("Data-quality audit"):
+        st.dataframe(pd.DataFrame(quality.get("sources") or []), use_container_width=True, hide_index=True)
+
+
+def regulatory_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Regulatory Intelligence"):
+        navigate("Regulatory Signals")
+    lead_id = str(st.session_state.get("regulatory_lead_id") or "")
+    row = data.opportunity(lead_id) if lead_id else None
+    if not row:
+        theme.empty("Regulatory event not found", "Return to Regulatory Intelligence and select an event.", "Missing")
+        return
+    from pharmadrone.pipeline import regulatory_intelligence
+    route = regulatory_intelligence.action_route(row)
+    official_url = _official_evidence_url(row)
+    theme.page_header(
+        _safe(row.get("product") or row.get("molecule"), "Regulatory event"),
+        f"{route['regulator']} · {route['event_family']} · {_safe(row.get('region'), 'Market not recorded')}",
+        "Regulatory Intelligence",
+    )
+    st.markdown(theme.badge(route["regulator"], "green") + theme.badge(route["event_family"], "blue") + theme.badge("Human validation required", "violet"), unsafe_allow_html=True)
+    a, b, c, d = st.columns(4)
+    a.metric("Organisation / MAH", _safe(row.get("company"), "Not stated"))
+    b.metric("Opportunity score", _safe(row.get("score"), "—"))
+    c.metric("Grade", _safe(row.get("grade"), "—"))
+    d.metric("Review status", regulatory_intelligence.freshness(row.get("last_checked_at")))
+    st.markdown("### Confirmed regulatory evidence")
+    left, right = st.columns([2, 1])
+    with left:
+        theme.card(
+            _safe(row.get("source_type")),
+            _safe(row.get("problem_category"), "Regulatory event category not recorded"),
+            [("Official public record", "green")],
+            f"Source ID {_safe(row.get('source_id'))} · Last checked {_safe(row.get('last_checked_at'))}",
+        )
+    with right:
+        if official_url:
+            st.link_button("Open official regulator evidence ↗", official_url, use_container_width=True)
+        else:
+            st.error("Official evidence URL requires repair before external use.")
+    st.markdown("### Analyst action route")
+    st.write(f"**Responsible function:** {route['responsible_function']}")
+    st.write(f"**Required review:** {route['recommended_review']}")
+    st.warning(route["commercial_boundary"])
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    evidence = details.get("evidence") if isinstance(details.get("evidence"), list) else []
+    if evidence:
+        st.markdown("### Structured source facts")
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            entities = item.get("entities") if isinstance(item.get("entities"), dict) else {}
+            facts = {key: value for key, value in entities.items() if value not in (None, "", [], {})}
+            with st.expander(f"{_safe(item.get('source_name') or item.get('source_type'))} · {_safe(item.get('record_id'))}"):
+                st.json(facts, expanded=False)
+    with st.expander("Technical record"):
+        st.json({key: value for key, value in row.items() if key not in {"details", "data_json"} and value not in (None, "")}, expanded=False)
 
 
 def entity_page(title: str, subtitle: str, field: str, navigate: Callable[[str], None] | None = None) -> None:

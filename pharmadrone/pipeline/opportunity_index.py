@@ -243,20 +243,21 @@ def repair_regulator_entities(conn) -> dict[str, int]:
     return counts
 
 
-def _regulator_index_rows(conn) -> list[dict[str, Any]]:
+def _regulator_index_rows(conn, *, include_trials: bool = True) -> list[dict[str, Any]]:
+    trial_clause = " OR source_type='ClinicalTrials.gov trial'" if include_trials else ""
     rows = conn.execute(
         "SELECT stable_lead_id,company,product,problem_category,source_type,source_id,region,"
         "score,grade,lead_status,evidence_links_json,data_json FROM opportunity_index "
         "WHERE source_type LIKE 'FDA %' OR source_type LIKE 'EMA %' "
-        "OR source_type LIKE 'MHRA %' OR source_type='ClinicalTrials.gov trial'"
+        f"OR source_type LIKE 'MHRA %'{trial_clause}"
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def regulator_data_quality(conn) -> dict[str, Any]:
+def regulator_data_quality(conn, *, include_trials: bool = True) -> dict[str, Any]:
     """Return auditable field/link completeness for sales-facing source rows."""
     grouped: dict[str, dict[str, int]] = {}
-    for row in _regulator_index_rows(conn):
+    for row in _regulator_index_rows(conn, include_trials=include_trials):
         source = str(row.get("source_type") or "Unknown source")
         metrics = grouped.setdefault(source, {
             "total": 0, "missing_company": 0, "missing_product": 0,
