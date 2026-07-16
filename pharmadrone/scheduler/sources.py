@@ -457,6 +457,14 @@ def fetch_commercial_intelligence(conn, state: dict[str, Any], guards: Guardrail
     }
 
 
+def fetch_customer_alerts(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    return {
+        "records": [], "cursor_after": "daily-customer-alert-evaluation",
+        "watermark_after": state.get("last_watermark") or "",
+        "metadata": {"mode": "stored customer alert rules evaluated against stored intelligence"},
+    }
+
+
 FETCHERS = {
     "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
@@ -479,6 +487,7 @@ FETCHERS = {
     "research_innovation": fetch_research_innovation,
     "deal_discovery": fetch_deal_discovery,
     "commercial_intelligence": fetch_commercial_intelligence,
+    "customer_alerts": fetch_customer_alerts,
     "monthly_maintenance": fetch_monthly_maintenance,
 }
 

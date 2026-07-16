@@ -8,7 +8,7 @@ from typing import Any, Callable
 import pandas as pd
 import streamlit as st
 
-from pharmadrone.pipeline import human_audit, seller_case_study
+from pharmadrone.pipeline import customer_product, human_audit, seller_case_study
 from . import data, theme
 
 
@@ -47,6 +47,41 @@ def _official_evidence_url(row: dict[str, Any]) -> str:
     return ""
 
 
+def _save_to_workspace(record_type: str, record_id: Any, label: Any,
+                       source_url: Any = "", snapshot: dict[str, Any] | None = None) -> None:
+    principal = st.session_state.get("customer_principal") or {}
+    if principal.get("role") != "analyst_reviewer" or not record_id:
+        return
+    lists = data.customer_workspace_snapshot(principal)["lists"]
+    with st.expander("Save to customer workspace"):
+        if not lists:
+            st.caption("Create a saved list first from the Saved Lists page.")
+            return
+        options = {row["name"]: row["saved_list_id"] for row in lists}
+        selected = st.selectbox("Saved list", list(options), key=f"save_{record_type}_{record_id}")
+        note = st.text_input("Workspace note", key=f"note_{record_type}_{record_id}")
+        if st.button("Save record", key=f"button_{record_type}_{record_id}"):
+            try:
+                customer_product.add_item(
+                    principal, options[selected], record_type=record_type, record_id=str(record_id),
+                    record_label=_safe(label, "Unnamed record"), source_url=str(source_url or ""),
+                    note=note, evidence_status="internal intelligence · human validation required",
+                    snapshot=snapshot,
+                )
+                _customer_refresh()
+                st.success("Saved to your workspace.")
+            except Exception as exc:
+                st.error(str(exc))
+
+
+def _can_export() -> bool:
+    principal = st.session_state.get("customer_principal") or {}
+    try:
+        return bool(customer_product.capabilities(principal).get("can_export"))
+    except Exception:
+        return False
+
+
 def overview() -> None:
     theme.page_header("Global intelligence overview", "A live, evidence-governed view of pharmaceutical opportunity signals and validation work.", "Discover")
     info = data.overview(); stats = info["stats"]; audit = info["audit"]; sched = info["scheduler"]
@@ -71,6 +106,7 @@ def overview() -> None:
         {"Area":"Patent & lifecycle","Status":"Live","Detail":"FDA Orange Book applications, listed patents, exclusivities and weekly expiry monitoring"},
         {"Area":"Research & innovation","Status":"Live","Detail":"Research organisations, publications, authors, collaborations and evidence-gated technology transfer"},
         {"Area":"Deals & funding","Status":"Live","Detail":"Licensing, M&A, partnerships, financing, grants and verification-gated commercial signals"},
+        {"Area":"Customer workspace","Status":"Live","Detail":"Tenant-scoped saved lists, alerts, governed exports, permissions and activity history"},
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -163,6 +199,7 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
     if missing:
         st.warning("Missing before qualification: " + "; ".join(str(item) for item in missing))
     st.caption(_safe(qualification.get("qualification_basis")))
+    _save_to_workspace("opportunity", row.get("stable_lead_id"), row.get("product") or row.get("company"), official_url, row)
     with st.expander("Technical record"):
         fields = {k:v for k,v in row.items() if k not in {"data_json","details"} and v not in (None,"")}
         st.json(fields, expanded=False)
@@ -228,10 +265,11 @@ def regulatory_signals(navigate: Callable[[str], None]) -> None:
         selected_row = result["rows"][selected_rows[0]]
         st.session_state["regulatory_lead_id"] = selected_row["stable_lead_id"]
         navigate("Regulatory Detail")
-    controls[1].download_button(
-        "Export this page (.csv)", frame.to_csv(index=False).encode("utf-8"),
-        "pharmatune_regulatory_intelligence.csv", "text/csv",
-    )
+    if _can_export():
+        controls[1].download_button(
+            "Export this page (.csv)", frame.to_csv(index=False).encode("utf-8"),
+            "pharmatune_regulatory_intelligence.csv", "text/csv",
+        )
     prev, counter, nxt = st.columns([1, 4, 1])
     if prev.button("← Previous", disabled=page <= 1, key="reg_prev"):
         st.session_state["reg_page"] = page - 1; st.rerun()
@@ -266,6 +304,7 @@ def regulatory_detail(navigate: Callable[[str], None]) -> None:
     b.metric("Opportunity score", _safe(row.get("score"), "—"))
     c.metric("Grade", _safe(row.get("grade"), "—"))
     d.metric("Review status", regulatory_intelligence.freshness(row.get("last_checked_at")))
+    _save_to_workspace("regulatory", row.get("stable_lead_id"), row.get("product") or row.get("company") or row.get("source_id"), official_url, row)
     st.markdown("### Confirmed regulatory evidence")
     left, right = st.columns([2, 1])
     with left:
@@ -374,6 +413,7 @@ def company_detail(navigate: Callable[[str], None]) -> None:
     d.metric("Weekly review", _safe(profile.get("next_review_at")))
     if profile.get("official_website_url"):
         st.link_button("Open official organisation website ↗", profile["official_website_url"])
+    _save_to_workspace("organisation", profile.get("organisation_id"), profile.get("canonical_name"), profile.get("official_website_url"), profile)
 
     st.markdown("### Linked products, programmes and signals")
     relationships = profile.get("relationships") or []
@@ -505,10 +545,11 @@ def patents(navigate: Callable[[str], None]) -> None:
     if left.button("Open lifecycle detail", type="primary"):
         st.session_state["patent_lifecycle_id"] = labels[selected]["lifecycle_id"]
         navigate("Patent Detail")
-    right.download_button(
-        "Export filtered lifecycle records (.csv)", frame.to_csv(index=False).encode("utf-8"),
-        "pharmatune_patent_lifecycle.csv", "text/csv",
-    )
+    if _can_export():
+        right.download_button(
+            "Export filtered lifecycle records (.csv)", frame.to_csv(index=False).encode("utf-8"),
+            "pharmatune_patent_lifecycle.csv", "text/csv",
+        )
 
 
 def patent_detail(navigate: Callable[[str], None]) -> None:
@@ -524,6 +565,7 @@ def patent_detail(navigate: Callable[[str], None]) -> None:
         f"{_safe(profile.get('ingredient'))} · {profile['application_number']}-{profile['product_number']}",
         "Patent & Lifecycle",
     )
+    _save_to_workspace("patent", profile.get("lifecycle_id"), profile.get("trade_name"), profile.get("official_source_url"), profile)
     a, b, c, d = st.columns(4)
     a.metric("Lifecycle state", _safe(profile.get("lifecycle_status")))
     b.metric("Next listed expiry", _safe(profile.get("next_expiry_date"), "None listed"))
@@ -654,7 +696,7 @@ def research_innovation(navigate: Callable[[str], None]) -> None:
             if left.button("Open research profile", type="primary"):
                 st.session_state["research_organisation_id"] = labels[selected]["research_organisation_id"]
                 navigate("Research Detail")
-            right.download_button("Export organisations (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_organisations.csv", "text/csv")
+            if _can_export(): right.download_button("Export organisations (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_organisations.csv", "text/csv")
         else:
             theme.empty("No research organisations found", "Run the literature sources and then research_innovation, or broaden the filters.", "No matches")
 
@@ -671,7 +713,7 @@ def research_innovation(navigate: Callable[[str], None]) -> None:
             st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
                 "Official publication": st.column_config.LinkColumn("Official publication", display_text="Open evidence ↗")
             })
-            st.download_button("Export publications (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_publications.csv", "text/csv")
+            if _can_export(): st.download_button("Export publications (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_publications.csv", "text/csv")
         else:
             st.caption("No publications match these filters.")
 
@@ -690,7 +732,7 @@ def research_innovation(navigate: Callable[[str], None]) -> None:
             st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
                 "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open evidence ↗")
             })
-            st.download_button("Export relationships (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_scientific_relationships.csv", "text/csv")
+            if _can_export(): st.download_button("Export relationships (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_scientific_relationships.csv", "text/csv")
         else:
             st.caption("No explicit registry collaborations or multi-institution publication relationships match these filters.")
 
@@ -709,7 +751,7 @@ def research_innovation(navigate: Callable[[str], None]) -> None:
             st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
                 "Official transfer evidence": st.column_config.LinkColumn("Official transfer evidence", display_text="Open transfer page ↗")
             })
-            st.download_button("Export transfer records (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_technology_transfer.csv", "text/csv")
+            if _can_export(): st.download_button("Export transfer records (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_technology_transfer.csv", "text/csv")
         else:
             theme.empty(
                 "No verified technology-transfer inventory yet",
@@ -740,6 +782,7 @@ def research_detail(navigate: Callable[[str], None]) -> None:
     for label, url in links:
         if str(url or "").startswith("http"):
             st.link_button(label, url)
+    _save_to_workspace("research", profile.get("research_organisation_id"), profile.get("canonical_name"), profile.get("official_url"), profile)
 
     st.markdown("### Evidence-linked publications")
     publications = profile.get("publications") or []
@@ -856,7 +899,7 @@ def deals_funding(navigate: Callable[[str], None]) -> None:
             if left.button("Open event detail", type="primary"):
                 st.session_state["commercial_event_id"] = labels[selected]["commercial_event_id"]
                 navigate("Deal Detail")
-            right.download_button("Export deals and signals (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_deals_funding.csv", "text/csv")
+            if _can_export(): right.download_button("Export deals and signals (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_deals_funding.csv", "text/csv")
         else:
             theme.empty("No commercial events found", "Run deal discovery or ingest an explicit primary transaction source, then run commercial_intelligence.", "No matches")
 
@@ -874,7 +917,7 @@ def deals_funding(navigate: Callable[[str], None]) -> None:
             st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
                 "Evidence": st.column_config.LinkColumn("Evidence", display_text="Open publication evidence ↗")
             })
-            st.download_button("Export research grants (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_grants.csv", "text/csv")
+            if _can_export(): st.download_button("Export research grants (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_grants.csv", "text/csv")
         else:
             st.caption("No retained scholarly funding metadata matches these filters.")
 
@@ -901,6 +944,7 @@ def deal_detail(navigate: Callable[[str], None]) -> None:
     b.metric("Published value", value)
     c.metric("Published status", _safe(profile.get("event_status"), "Not stated"))
     d.metric("Evidence", "Primary linked" if profile.get("primary_source_verified") else "Verification required")
+    _save_to_workspace("commercial_event", profile.get("commercial_event_id"), profile.get("subject_name") or profile.get("event_type"), profile.get("evidence_url"), profile)
     st.markdown("### Confirmed and unresolved transaction facts")
     facts = pd.DataFrame([{
         "Party A": profile.get("party_a_name") or "Not stated",
@@ -1050,14 +1094,15 @@ def case_studies(principal: dict[str, Any], navigate: Callable[[str], None]) -> 
                 if st.button("Open selected candidate in Human Validation"):
                     st.session_state["validation_audit_key"] = review_labels[selected]["audit_key"]
                     navigate("Human Validation")
-            st.download_button(
-                "Download internal evidence-review CSV",
-                seller_case_study.export_review_csv(result),
-                "pharmatune_hovione_internal_review.csv",
-                "text/csv",
-            )
+            if _can_export():
+                st.download_button(
+                    "Download internal evidence-review CSV",
+                    seller_case_study.export_review_csv(result),
+                    "pharmatune_hovione_internal_review.csv",
+                    "text/csv",
+                )
 
-        if result.get("approved_rows"):
+        if result.get("approved_rows") and _can_export():
             st.markdown("### Customer-safe case study exports")
             st.caption("Only human-approved rows are included. Internal reviewer names and unapproved candidates are excluded.")
             e1,e2 = st.columns(2)
@@ -1073,6 +1118,8 @@ def case_studies(principal: dict[str, Any], navigate: Callable[[str], None]) -> 
                 "pharmatune_hovione_customer_case_study.html",
                 "text/html",
             )
+        elif result.get("approved_rows"):
+            st.warning("Customer exports are approved by human review but blocked by this workspace's export policy.")
         else:
             st.info("Customer exports are locked. Validate a candidate and approve it for external case-study use, then rebuild this case study.")
         with st.expander("Method and limitations"):
@@ -1185,6 +1232,238 @@ def pharmaceutical_memory() -> None:
             "Lead ID": row.get("stable_lead_id"),
         } for row in relationships])
         st.dataframe(frame, use_container_width=True, hide_index=True)
+
+
+def _customer_refresh() -> None:
+    data.customer_workspace_snapshot.clear()
+    data.customer_saved_items.clear()
+    data.customer_alert_inbox.clear()
+
+
+def customer_workspace(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "My Workspace",
+        "Your tenant-scoped intelligence lists, alert inbox, governed exports and recent workflow activity.",
+        "Phase 12",
+    )
+    snapshot = data.customer_workspace_snapshot(principal)
+    metrics, permission = snapshot["metrics"], snapshot["capabilities"]
+    a, b, c, d, e = st.columns(5)
+    a.metric("Saved lists", metrics["lists"])
+    b.metric("Saved records", metrics["saved_items"])
+    c.metric("Active alerts", metrics["active_rules"])
+    d.metric("Unread", metrics["unread_alerts"])
+    e.metric("Exports", metrics["exports"])
+    st.caption(
+        f"Workspace scope: {permission['scope_key']} · Role: {permission['role']} · "
+        f"Export policy: {permission['export_policy']}"
+    )
+    left, right = st.columns(2)
+    with left:
+        st.markdown("### Saved intelligence")
+        lists = snapshot["lists"]
+        if lists:
+            st.dataframe(pd.DataFrame([{
+                "List": row.get("name"), "Records": row.get("item_count"),
+                "Visibility": row.get("visibility"), "Updated": row.get("updated_at"),
+            } for row in lists]), use_container_width=True, hide_index=True)
+        else:
+            theme.empty("No saved lists", "Create your first list in Saved Lists.", "Empty workspace")
+        if st.button("Open Saved Lists", use_container_width=True): navigate("Saved Lists")
+    with right:
+        st.markdown("### Alert inbox")
+        alerts = snapshot["alerts"][:8]
+        if alerts:
+            for row in alerts:
+                theme.card(
+                    _safe(row.get("title"), "Intelligence alert"),
+                    _safe(row.get("summary"), "Stored intelligence matched an alert rule."),
+                    [(_safe(row.get("severity"), "medium").title(), "red" if row.get("severity") in {"critical", "high"} else "amber")],
+                    f"{row.get('record_type')} · {row.get('detected_at')}",
+                )
+        else:
+            theme.empty("No alert events", "Create an alert rule, then evaluate it against stored intelligence.", "Inbox clear")
+        if st.button("Open Alerts", use_container_width=True): navigate("Alerts")
+    st.markdown("### Recent workspace activity")
+    activity = snapshot["activity"]
+    if activity:
+        st.dataframe(pd.DataFrame(activity)[["created_at", "actor_name", "event_type", "safe_summary"]].rename(columns={
+            "created_at": "Time", "actor_name": "Actor", "event_type": "Event", "safe_summary": "Activity",
+        }), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No customer workflow activity has been recorded yet.")
+
+
+def saved_lists(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Saved Lists",
+        "Organise opportunities, organisations, regulatory signals, patents, research and deals inside your workspace.",
+        "Customer workflow",
+    )
+    snapshot = data.customer_workspace_snapshot(principal)
+    permission = snapshot["capabilities"]
+    if not permission["can_write"]:
+        st.info("Read-only access: lists can be inspected, but records, alert rules and exports cannot be changed.")
+    if permission["can_write"]:
+        with st.expander("Create a saved list", expanded=not bool(snapshot["lists"])):
+            with st.form("create_customer_list"):
+                name = st.text_input("List name", placeholder="Priority UK quality signals")
+                description = st.text_area("Purpose", placeholder="What this list is used for")
+                visibility = st.selectbox("Visibility", ["workspace", "private"])
+                if st.form_submit_button("Create list", type="primary"):
+                    try:
+                        customer_product.create_list(principal, name, description, visibility)
+                        _customer_refresh(); st.success("Saved list created."); st.rerun()
+                    except Exception as exc: st.error(str(exc))
+    lists = data.customer_workspace_snapshot(principal)["lists"]
+    if not lists:
+        theme.empty("No saved lists", "Create a list to begin a customer intelligence workflow.", "No lists")
+        return
+    labels = {f"{row['name']} · {int(row.get('item_count') or 0)} records": row for row in lists}
+    selected = labels[st.selectbox("Saved list", list(labels), key="customer_saved_list")]
+    st.caption(f"{selected.get('description') or 'No description'} · {selected.get('visibility')} visibility · created by {selected.get('created_by')}")
+    if permission["can_write"]:
+        with st.expander("Add an intelligence record"):
+            with st.form("add_customer_item"):
+                c1, c2 = st.columns(2)
+                record_type = c1.selectbox("Record type", list(customer_product.RECORD_TYPES))
+                record_id = c2.text_input("Record ID", placeholder="Stable PharmaTune record ID")
+                label = st.text_input("Record label", placeholder="Company, product, publication or event")
+                source_url = st.text_input("Evidence URL", placeholder="https://…")
+                note = st.text_area("Workspace note")
+                if st.form_submit_button("Save record", type="primary"):
+                    try:
+                        customer_product.add_item(
+                            principal, selected["saved_list_id"], record_type=record_type,
+                            record_id=record_id, record_label=label, source_url=source_url,
+                            note=note, evidence_status="internal intelligence · human validation required",
+                        )
+                        _customer_refresh(); st.success("Record saved."); st.rerun()
+                    except Exception as exc: st.error(str(exc))
+    items = data.customer_saved_items(principal, selected["saved_list_id"])
+    st.markdown("### Saved records")
+    if items:
+        frame = pd.DataFrame([{
+            "Type": row.get("record_type"), "Record": row.get("record_label"), "ID": row.get("record_id"),
+            "Evidence status": row.get("evidence_status"), "Note": row.get("note"),
+            "Evidence": row.get("source_url"), "Added": row.get("added_at"),
+        } for row in items])
+        st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+            "Evidence": st.column_config.LinkColumn("Evidence", display_text="Open evidence ↗")
+        })
+        if permission["can_write"]:
+            removal = {f"{row['record_label']} · {row['record_type']}": row for row in items}
+            remove_label = st.selectbox("Remove record", ["Select…"] + list(removal))
+            if st.button("Remove selected", disabled=remove_label == "Select…"):
+                try:
+                    customer_product.remove_item(principal, removal[remove_label]["saved_item_id"])
+                    _customer_refresh(); st.success("Record removed."); st.rerun()
+                except Exception as exc: st.error(str(exc))
+    else:
+        theme.empty("This list is empty", "Add a PharmaTune record using its stable ID and retained evidence URL.", "No records")
+    st.markdown("### Governed export")
+    st.caption("Internal exports remain labelled as intelligence requiring review. External exports include only opportunities whose latest human audit explicitly approves external use; all other records are excluded.")
+    if not permission["can_export"]:
+        st.warning(f"Exports are unavailable under policy: {permission['export_policy']}.")
+    else:
+        export_kind = st.radio("Export audience", ["internal", "external"], horizontal=True)
+        if st.button("Prepare governed CSV"):
+            try:
+                payload, metadata = customer_product.export_saved_list(principal, selected["saved_list_id"], export_kind)
+                st.session_state["customer_export_payload"] = payload
+                st.session_state["customer_export_metadata"] = metadata
+                _customer_refresh()
+            except Exception as exc: st.error(str(exc))
+        payload = st.session_state.get("customer_export_payload")
+        metadata = st.session_state.get("customer_export_metadata") or {}
+        if payload is not None:
+            st.info(f"Prepared {metadata.get('record_count', 0)} records · excluded {metadata.get('excluded_count', 0)} · checksum {str(metadata.get('checksum') or '')[:16]}…")
+            st.download_button("Download governed CSV", payload, f"pharmatune_{export_kind}_saved_list.csv", "text/csv")
+
+
+def customer_alerts(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Alerts",
+        "Monitor stored PharmaTune intelligence using tenant-scoped rules. Evaluation never calls external APIs during page navigation.",
+        "Customer workflow",
+    )
+    snapshot = data.customer_workspace_snapshot(principal)
+    permission = snapshot["capabilities"]
+    if permission["can_write"]:
+        with st.expander("Create an alert rule", expanded=not bool(snapshot["rules"])):
+            with st.form("create_customer_alert"):
+                name = st.text_input("Rule name", placeholder="UK shortage and recall watch")
+                c1, c2, c3 = st.columns(3)
+                record_type = c1.selectbox("Intelligence type", ["all"] + list(customer_product.RECORD_TYPES))
+                severity = c2.selectbox("Severity", list(customer_product.ALERT_SEVERITIES), index=1)
+                cadence = c3.selectbox("Cadence", list(customer_product.ALERT_CADENCES))
+                search = st.text_input("Search term", placeholder="Product, company, molecule or topic")
+                c4, c5 = st.columns(2)
+                source = c4.text_input("Source contains", placeholder="EMA, MHRA, FDA, OpenAlex…")
+                region = c5.text_input("Region contains", placeholder="United Kingdom")
+                if st.form_submit_button("Create alert rule", type="primary"):
+                    try:
+                        customer_product.create_alert_rule(
+                            principal, name=name, record_type=record_type, search_term=search,
+                            source_filter=source, region_filter=region, severity=severity, cadence=cadence,
+                        )
+                        _customer_refresh(); st.success("Alert rule created."); st.rerun()
+                    except Exception as exc: st.error(str(exc))
+        if st.button("Evaluate rules against stored intelligence", type="primary"):
+            try:
+                result = customer_product.evaluate_alerts(principal)
+                _customer_refresh(); st.success(f"Evaluated {result['rules_evaluated']} rules; created {result['alerts_created']} new alerts."); st.rerun()
+            except Exception as exc: st.error(str(exc))
+    else:
+        st.info("Read-only access: alert rules and inbox decisions cannot be changed.")
+    rules = data.customer_workspace_snapshot(principal)["rules"]
+    st.markdown("### Rules")
+    if rules:
+        st.dataframe(pd.DataFrame([{
+            "Rule": row.get("name"), "Type": row.get("record_type"), "Search": row.get("search_term"),
+            "Source": row.get("source_filter"), "Region": row.get("region_filter"),
+            "Severity": row.get("severity"), "Cadence": row.get("cadence"),
+            "Enabled": bool(row.get("enabled")), "Last evaluated": row.get("last_evaluated_at"),
+        } for row in rules]), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No alert rules have been configured.")
+    inbox = data.customer_alert_inbox(principal)
+    st.markdown("### Alert inbox")
+    if not inbox:
+        theme.empty("Inbox clear", "No stored intelligence currently matches your alert rules.", "No alerts")
+        return
+    labels = {f"{row['severity'].upper()} · {row['title']} · {row['detected_at']}": row for row in inbox}
+    chosen = labels[st.selectbox("Alert event", list(labels))]
+    theme.card(chosen["title"], chosen["summary"], [(chosen["severity"].title(), "red" if chosen["severity"] in {"critical", "high"} else "amber")], f"Rule {chosen.get('rule_name')} · {chosen.get('record_type')} · {chosen.get('record_id')}")
+    if str(chosen.get("source_url") or "").startswith(("https://", "http://")):
+        st.link_button("Open retained evidence ↗", chosen["source_url"])
+    st.warning("An alert is an intelligence match, not proof of customer need, urgency, causality, ownership or commercial intent. Human review remains required.")
+    if permission["can_write"]:
+        c1, c2 = st.columns(2)
+        if c1.button("Mark read", use_container_width=True):
+            customer_product.mark_alert(principal, chosen["alert_event_id"], "read"); _customer_refresh(); st.rerun()
+        if c2.button("Dismiss", use_container_width=True):
+            customer_product.mark_alert(principal, chosen["alert_event_id"], "dismiss"); _customer_refresh(); st.rerun()
+
+
+def customer_settings(principal: dict[str, Any]) -> None:
+    theme.page_header("Workspace Settings", "Your customer access scope and policy controls. Secret values are never displayed.", "Phase 12")
+    snapshot = data.customer_workspace_snapshot(principal)
+    permission = snapshot["capabilities"]
+    a, b, c, d = st.columns(4)
+    a.metric("Role", permission["role"].replace("_", " ").title())
+    b.metric("Write access", "Allowed" if permission["can_write"] else "Read only")
+    c.metric("Exports", "Allowed" if permission["can_export"] else "Restricted")
+    d.metric("Notifications", permission["notification_mode"].replace("_", " ").title())
+    st.markdown("### Governance")
+    st.dataframe(pd.DataFrame([{
+        "Workspace scope": permission["scope_key"],
+        "Organisation": permission["organisation_id"] or "Personal default workspace",
+        "Workspace": permission["workspace_id"] or "Default",
+        "Export policy": permission["export_policy"],
+        "External-use rule": "Latest human audit must explicitly approve the opportunity",
+    }]), use_container_width=True, hide_index=True)
+    st.info("Organisation membership, invitations, retention, MFA and export policy are managed in the separate role-scoped Workspace Administration console.")
 
 
 def health() -> None:

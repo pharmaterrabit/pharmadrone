@@ -471,6 +471,14 @@ The same server entry point now routes authenticated roles to separate Customer 
 
 The Case Studies workspace now uses a real Hovione provider profile supported by Hovione's official capability pages. It matches the verified formulation, particle-engineering, solubility, dissolution, analytical/QC, stability and impurity capability lens against the frozen human-validation dataset. Every build is saved under migration 7, candidates link directly into Human Validation, and customer Markdown/HTML exports remain locked until at least one target passes the append-only external-use gate. Internal review CSVs remain clearly separated from customer-safe exports. See `CHECKPOINT_7A.md`.
 
+## Phase 12 — Customer Product
+
+The Customer / Analyst application now includes a tenant-scoped My Workspace,
+cross-module saved lists, stored-data alert rules and inbox, role-aware controls,
+governed internal/external CSV delivery and append-only customer activity. External
+saved-list exports fail closed unless the latest human audit explicitly approves an
+opportunity for external use. See `PHASE_12_CUSTOMER_PRODUCT.md`.
+
 See `CHECKPOINT_6C1.md` and `DEPLOY.md` for commands, GitHub Secrets and the live stability checklist.
 
 Checkpoint 6C.1 monthly maintenance stores bounded official-source URL availability checks in the append-only `source_url_checks` operational table.

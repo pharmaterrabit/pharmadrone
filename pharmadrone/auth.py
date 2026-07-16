@@ -8,27 +8,31 @@ so a cloud deploy is never accidentally left open.
 """
 from __future__ import annotations
 import hmac
+from typing import Any
 import streamlit as st
 from . import settings
 
 
-def _configured_credentials() -> list[dict[str, str]]:
+def _configured_credentials() -> list[dict[str, Any]]:
     credentials = []
-    for env_name, role, label, org_env in (
-        ("PLATFORM_ADMIN_PASSWORD", "platform_admin", "Platform Administrator", ""),
-        ("WORKSPACE_ADMIN_PASSWORD", "workspace_admin", "Workspace Administrator", "WORKSPACE_ADMIN_ORGANISATION_ID"),
-        ("APP_PASSWORD", "analyst_reviewer", "Analyst / Reviewer", ""),
+    for env_name, role, label, org_env, workspace_env, export_env in (
+        ("PLATFORM_ADMIN_PASSWORD", "platform_admin", "Platform Administrator", "", "", ""),
+        ("WORKSPACE_ADMIN_PASSWORD", "workspace_admin", "Workspace Administrator", "WORKSPACE_ADMIN_ORGANISATION_ID", "WORKSPACE_ADMIN_WORKSPACE_ID", ""),
+        ("APP_PASSWORD", "analyst_reviewer", "Analyst / Reviewer", "ANALYST_ORGANISATION_ID", "ANALYST_WORKSPACE_ID", "ANALYST_EXPORT_ALLOWED"),
+        ("READ_ONLY_PASSWORD", "read_only_executive", "Read-only Executive", "READ_ONLY_ORGANISATION_ID", "READ_ONLY_WORKSPACE_ID", ""),
     ):
         password = settings.env(env_name, "")
         if password:
             credentials.append({
                 "password": password, "role": role, "display_name": label,
                 "organisation_id": settings.env(org_env, "") if org_env else "",
+                "workspace_id": settings.env(workspace_env, "") if workspace_env else "",
+                "export_allowed": settings.env(export_env, "").strip().lower() in {"1", "true", "yes", "on"} if export_env else False,
             })
     return credentials
 
 
-def require_password() -> dict[str, str]:
+def require_password() -> dict[str, Any]:
     credentials = _configured_credentials()
 
     if not credentials:
