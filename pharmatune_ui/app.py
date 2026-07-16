@@ -19,6 +19,7 @@ HIDDEN_ROUTE_PARENT["Company Detail"] = "Companies"
 HIDDEN_ROUTE_PARENT["Regulatory Detail"] = "Regulatory Signals"
 HIDDEN_ROUTE_PARENT["Patent Detail"] = "Patents"
 HIDDEN_ROUTE_PARENT["Research Detail"] = "Research & Innovation"
+HIDDEN_ROUTE_PARENT["Deal Detail"] = "Deals & Funding"
 NAV_OPTIONS = [page for group in NAV.values() for page in group]
 NAVIGATION_KEY = "navigation_page"
 PENDING_NAVIGATION_KEY = "_pending_navigation_page"
@@ -96,7 +97,8 @@ def run(principal: dict | None = None) -> None:
         "Research Detail":lambda:pages.research_detail(_navigate),
         "Regulatory Signals":lambda:pages.regulatory_signals(_navigate),
         "Regulatory Detail":lambda:pages.regulatory_detail(_navigate),
-        "Deals & Funding":lambda:pages.placeholder("Deals & Funding","Future company, partnership, financing and commercial-signal intelligence."),
+        "Deals & Funding":lambda:pages.deals_funding(_navigate),
+        "Deal Detail":lambda:pages.deal_detail(_navigate),
         "Patents":lambda:pages.patents(_navigate),
         "Patent Detail":lambda:pages.patent_detail(_navigate),
         "Settings":lambda:pages.placeholder("Settings","Workspace preferences will be introduced with authenticated workspace administration."),

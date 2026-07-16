@@ -16,7 +16,7 @@ import httpx
 from .. import db, settings
 from ..connectors import (
     fda_orange_book, ema_medicines, ema_opportunities, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
-    europepmc, openalex, crossref, tavily_search,
+    europepmc, openalex, crossref, tavily_search, commercial_signals,
 )
 from ..cost import CostTracker
 from ..pipeline import event_discovery, query_safety
@@ -421,6 +421,42 @@ def fetch_research_innovation(conn, state: dict[str, Any], guards: Guardrails, *
     }
 
 
+def fetch_deal_discovery(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    """Discover bounded commercial signals for retained organisations.
+
+    Results remain verification-required unless the result URL matches the
+    organisation's retained official domain.
+    """
+    rows = conn.execute(
+        "SELECT canonical_name,official_website_url FROM account_organisations WHERE active=1 "
+        "ORDER BY last_verified_at DESC,canonical_name LIMIT ?", (guards.max_tavily_calls,)
+    ).fetchall()
+    cost = CostTracker(); records: list[dict] = []; queries = 0; failures = 0
+    for row in rows:
+        if queries >= guards.max_tavily_calls or cost.total_usd >= guards.max_estimated_spend_usd:
+            break
+        result = commercial_signals.discover(
+            str(row["canonical_name"]), str(row["official_website_url"] or ""), max_results=3, cost=cost
+        )
+        queries += 1
+        if result.ok: records.extend(result.records or [])
+        else: failures += 1
+    return {
+        "records": records[:guards.max_records_per_connector], "cursor_after": f"organisations:{queries}",
+        "watermark_after": "", "metadata": {"queries": queries, "failed_queries": failures,
+        "tavily_calls": cost.tavily_calls, "estimated_spend": cost.total_usd,
+        "governance": "discovery signals require primary-source and human verification"},
+    }
+
+
+def fetch_commercial_intelligence(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    return {
+        "records": [], "cursor_after": "weekly-commercial-intelligence-projection",
+        "watermark_after": state.get("last_watermark") or "",
+        "metadata": {"mode": "stored transaction, commercial-signal and scholarly-funding projection"},
+    }
+
+
 FETCHERS = {
     "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
@@ -441,6 +477,8 @@ FETCHERS = {
     "account_intelligence": fetch_account_intelligence,
     "patent_lifecycle": fetch_patent_lifecycle,
     "research_innovation": fetch_research_innovation,
+    "deal_discovery": fetch_deal_discovery,
+    "commercial_intelligence": fetch_commercial_intelligence,
     "monthly_maintenance": fetch_monthly_maintenance,
 }
 

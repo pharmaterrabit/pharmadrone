@@ -9,7 +9,7 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import account_intelligence, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
+from pharmadrone.pipeline import account_intelligence, commercial_intelligence, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -337,6 +337,28 @@ def research_organisation_profile(organisation_id: str) -> dict[str, Any] | None
     conn = connection()
     try:
         return research_innovation.profile(conn, organisation_id)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def commercial_intelligence_directory(search: str = "", event_type: str = "All", evidence: str = "All") -> dict[str, Any]:
+    conn = connection()
+    try:
+        return {
+            "metrics": commercial_intelligence.metrics(conn), "facets": commercial_intelligence.facets(conn),
+            "events": commercial_intelligence.events(conn, search=search, event_filter=event_type, evidence_filter=evidence),
+            "funding": commercial_intelligence.funding(conn, search=search),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def commercial_event_profile(event_id: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return commercial_intelligence.profile(conn, event_id)
     finally:
         conn.close()
 

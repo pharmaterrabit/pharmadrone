@@ -41,6 +41,8 @@ on:
           - account_intelligence
           - patent_lifecycle
           - research_innovation
+          - deal_discovery
+          - commercial_intelligence
           - monthly_maintenance
       force:
         description: "Force the selected source even when not due"
@@ -95,7 +97,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           status=0
-          for source in ema_medicines ema_shortages ema_dhpc ema_safety_referrals ema_psusa_outcomes ema_post_authorisation_withdrawals mhra_medicine_recalls fda_orange_book europepmc openalex crossref account_intelligence patent_lifecycle research_innovation; do
+          for source in ema_medicines ema_shortages ema_dhpc ema_safety_referrals ema_psusa_outcomes ema_post_authorisation_withdrawals mhra_medicine_recalls fda_orange_book europepmc openalex crossref account_intelligence patent_lifecycle research_innovation commercial_intelligence; do
             python -m pharmadrone.scheduler run-source "$source" --force --lookback-days "${SCHEDULER_LOOKBACK_DAYS}" || status=1
           done
           exit "$status"

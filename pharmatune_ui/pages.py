@@ -70,7 +70,7 @@ def overview() -> None:
         {"Area":"Scheduled refresh","Status":"Healthy" if sched.get('failed_sources',0)==0 else "Attention","Detail":f"{sched.get('enabled_sources',0)} enabled source jobs"},
         {"Area":"Patent & lifecycle","Status":"Live","Detail":"FDA Orange Book applications, listed patents, exclusivities and weekly expiry monitoring"},
         {"Area":"Research & innovation","Status":"Live","Detail":"Research organisations, publications, authors, collaborations and evidence-gated technology transfer"},
-        {"Area":"Deals & funding","Status":"Planned","Detail":"Placeholder until genuine production connectors are available"},
+        {"Area":"Deals & funding","Status":"Live","Detail":"Licensing, M&A, partnerships, financing, grants and verification-gated commercial signals"},
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -800,6 +800,136 @@ def research_detail(navigate: Callable[[str], None]) -> None:
         st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
 
 
+def deals_funding(navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Deals & Funding Intelligence",
+        "Evidence-governed licensing, M&A, commercial partnerships, corporate financing, research grants and market signals.",
+        "Phase 11",
+    )
+    st.warning(
+        "A web result is a discovery signal—not a confirmed transaction. Deal values, counterparties, status and dates remain unknown unless the retained source states them. "
+        "Research-grant metadata is kept separate from corporate financing."
+    )
+    initial = data.commercial_intelligence_directory()
+    f1, f2, f3 = st.columns([2, 1, 1])
+    search = f1.text_input("Search deals and funding", placeholder="Company, counterparty, asset, programme or award ID")
+    event_type = f2.selectbox("Event type", ["All"] + list(initial["facets"].get("event_type") or []))
+    evidence = f3.selectbox("Evidence", ["All", "Primary source verified", "Verification required"])
+    result = data.commercial_intelligence_directory(search, event_type, evidence)
+    metrics = result["metrics"]
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Commercial events", f"{metrics.get('events', 0):,}")
+    m2.metric("Licensing", f"{metrics.get('licensing', 0):,}")
+    m3.metric("M&A", f"{metrics.get('mergers_acquisitions', 0):,}")
+    m4.metric("Partnerships", f"{metrics.get('partnerships', 0):,}")
+    m5.metric("Corporate financing", f"{metrics.get('financing', 0):,}")
+    m6.metric("Research grants", f"{metrics.get('grants', 0):,}")
+    monitor = metrics.get("latest_monitor") or {}
+    if monitor:
+        st.info(
+            f"Latest weekly monitor {_safe(monitor.get('completed_at'))} · "
+            f"{int(monitor.get('events_changed') or 0):,} changed events · "
+            f"{int(monitor.get('primary_verification_required') or 0):,} signals requiring primary-source verification"
+        )
+    verified, unresolved = st.columns(2)
+    verified.metric("Primary-source-linked events", f"{metrics.get('primary_verified', 0):,}")
+    unresolved.metric("Verification queue", f"{metrics.get('verification_required', 0):,}")
+
+    events_tab, grants_tab = st.tabs(["Deals and commercial signals", "Research grants and awards"])
+    with events_tab:
+        rows = result["events"]
+        if rows:
+            labels = {f"{row['event_type']} · {row.get('party_a_name') or 'Unknown party'} · {row.get('subject_name') or row['source_id']}": row for row in rows}
+            selected = st.selectbox("Commercial event", list(labels))
+            frame = pd.DataFrame([{
+                "Event": row.get("event_type"), "Party A": row.get("party_a_name"),
+                "Party B": row.get("party_b_name") or "Not stated", "Asset / subject": row.get("subject_name"),
+                "Announcement date": row.get("announcement_date") or "Not stated", "Status": row.get("event_status") or "Not stated",
+                "Value": row.get("value_text") or (f"{row.get('currency')} {row.get('value_amount'):,.0f}" if row.get("value_amount") is not None and row.get("currency") else "Not disclosed in retained evidence"),
+                "Evidence class": row.get("evidence_class"), "Validation": row.get("validation_status"),
+                "Official / discovered evidence": row.get("evidence_url"), "Last reviewed": row.get("last_verified_at"),
+            } for row in rows])
+            st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+                "Official / discovered evidence": st.column_config.LinkColumn("Official / discovered evidence", display_text="Open evidence ↗")
+            })
+            left, right = st.columns([1, 4])
+            if left.button("Open event detail", type="primary"):
+                st.session_state["commercial_event_id"] = labels[selected]["commercial_event_id"]
+                navigate("Deal Detail")
+            right.download_button("Export deals and signals (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_deals_funding.csv", "text/csv")
+        else:
+            theme.empty("No commercial events found", "Run deal discovery or ingest an explicit primary transaction source, then run commercial_intelligence.", "No matches")
+
+    with grants_tab:
+        rows = result["funding"]
+        if rows:
+            frame = pd.DataFrame([{
+                "Funding type": row.get("funding_type"), "Funder": row.get("funder_name") or "Not stated",
+                "Recipient": row.get("recipient_name") or "Not established", "Award ID": row.get("award_id"),
+                "Programme / publication": row.get("programme_name"),
+                "Amount": row.get("value_text") or (f"{row.get('currency')} {row.get('amount_value'):,.0f}" if row.get("amount_value") is not None and row.get("currency") else "Not stated"),
+                "Evidence status": row.get("evidence_status"), "Boundary": row.get("validation_status"),
+                "Evidence": row.get("evidence_url"), "Last reviewed": row.get("last_verified_at"),
+            } for row in rows])
+            st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+                "Evidence": st.column_config.LinkColumn("Evidence", display_text="Open publication evidence ↗")
+            })
+            st.download_button("Export research grants (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_grants.csv", "text/csv")
+        else:
+            st.caption("No retained scholarly funding metadata matches these filters.")
+
+
+def deal_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Deals & Funding Intelligence"):
+        navigate("Deals & Funding")
+    event_id = str(st.session_state.get("commercial_event_id") or "")
+    profile = data.commercial_event_profile(event_id) if event_id else None
+    if not profile:
+        theme.empty("Commercial event not found", "Return to Deals & Funding and select an event.", "Missing")
+        return
+    theme.page_header(
+        _safe(profile.get("subject_name"), profile.get("event_type") or "Commercial event"),
+        f"{_safe(profile.get('party_a_name'), 'Party not stated')} · {_safe(profile.get('party_b_name'), 'Counterparty not stated')}",
+        "Deals & Funding",
+    )
+    value = profile.get("value_text") or (
+        f"{profile.get('currency')} {profile.get('value_amount'):,.0f}"
+        if profile.get("value_amount") is not None and profile.get("currency") else "Not disclosed in retained evidence"
+    )
+    a, b, c, d = st.columns(4)
+    a.metric("Event type", _safe(profile.get("event_type")))
+    b.metric("Published value", value)
+    c.metric("Published status", _safe(profile.get("event_status"), "Not stated"))
+    d.metric("Evidence", "Primary linked" if profile.get("primary_source_verified") else "Verification required")
+    st.markdown("### Confirmed and unresolved transaction facts")
+    facts = pd.DataFrame([{
+        "Party A": profile.get("party_a_name") or "Not stated",
+        "Party B": profile.get("party_b_name") or "Not stated",
+        "Asset / subject": profile.get("subject_name") or "Not stated",
+        "Announcement date": profile.get("announcement_date") or "Not stated",
+        "Geography": profile.get("geography") or "Not stated",
+        "Value": value, "Status": profile.get("event_status") or "Not stated",
+    }])
+    st.dataframe(facts, use_container_width=True, hide_index=True)
+    if str(profile.get("evidence_url") or "").startswith("http"):
+        st.link_button("Open retained evidence ↗", profile["evidence_url"])
+    if profile.get("primary_source_verified"):
+        st.info(profile.get("evidence_status"))
+    else:
+        st.error("This is a discovery signal. Do not use it externally until the primary transaction announcement or filing is found and reviewed.")
+    st.warning(
+        "PharmaTune does not infer undisclosed deal value, upfront/milestone structure, ownership transfer, exclusivity, territory, completion status or commercial intent."
+    )
+    st.markdown("### Evidence governance")
+    st.write(f"**Evidence class:** {_safe(profile.get('evidence_class'))}")
+    st.write(f"**Evidence status:** {_safe(profile.get('evidence_status'))}")
+    st.write(f"**Required action:** {_safe(profile.get('validation_status'))}")
+    st.caption(f"Source {_safe(profile.get('source_name'))} · ID {_safe(profile.get('source_id'))} · Last reviewed {_safe(profile.get('last_verified_at'))} · Next review {_safe(profile.get('next_review_at'))}")
+    with st.expander("Append-only event history"):
+        history = profile.get("history") or []
+        st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
+
+
 def validation() -> None:
     theme.page_header("Human Validation", "Review immutable evidence, deterministic interpretation and append-only human decisions.", "Workflow")
     rows, metrics = data.audit_queue()
@@ -1017,7 +1147,7 @@ def sources() -> None:
         st.info("FDA is currently serving product records through the official daily Drugs@FDA fallback. Patent and exclusivity fields remain empty until FDA restores the Orange Book archive.")
     st.caption("Orange Book product, patent and exclusivity records are regulatory lifecycle context. Patent listings are not legal advice, proof of freedom to operate, product failure or commercial demand.")
     st.markdown("### Planned source families")
-    for name in ("PMDA and further global regulators","Company news, deals and funding","Official patent-office family and ownership enrichment","Further official university technology-transfer catalogues"):
+    for name in ("PMDA and further global regulators","Further primary corporate filings and transaction feeds","Official patent-office family and ownership enrichment","Further official university technology-transfer catalogues"):
         theme.card(name,"Not connected. This module will remain a placeholder until a genuine evidence-aware connector is implemented.",[("Planned","muted")])
 
 

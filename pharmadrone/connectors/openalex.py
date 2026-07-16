@@ -64,5 +64,10 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
                               "abstract": abstract, "citation_count": int(w.get("cited_by_count") or 0),
                               "open_access": bool(open_access.get("is_oa")), "open_access_status": open_access.get("oa_status") or "",
                               "authors": authors, "institutions": institutions,
+                              "grants": [{
+                                  "funder": (grant.get("funder_display_name") or ""),
+                                  "funder_id": (grant.get("funder") or ""),
+                                  "award_id": (grant.get("award_id") or ""),
+                              } for grant in (w.get("grants", []) or []) if grant.get("funder_display_name") or grant.get("award_id")],
                           }))
     return ConnectorResult(NAME, term, ok=True, count=len(out), records=out)

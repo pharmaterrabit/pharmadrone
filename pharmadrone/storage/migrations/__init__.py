@@ -971,6 +971,97 @@ def _research_innovation_schema(conn) -> None:
     """)
 
 
+def _deals_funding_schema(conn) -> None:
+    """Phase 11 governed licensing, transaction, financing and grant evidence."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS commercial_events (
+        commercial_event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        evidence_class TEXT NOT NULL,
+        announcement_date TEXT,
+        event_status TEXT,
+        party_a_name TEXT,
+        party_b_name TEXT,
+        subject_name TEXT,
+        value_amount REAL,
+        currency TEXT,
+        value_text TEXT,
+        geography TEXT,
+        source_type TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        primary_source_verified INTEGER NOT NULL DEFAULT 0,
+        evidence_status TEXT NOT NULL,
+        validation_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(source_type, source_id, event_type)
+    );
+    CREATE TABLE IF NOT EXISTS funding_awards (
+        funding_award_id TEXT PRIMARY KEY,
+        funding_type TEXT NOT NULL,
+        funder_name TEXT,
+        recipient_name TEXT,
+        award_id TEXT,
+        programme_name TEXT,
+        linked_publication_id TEXT,
+        amount_value REAL,
+        currency TEXT,
+        value_text TEXT,
+        award_date TEXT,
+        source_type TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        primary_source_verified INTEGER NOT NULL DEFAULT 0,
+        evidence_status TEXT NOT NULL,
+        validation_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS commercial_event_observations (
+        id {ident},
+        commercial_event_id TEXT NOT NULL,
+        observation_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        UNIQUE(commercial_event_id, observation_hash),
+        FOREIGN KEY (commercial_event_id) REFERENCES commercial_events(commercial_event_id)
+    );
+    CREATE TABLE IF NOT EXISTS commercial_monitor_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        events_seen INTEGER NOT NULL DEFAULT 0,
+        events_changed INTEGER NOT NULL DEFAULT 0,
+        licensing_seen INTEGER NOT NULL DEFAULT 0,
+        mergers_acquisitions_seen INTEGER NOT NULL DEFAULT 0,
+        partnerships_seen INTEGER NOT NULL DEFAULT 0,
+        financing_seen INTEGER NOT NULL DEFAULT 0,
+        grants_seen INTEGER NOT NULL DEFAULT 0,
+        primary_verification_required INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_commercial_event_type ON commercial_events(event_type, announcement_date);
+    CREATE INDEX IF NOT EXISTS idx_commercial_party_a ON commercial_events(party_a_name);
+    CREATE INDEX IF NOT EXISTS idx_commercial_party_b ON commercial_events(party_b_name);
+    CREATE INDEX IF NOT EXISTS idx_commercial_verified ON commercial_events(primary_source_verified, validation_status);
+    CREATE INDEX IF NOT EXISTS idx_funding_funder ON funding_awards(funder_name);
+    CREATE INDEX IF NOT EXISTS idx_funding_recipient ON funding_awards(recipient_name);
+    CREATE INDEX IF NOT EXISTS idx_funding_award ON funding_awards(award_id);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -983,6 +1074,7 @@ MIGRATIONS = (
     Migration(9, "checkpoint_8_3_account_intelligence_schema", _account_intelligence_schema),
     Migration(10, "phase_9_patent_lifecycle_schema", _patent_lifecycle_schema),
     Migration(11, "phase_10_research_innovation_schema", _research_innovation_schema),
+    Migration(12, "phase_11_deals_funding_schema", _deals_funding_schema),
 )
 
 
