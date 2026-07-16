@@ -70,7 +70,7 @@ def overview() -> None:
 
 
 def explorer(navigate: Callable[[str], None]) -> None:
-    theme.page_header("Opportunity Explorer", "Search and filter the live opportunity index. Results are paginated at the database.", "Discover")
+    theme.page_header("Opportunity Explorer", "Prioritise and qualify live public-source signals. Results are paginated at the database.", "Discover")
     with st.container():
         q1,q2,q3,q4 = st.columns([2.2,1,1,0.8])
         search = q1.text_input("Search", placeholder="Company, product, problem or source ID", key="opp_search")
@@ -78,13 +78,17 @@ def explorer(navigate: Callable[[str], None]) -> None:
         source = q2.selectbox("Source", ["All"]+facets["source_type"], key="opp_source")
         region = q3.selectbox("Region", ["All"]+facets["region"], key="opp_region")
         size = q4.selectbox("Rows", [10,25,50], index=1, key="opp_size")
+        q5,q6 = st.columns(2)
+        priority = q5.selectbox("Qualification priority", ["All"]+facets["priority"], key="opp_priority")
+        contact_role = q6.selectbox("Recommended contact function", ["All"]+facets["contact_role"], key="opp_contact_role")
     page = int(st.session_state.get("opp_page",1))
-    result = data.opportunity_page(page=page,page_size=size,search=search,source=source,region=region)
+    result = data.opportunity_page(page=page,page_size=size,search=search,source=source,region=region,priority=priority,contact_role=contact_role)
     pages = max(1, math.ceil(result["total"]/size))
     if page > pages: st.session_state["opp_page"] = 1; st.rerun()
     st.caption(f"{result['total']:,} matching records · page {page} of {pages}")
     if not result["rows"]: theme.empty("No matching opportunities", "Try a broader search or remove one of the filters.", "No results"); return
-    frame = pd.DataFrame([{ "Company":r.get("company") or "Not stated by source","Product":r.get("product") or "Not stated by source","Problem":r.get("problem_category"),"Source":r.get("source_type"),"Region":r.get("region"),"Score":r.get("score"),"Grade":r.get("grade"),"Status":r.get("lead_status"),"Official evidence":r.get("official_source_url"),"Lead ID":r.get("stable_lead_id")} for r in result["rows"]])
+    st.caption("P1–P3 ranks qualification readiness from public-source completeness; it does not claim urgency, budget or buying intent.")
+    frame = pd.DataFrame([{ "Priority":r.get("priority_tier"),"Company":r.get("company") or "Not stated by source","Product":r.get("product") or "Not stated by source","Problem":r.get("problem_category"),"Contact function":r.get("recommended_contact_role"),"Source":r.get("source_type"),"Region":r.get("region"),"Score":r.get("score"),"Grade":r.get("grade"),"Official evidence":r.get("official_source_url"),"Lead ID":r.get("stable_lead_id")} for r in result["rows"]])
     event = st.dataframe(
         frame, use_container_width=True, hide_index=True, on_select="rerun",
         selection_mode="single-row", key="opp_table",
@@ -117,6 +121,8 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
     st.markdown(theme.badge(evidence,"green")+theme.badge(_safe(row.get("lead_status"),"Requires validation"),"blue")+theme.badge("Human validation required","violet"),unsafe_allow_html=True)
     c1,c2,c3,c4 = st.columns(4)
     brief = (row.get("details") or {}).get("sales_qualification_brief") or {}
+    qualification = {k: row.get(k) for k in ("priority_tier","readiness","recommended_contact_role","contact_rationale","missing_requirements","next_action","qualification_basis")}
+    qualification.update({k:v for k,v in brief.items() if v not in (None, "", [])})
     c1.metric("Opportunity score", _safe(row.get("score"),"—")); c2.metric("Grade",_safe(row.get("grade"),"—")); c3.metric("Source",_safe(row.get("source_type"))); c4.metric("Qualification brief","Available" if brief else "Pending refresh")
     st.markdown("### Evidence chain")
     a,b,c = st.columns(3)
@@ -139,6 +145,18 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
             f"**Next step:** {_safe(brief.get('recommended_next_step'))}"
         )
         st.info(_safe(brief.get("commercial_limit")))
+    st.markdown("### Commercial qualification route")
+    st.markdown(
+        f"**Priority:** {_safe(qualification.get('priority_tier'))}  \n"
+        f"**Readiness:** {_safe(qualification.get('readiness'))}  \n"
+        f"**Recommended contact function:** {_safe(qualification.get('recommended_contact_role'))}  \n"
+        f"**Why this function:** {_safe(qualification.get('contact_rationale'))}  \n"
+        f"**Next action:** {_safe(qualification.get('next_action'))}"
+    )
+    missing = qualification.get("missing_requirements") or []
+    if missing:
+        st.warning("Missing before qualification: " + "; ".join(str(item) for item in missing))
+    st.caption(_safe(qualification.get("qualification_basis")))
     with st.expander("Technical record"):
         fields = {k:v for k,v in row.items() if k not in {"data_json","details"} and v not in (None,"")}
         st.json(fields, expanded=False)

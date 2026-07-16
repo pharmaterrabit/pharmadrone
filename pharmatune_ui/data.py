@@ -8,7 +8,7 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import human_audit, pharmaceutical_memory as memory, seller_case_study
+from pharmadrone.pipeline import human_audit, opportunity_index, pharmaceutical_memory as memory, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -35,8 +35,36 @@ def _active_where(include_hidden: bool) -> str:
     return "1=1" if include_hidden else "COALESCE(novelty_status,'') NOT IN ('archived','rejected / hidden') AND COALESCE(queue_status,'') NOT IN ('archived','rejected')"
 
 
+def _qualification_tier_sql() -> str:
+    has_company = "TRIM(COALESCE(company,''))<>''"
+    has_product = "TRIM(COALESCE(product,''))<>''"
+    has_link = "LOWER(COALESCE(evidence_links_json,'')) LIKE '%http%'"
+    return (
+        f"CASE WHEN {has_company} AND {has_product} AND {has_link} THEN 'P1 · Ready to qualify' "
+        f"WHEN {has_link} AND ({has_company} OR {has_product}) THEN 'P2 · Account research' "
+        "ELSE 'P3 · Evidence repair' END"
+    )
+
+
+def _contact_role_sql() -> str:
+    signal = "LOWER(COALESCE(source_type,'') || ' ' || COALESCE(problem_category,''))"
+    return (
+        f"CASE WHEN {signal} LIKE '%clinicaltrials%' OR {signal} LIKE '%clinical trial%' "
+        "OR " + signal + " LIKE '%terminated trial%' THEN 'Clinical Development / Business Development' "
+        f"WHEN {signal} LIKE '%shortage%' OR {signal} LIKE '%supply%' OR {signal} LIKE '%availability%' "
+        "THEN 'Supply Chain / Procurement' "
+        f"WHEN {signal} LIKE '%recall%' OR {signal} LIKE '%impurity%' OR {signal} LIKE '%quality%' "
+        f"OR {signal} LIKE '%contamination%' OR {signal} LIKE '%precipitation%' OR {signal} LIKE '%stability%' "
+        "THEN 'Quality / CMC' "
+        f"WHEN {signal} LIKE '%safety%' OR {signal} LIKE '%referral%' OR {signal} LIKE '%pharmacovigilance%' "
+        f"OR {signal} LIKE '%post-authorisation%' OR {signal} LIKE '%withdrawal%' "
+        "THEN 'Pharmacovigilance / Regulatory Affairs' "
+        "ELSE 'External Innovation / Business Development' END"
+    )
+
+
 @st.cache_data(ttl=15, show_spinner=False)
-def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", source: str = "All", region: str = "All", include_hidden: bool = False) -> dict[str, Any]:
+def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", source: str = "All", region: str = "All", priority: str = "All", contact_role: str = "All", include_hidden: bool = False) -> dict[str, Any]:
     conn = connection()
     try:
         clauses = [_active_where(include_hidden)]
@@ -49,15 +77,23 @@ def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", so
             clauses.append("source_type=?"); params.append(source)
         if region != "All":
             clauses.append("region=?"); params.append(region)
+        tier_sql = _qualification_tier_sql()
+        role_sql = _contact_role_sql()
+        if priority != "All":
+            clauses.append(f"({tier_sql})=?"); params.append(priority)
+        if contact_role != "All":
+            clauses.append(f"({role_sql})=?"); params.append(contact_role)
         where = " AND ".join(clauses)
         total = int(conn.execute(f"SELECT COUNT(*) AS n FROM opportunity_index WHERE {where}", tuple(params)).fetchone()["n"])
         offset = max(0, page - 1) * page_size
         rows = conn.execute(
             f"""SELECT stable_lead_id,company,product,molecule,problem_category,source_type,source_id,region,
             score,grade,lead_status,novelty_status,queue_status,has_full_report,first_seen_at,last_checked_at,last_updated_at,
-            evidence_links_json,data_json
+            evidence_links_json,data_json,({tier_sql}) AS qualification_priority,
+            ({role_sql}) AS recommended_contact_role
             FROM opportunity_index WHERE {where}
-            ORDER BY COALESCE(score,0) DESC, COALESCE(last_updated_at,last_checked_at) DESC LIMIT ? OFFSET ?""",
+            ORDER BY CASE ({tier_sql}) WHEN 'P1 · Ready to qualify' THEN 1 WHEN 'P2 · Account research' THEN 2 ELSE 3 END,
+            COALESCE(score,0) DESC, COALESCE(last_updated_at,last_checked_at) DESC LIMIT ? OFFSET ?""",
             tuple(params + [page_size, offset]),
         ).fetchall()
         items = []
@@ -70,6 +106,8 @@ def opportunity_page(*, page: int = 1, page_size: int = 25, search: str = "", so
             item["official_source_url"] = next(
                 (str(link) for link in links if str(link).startswith(("https://", "http://"))), ""
             )
+            qualification = opportunity_index.commercial_qualification({**item, "evidence_links": links})
+            item.update(qualification)
             items.append(item)
         return {"rows": items, "total": total, "page": page, "page_size": page_size}
     finally:
@@ -87,6 +125,8 @@ def opportunity_facets() -> dict[str, list[str]]:
                 f"SELECT DISTINCT {key} FROM opportunity_index WHERE {_active_where(False)} "
                 f"AND COALESCE({key},'')<>'' ORDER BY {key}"
             ).fetchall()]
+        facets["priority"] = ["P1 · Ready to qualify", "P2 · Account research", "P3 · Evidence repair"]
+        facets["contact_role"] = list(opportunity_index.CONTACT_ROLES)
         return facets
     finally:
         conn.close()
@@ -101,6 +141,7 @@ def opportunity(stable_lead_id: str) -> dict[str, Any] | None:
         item = dict(row)
         try: item["details"] = json.loads(item.get("data_json") or "{}")
         except Exception: item["details"] = {}
+        item.update(opportunity_index.commercial_qualification(item))
         enrichment = conn.execute("SELECT * FROM opportunity_enrichment WHERE stable_lead_id=?", (stable_lead_id,)).fetchone()
         item["enrichment"] = dict(enrichment) if enrichment else {}
         return item

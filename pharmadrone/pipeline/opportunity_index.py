@@ -298,6 +298,85 @@ def regulator_data_quality(conn) -> dict[str, Any]:
     }
 
 
+CONTACT_ROLES = (
+    "Quality / CMC",
+    "Supply Chain / Procurement",
+    "Pharmacovigilance / Regulatory Affairs",
+    "Clinical Development / Business Development",
+    "External Innovation / Business Development",
+)
+
+
+def commercial_qualification(record: dict[str, Any]) -> dict[str, Any]:
+    """Classify qualification readiness without claiming commercial urgency.
+
+    P1-P3 describe how much verified public information is available for an
+    analyst to begin qualification. They are not lead scores and do not imply
+    budget, buying intent, urgency or technical fit.
+    """
+    company = str(record.get("company") or "").strip()
+    product = str(record.get("product") or "").strip()
+    source = str(record.get("source_type") or "official source").strip()
+    problem = str(record.get("problem_category") or "official regulatory event").strip()
+    links = record.get("evidence_links")
+    if not isinstance(links, list):
+        try:
+            links = json.loads(record.get("evidence_links_json") or "[]")
+        except Exception:
+            links = []
+    official_url = next(
+        (str(link) for link in links if str(link).startswith(("https://", "http://"))), ""
+    )
+
+    missing = []
+    if not company:
+        missing.append("responsible company / authorisation holder")
+    if not product:
+        missing.append("product")
+    if not official_url:
+        missing.append("working official evidence link")
+
+    if company and product and official_url:
+        tier = "P1 · Ready to qualify"
+        readiness = "Ready to qualify"
+        next_action = "Confirm current responsibility, event recency and technical fit before outreach."
+    elif official_url and (company or product):
+        tier = "P2 · Account research"
+        readiness = "Account research required"
+        next_action = "Resolve the missing account or product field from the official record before outreach."
+    else:
+        tier = "P3 · Evidence repair"
+        readiness = "Evidence repair required"
+        next_action = "Repair or verify the source evidence before commercial qualification."
+
+    signal = _norm(f"{source} {problem}")
+    if "clinicaltrials" in signal or "clinical trial" in signal or "terminated trial" in signal:
+        role = "Clinical Development / Business Development"
+        role_reason = "The public signal concerns a clinical-development programme or trial status."
+    elif any(token in signal for token in ("shortage", "supply", "availability")):
+        role = "Supply Chain / Procurement"
+        role_reason = "The public signal concerns medicine supply or availability."
+    elif any(token in signal for token in ("recall", "impurity", "quality", "contamination", "precipitation", "stability")):
+        role = "Quality / CMC"
+        role_reason = "The public signal concerns product quality, manufacture or a recall."
+    elif any(token in signal for token in ("safety", "referral", "pharmacovigilance", "post-authorisation", "withdrawal")):
+        role = "Pharmacovigilance / Regulatory Affairs"
+        role_reason = "The public signal concerns regulatory safety or post-authorisation action."
+    else:
+        role = "External Innovation / Business Development"
+        role_reason = "The responsible technical function is not explicit in the public source."
+
+    return {
+        "priority_tier": tier,
+        "readiness": readiness,
+        "recommended_contact_role": role,
+        "contact_rationale": role_reason,
+        "missing_requirements": missing,
+        "next_action": next_action,
+        "qualification_basis": "Public-source completeness and targetability only; not commercial urgency.",
+    }
+
+
 def build_sales_qualification_briefs(conn) -> int:
     """Persist a deterministic, non-LLM sales brief for every official signal."""
     updated = 0
@@ -312,6 +391,7 @@ def build_sales_qualification_briefs(conn) -> int:
         product = str(row.get("product") or "").strip()
         problem = str(row.get("problem_category") or "").strip()
         source = str(row.get("source_type") or "official source").strip()
+        qualification = commercial_qualification(row)
         brief = {
             "brief_type": "deterministic regulator signal brief",
             "target_account": company or "Manufacturer / authorisation holder not stated by official source",
@@ -325,6 +405,7 @@ def build_sales_qualification_briefs(conn) -> int:
                 "Validate recency, root cause, company responsibility and solution fit before any outreach."
             ),
             "commercial_limit": "A public regulatory signal does not prove budget, urgency, buying intent or solution fit.",
+            **qualification,
         }
         if data.get("sales_qualification_brief") == brief:
             continue
