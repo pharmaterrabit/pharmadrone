@@ -37,6 +37,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec("crossref", "literature", "weekly"),
     SourceSpec("tavily", "web enrichment", "weekly", enabled_env="TAVILY_API_KEY", default_enabled=False),
     SourceSpec("account_intelligence", "organisation and contact intelligence", "weekly"),
+    SourceSpec("epo_ops_patents", "official EPO and UK patent publications", "weekly", enabled_env="EPO_OPS_KEY", default_enabled=False),
     SourceSpec("patent_lifecycle", "patent and exclusivity lifecycle projection", "weekly"),
     SourceSpec("research_innovation", "research and innovation projection", "weekly"),
     SourceSpec("deal_discovery", "commercial signal discovery", "weekly", enabled_env="TAVILY_API_KEY", default_enabled=False),

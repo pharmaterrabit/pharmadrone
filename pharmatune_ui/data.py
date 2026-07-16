@@ -332,6 +332,29 @@ def patent_lifecycle_profile(lifecycle_id: str) -> dict[str, Any] | None:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def global_patent_directory(search: str = "", jurisdiction: str = "All") -> dict[str, Any]:
+    """Read the weekly-built global projection; never call patent services here."""
+    conn = connection()
+    try:
+        return {
+            "metrics": patent_lifecycle.global_metrics(conn),
+            "facets": patent_lifecycle.global_facets(conn),
+            "documents": patent_lifecycle.global_documents(conn, search=search, jurisdiction=jurisdiction),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def global_patent_profile(patent_document_id: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return patent_lifecycle.global_document_profile(conn, patent_document_id)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def research_innovation_directory(search: str = "", country: str = "All") -> dict[str, Any]:
     """Read the weekly-built research graph without network work during navigation."""
     conn = connection()

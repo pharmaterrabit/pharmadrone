@@ -16,7 +16,7 @@ import httpx
 from .. import db, settings
 from ..connectors import (
     fda_orange_book, ema_medicines, ema_opportunities, mhra_alerts, openfda_enforcement, openfda_shortages, clinicaltrials, openfda,
-    europepmc, openalex, crossref, tavily_search, commercial_signals,
+    europepmc, openalex, crossref, tavily_search, commercial_signals, epo_ops,
 )
 from ..cost import CostTracker
 from ..pipeline import event_discovery, query_safety
@@ -409,7 +409,45 @@ def fetch_patent_lifecycle(conn, state: dict[str, Any], guards: Guardrails, *, f
     return {
         "records": [], "cursor_after": "weekly-patent-lifecycle-projection",
         "watermark_after": state.get("last_watermark") or "",
-        "metadata": {"mode": "stored FDA Orange Book lifecycle projection"},
+        "metadata": {"mode": "stored FDA Orange Book plus EPO/UK global patent projection; Google discovery links"},
+    }
+
+
+def fetch_epo_ops_patents(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    """Fetch bounded EP and GB patent publications for retained product terms."""
+    configured = [item.strip() for item in settings.env("EPO_OPS_QUERIES", "").split(";") if item.strip()]
+    if configured:
+        queries = configured[:guards.max_pages_per_connector]
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT ingredient FROM lifecycle_products WHERE active=1 AND COALESCE(ingredient,'')<>'' "
+            "ORDER BY last_verified_at DESC LIMIT ?", (min(guards.max_pages_per_connector, 5),)
+        ).fetchall()
+        queries = []
+        for row in rows:
+            term = " ".join(str(row["ingredient"] or "").replace('"', "").split())[:100]
+            if term:
+                queries.append(f'ctxt="{term}" and (pn=EP or pn=GB)')
+    if not queries:
+        return {"records": [], "cursor_after": "no-retained-product-terms", "watermark_after": "",
+                "metadata": {"queries": 0, "mode": "official EPO OPS"}}
+    unique: dict[str, dict] = {}; failures: list[str] = []
+    per_query = max(1, min(100, guards.max_records_per_connector // max(1, len(queries))))
+    for query in queries:
+        result = epo_ops.search(query, range_end=per_query)
+        if not result.ok:
+            failures.append(result.error or "EPO OPS failed")
+            continue
+        for item in result.records:
+            unique[str(item.get("record_id") or "")] = item
+    if failures and not unique:
+        raise SchedulerError(f"epo_ops_patents: {failures[0]}", "authentication failure" if "required" in failures[0] else "source failure", retryable=False)
+    return {
+        "records": list(unique.values())[:guards.max_records_per_connector],
+        "cursor_after": f"queries:{len(queries)}", "watermark_after": "",
+        "metadata": {"queries": len(queries), "failed_queries": len(failures),
+                     "documents": len(unique), "jurisdictions": ["EP", "GB"],
+                     "source_authority": "official EPO OPS"},
     }
 
 
@@ -484,6 +522,7 @@ FETCHERS = {
     "tavily": fetch_tavily,
     "account_intelligence": fetch_account_intelligence,
     "patent_lifecycle": fetch_patent_lifecycle,
+    "epo_ops_patents": fetch_epo_ops_patents,
     "research_innovation": fetch_research_innovation,
     "deal_discovery": fetch_deal_discovery,
     "commercial_intelligence": fetch_commercial_intelligence,

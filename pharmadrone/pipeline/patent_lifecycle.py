@@ -47,6 +47,18 @@ def family_lookup_url(patent_number: str) -> str:
     return f"https://worldwide.espacenet.com/patent/search?q={quote('pn=US' + number)}" if number else ""
 
 
+def google_patents_url(publication_number: str, jurisdiction: str = "") -> str:
+    number = re.sub(r"[^A-Za-z0-9]", "", _text(publication_number)).upper()
+    country = re.sub(r"[^A-Za-z]", "", _text(jurisdiction)).upper()
+    if number and country and not number.startswith(country):
+        number = country + number
+    return f"https://patents.google.com/patent/{number}/en" if number else ""
+
+
+def uk_register_url(publication_number: str) -> str:
+    return "https://www.gov.uk/search-for-patent" if re.search(r"\d", _text(publication_number)) else ""
+
+
 def lifecycle_state(patents: list[dict[str, Any]], exclusivities: list[dict[str, Any]], *, today: date | None = None,
                     dataset_mode: str = "") -> tuple[str, str]:
     today = today or date.today()
@@ -189,6 +201,7 @@ def sync(conn, *, run_id: str = "manual-patent-lifecycle", observed_at: datetime
         (run_id, observed, completed, "Healthy", len(lifecycle_ids), changed, len(patent_ids),
          len(exclusivity_ids), family_due, json.dumps({"legal_boundary": "regulatory lifecycle intelligence; not legal advice"})),
     )
+    sync_global(conn, run_id=f"{run_id}:global", observed_at=now)
     return {"products_seen": len(lifecycle_ids), "products_changed": changed, "patents_seen": len(patent_ids),
             "exclusivities_seen": len(exclusivity_ids), "family_resolution_required": family_due}
 
@@ -242,4 +255,226 @@ def profile(conn, lifecycle_id: str) -> dict[str, Any] | None:
     result["patents"] = [dict(item) for item in conn.execute("SELECT * FROM lifecycle_patents WHERE lifecycle_id=? AND active=1 ORDER BY expiry_date,patent_number", (lifecycle_id,)).fetchall()]
     result["exclusivities"] = [dict(item) for item in conn.execute("SELECT * FROM lifecycle_exclusivities WHERE lifecycle_id=? AND active=1 ORDER BY expiry_date,exclusivity_code", (lifecycle_id,)).fetchall()]
     result["history"] = [dict(item) for item in conn.execute("SELECT observed_at,snapshot_json FROM lifecycle_observations WHERE lifecycle_id=? ORDER BY observed_at DESC LIMIT 20", (lifecycle_id,)).fetchall()]
+    result["global_documents"] = [dict(item) for item in conn.execute(
+        "SELECT d.*,l.link_basis,l.evidence_status AS link_evidence_status,l.verified AS link_verified "
+        "FROM patent_product_links l JOIN patent_documents d ON d.patent_document_id=l.patent_document_id "
+        "WHERE l.lifecycle_id=? AND d.active=1 ORDER BY d.jurisdiction,d.publication_number", (lifecycle_id,),
+    ).fetchall()]
+    return result
+
+
+def _upsert_document(conn, entities: dict[str, Any], *, source_name: str, authority: str,
+                     observed: str, next_review: str) -> str:
+    publication = re.sub(r"[^A-Za-z0-9]", "", _text(entities.get("publication_number"))).upper()
+    jurisdiction = _text(entities.get("jurisdiction")).upper() or publication[:2]
+    document_id = _id("patdoc", jurisdiction, publication)
+    official = _text(entities.get("official_source_url"))
+    google = _text(entities.get("google_patents_url")) or google_patents_url(publication, jurisdiction)
+    conn.execute(
+        """INSERT INTO patent_documents
+        (patent_document_id,publication_number,application_number,jurisdiction,document_kind,title,abstract_text,
+         filing_date,publication_date,grant_date,family_id,family_status,legal_status_summary,legal_status_as_of,
+         source_name,source_authority,official_source_url,google_patents_url,uk_register_url,evidence_status,
+         first_seen_at,last_verified_at,next_review_at,attributes_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(patent_document_id) DO UPDATE SET application_number=excluded.application_number,
+        document_kind=excluded.document_kind,title=excluded.title,abstract_text=excluded.abstract_text,
+        filing_date=excluded.filing_date,publication_date=excluded.publication_date,grant_date=excluded.grant_date,
+        family_id=excluded.family_id,family_status=excluded.family_status,
+        legal_status_summary=excluded.legal_status_summary,legal_status_as_of=excluded.legal_status_as_of,
+        source_name=excluded.source_name,source_authority=excluded.source_authority,
+        official_source_url=excluded.official_source_url,google_patents_url=excluded.google_patents_url,
+        uk_register_url=excluded.uk_register_url,evidence_status=excluded.evidence_status,active=1,
+        last_verified_at=excluded.last_verified_at,next_review_at=excluded.next_review_at,
+        attributes_json=excluded.attributes_json""",
+        (document_id, publication, _text(entities.get("application_number")), jurisdiction,
+         _text(entities.get("document_kind")), _text(entities.get("title")), _text(entities.get("abstract")),
+         _text(entities.get("filing_date")), _text(entities.get("publication_date")), _text(entities.get("grant_date")),
+         _text(entities.get("family_id")), _text(entities.get("family_status")) or "Family not established",
+         _text(entities.get("legal_status_summary")) or "Legal status not established",
+         _text(entities.get("legal_status_as_of")), source_name, authority, official, google,
+         _text(entities.get("uk_register_url")) or (uk_register_url(publication) if jurisdiction == "GB" else ""),
+         "Official patent-office evidence" if authority == "official" else "Discovery context only",
+         observed, observed, next_review, json.dumps({"query_context": _text(entities.get("query_context"))})),
+    )
+    for party in entities.get("parties") or []:
+        if not isinstance(party, dict) or not _text(party.get("party_name")):
+            continue
+        party_type = _text(party.get("party_type")) or "party"
+        party_name = _text(party.get("party_name"))
+        conn.execute(
+            """INSERT INTO patent_parties
+            (patent_party_id,patent_document_id,party_type,party_name,country_code,sequence_number,evidence_status,
+             official_source_url,first_seen_at,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(patent_party_id) DO UPDATE SET country_code=excluded.country_code,
+            sequence_number=excluded.sequence_number,evidence_status=excluded.evidence_status,
+            official_source_url=excluded.official_source_url,last_verified_at=excluded.last_verified_at,
+            next_review_at=excluded.next_review_at""",
+            (_id("patparty", document_id, party_type, party_name), document_id, party_type, party_name,
+             _text(party.get("country_code")), _text(party.get("sequence_number")),
+             "Officially reported party; current ownership not inferred", official, observed, observed, next_review),
+        )
+    for member in entities.get("family_members") or []:
+        if not isinstance(member, dict) or not _text(member.get("publication_number")) or not _text(entities.get("family_id")):
+            continue
+        member_number = re.sub(r"[^A-Za-z0-9]", "", _text(member.get("publication_number"))).upper()
+        family_id = _text(entities.get("family_id"))
+        conn.execute(
+            """INSERT INTO patent_family_members
+            (patent_family_member_id,family_id,patent_document_id,publication_number,jurisdiction,relationship_type,
+             evidence_status,official_source_url,observed_at) VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(patent_family_member_id) DO UPDATE SET evidence_status=excluded.evidence_status,
+            official_source_url=excluded.official_source_url,observed_at=excluded.observed_at""",
+            (_id("patfam", family_id, member_number), family_id, document_id if member_number == publication else None,
+             member_number, _text(member.get("jurisdiction")), _text(member.get("relationship_type")) or "family member",
+             "Official patent-office family evidence", official, observed),
+        )
+    for event in entities.get("legal_events") or []:
+        if not isinstance(event, dict) or not _text(event.get("event_text")):
+            continue
+        conn.execute(
+            """INSERT INTO patent_legal_events
+            (patent_legal_event_id,patent_document_id,event_code,event_date,event_text,authority,evidence_status,
+             official_source_url,observed_at) VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(patent_legal_event_id) DO UPDATE SET evidence_status=excluded.evidence_status,
+            official_source_url=excluded.official_source_url,observed_at=excluded.observed_at""",
+            (_id("patevent", document_id, event.get("event_code"), event.get("event_date"), event.get("event_text")),
+             document_id, _text(event.get("event_code")), _text(event.get("event_date")), _text(event.get("event_text")),
+             _text(event.get("authority")), "Official patent-office legal-event evidence", official, observed),
+        )
+    return document_id
+
+
+def sync_global(conn, *, run_id: str = "manual-global-patents", observed_at: datetime | None = None) -> dict[str, int]:
+    now = observed_at or datetime.now(timezone.utc).replace(microsecond=0)
+    observed = _iso(now); next_review = _iso(now + timedelta(days=7))
+    document_ids: set[str] = set()
+    # Orange Book patent numbers become US documents with an explicit regulatory link.
+    rows = conn.execute(
+        "SELECT pt.*,p.trade_name FROM lifecycle_patents pt JOIN lifecycle_products p ON p.lifecycle_id=pt.lifecycle_id "
+        "WHERE pt.active=1 AND p.active=1"
+    ).fetchall()
+    for row in rows:
+        publication = "US" + re.sub(r"\D", "", _text(row["patent_number"]))
+        entities = {
+            "publication_number": publication, "jurisdiction": "US", "title": "",
+            "family_status": _text(row["family_status"]), "family_id": _text(row["family_id"]),
+            "legal_status_summary": "Not established by Orange Book listing",
+            "official_source_url": _text(row["official_source_url"]),
+            "google_patents_url": google_patents_url(publication),
+        }
+        document_id = _upsert_document(conn, entities, source_name="FDA Orange Book", authority="official",
+                                       observed=observed, next_review=next_review)
+        document_ids.add(document_id)
+        conn.execute(
+            """INSERT INTO patent_product_links
+            (patent_product_link_id,patent_document_id,lifecycle_id,link_basis,evidence_status,official_source_url,
+             verified,observed_at) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(patent_product_link_id) DO UPDATE SET evidence_status=excluded.evidence_status,
+            official_source_url=excluded.official_source_url,observed_at=excluded.observed_at""",
+            (_id("patlink", document_id, row["lifecycle_id"], "orange-book-listed"), document_id,
+             row["lifecycle_id"], "Patent number listed for FDA application/product",
+             "Verified Orange Book listing; scope, validity and ownership not inferred", row["official_source_url"], 1, observed),
+        )
+    # EPO OPS records include EP and GB publications and official reported parties.
+    stored = conn.execute(
+        "SELECT source_name,record_json FROM source_records WHERE source_type='epo_patent_document' AND active=1"
+    ).fetchall()
+    for item in stored:
+        record = _json(item["record_json"], {})
+        entities = record.get("entities") if isinstance(record.get("entities"), dict) else {}
+        if not _text(entities.get("publication_number")):
+            continue
+        document_ids.add(_upsert_document(conn, entities, source_name=_text(item["source_name"]) or "EPO OPS",
+                                          authority="official", observed=observed, next_review=next_review))
+    counts = {
+        "documents_seen": len(document_ids),
+        "eu_documents_seen": int(conn.execute("SELECT COUNT(*) AS n FROM patent_documents WHERE active=1 AND jurisdiction='EP'").fetchone()["n"]),
+        "uk_documents_seen": int(conn.execute("SELECT COUNT(*) AS n FROM patent_documents WHERE active=1 AND jurisdiction='GB'").fetchone()["n"]),
+        "parties_seen": int(conn.execute("SELECT COUNT(*) AS n FROM patent_parties").fetchone()["n"]),
+        "families_seen": int(conn.execute("SELECT COUNT(DISTINCT family_id) AS n FROM patent_documents WHERE COALESCE(family_id,'')<>''").fetchone()["n"]),
+        "legal_events_seen": int(conn.execute("SELECT COUNT(*) AS n FROM patent_legal_events").fetchone()["n"]),
+    }
+    conn.execute(
+        """INSERT INTO patent_global_monitor_runs
+        (run_id,started_at,completed_at,status,documents_seen,eu_documents_seen,uk_documents_seen,parties_seen,
+         families_seen,legal_events_seen,metadata_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(run_id) DO UPDATE SET completed_at=excluded.completed_at,status=excluded.status,
+        documents_seen=excluded.documents_seen,eu_documents_seen=excluded.eu_documents_seen,
+        uk_documents_seen=excluded.uk_documents_seen,parties_seen=excluded.parties_seen,
+        families_seen=excluded.families_seen,legal_events_seen=excluded.legal_events_seen,
+        metadata_json=excluded.metadata_json""",
+        (run_id, observed, _iso(datetime.now(timezone.utc).replace(microsecond=0)), "Healthy", *counts.values(),
+         json.dumps({"google_patents": "discovery only", "legal_boundary": "patent intelligence; not legal advice"})),
+    )
+    return counts
+
+
+def global_metrics(conn) -> dict[str, Any]:
+    counts = dict(conn.execute(
+        "SELECT COUNT(*) AS documents,SUM(CASE WHEN jurisdiction='EP' THEN 1 ELSE 0 END) AS eu_documents,"
+        "SUM(CASE WHEN jurisdiction='GB' THEN 1 ELSE 0 END) AS uk_documents,"
+        "SUM(CASE WHEN jurisdiction='US' THEN 1 ELSE 0 END) AS us_documents FROM patent_documents WHERE active=1"
+    ).fetchone() or {})
+    counts.update({
+        "parties": int(conn.execute("SELECT COUNT(*) AS n FROM patent_parties").fetchone()["n"]),
+        "families": int(conn.execute("SELECT COUNT(DISTINCT family_id) AS n FROM patent_documents WHERE COALESCE(family_id,'')<>''").fetchone()["n"]),
+        "legal_events": int(conn.execute("SELECT COUNT(*) AS n FROM patent_legal_events").fetchone()["n"]),
+        "latest_monitor": dict(conn.execute("SELECT * FROM patent_global_monitor_runs ORDER BY completed_at DESC LIMIT 1").fetchone() or {}),
+    })
+    return {key: int(value or 0) if key != "latest_monitor" else value for key, value in counts.items()}
+
+
+def global_facets(conn) -> dict[str, list[str]]:
+    return {"jurisdiction": [str(row[0]) for row in conn.execute(
+        "SELECT DISTINCT jurisdiction FROM patent_documents WHERE active=1 ORDER BY jurisdiction"
+    ).fetchall()]}
+
+
+def global_documents(conn, *, search: str = "", jurisdiction: str = "All", limit: int = 500) -> list[dict[str, Any]]:
+    clauses = ["d.active=1"]; params: list[Any] = []
+    if search.strip():
+        q = f"%{search.strip().casefold()}%"
+        clauses.append("(LOWER(d.publication_number) LIKE ? OR LOWER(d.title) LIKE ? OR EXISTS "
+                       "(SELECT 1 FROM patent_parties pt WHERE pt.patent_document_id=d.patent_document_id "
+                       "AND LOWER(pt.party_name) LIKE ?))")
+        params.extend([q, q, q])
+    if jurisdiction != "All": clauses.append("d.jurisdiction=?"); params.append(jurisdiction)
+    params.append(max(1, min(int(limit), 1000)))
+    rows = [dict(row) for row in conn.execute(
+        f"SELECT d.* FROM patent_documents d WHERE {' AND '.join(clauses)} "
+        "ORDER BY d.publication_date DESC,d.publication_number LIMIT ?", tuple(params),
+    ).fetchall()]
+    ids = [row["patent_document_id"] for row in rows]
+    parties: dict[str, list[str]] = {}
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        for party in conn.execute(
+            f"SELECT patent_document_id,party_name FROM patent_parties WHERE patent_document_id IN ({placeholders}) "
+            "ORDER BY party_type,party_name", tuple(ids),
+        ).fetchall():
+            parties.setdefault(str(party["patent_document_id"]), []).append(str(party["party_name"]))
+    for row in rows:
+        row["reported_parties"] = " · ".join(parties.get(row["patent_document_id"], []))
+    return rows
+
+
+def global_document_profile(conn, patent_document_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM patent_documents WHERE patent_document_id=?", (patent_document_id,)).fetchone()
+    if not row: return None
+    result = dict(row)
+    result["parties"] = [dict(item) for item in conn.execute(
+        "SELECT * FROM patent_parties WHERE patent_document_id=? ORDER BY party_type,party_name", (patent_document_id,)
+    ).fetchall()]
+    result["family_members"] = [dict(item) for item in conn.execute(
+        "SELECT * FROM patent_family_members WHERE patent_document_id=? OR family_id=? ORDER BY jurisdiction,publication_number",
+        (patent_document_id, result.get("family_id") or "__none__"),
+    ).fetchall()]
+    result["legal_events"] = [dict(item) for item in conn.execute(
+        "SELECT * FROM patent_legal_events WHERE patent_document_id=? ORDER BY event_date DESC", (patent_document_id,)
+    ).fetchall()]
+    result["product_links"] = [dict(item) for item in conn.execute(
+        "SELECT l.*,p.trade_name,p.ingredient FROM patent_product_links l JOIN lifecycle_products p ON p.lifecycle_id=l.lifecycle_id "
+        "WHERE l.patent_document_id=? ORDER BY p.trade_name", (patent_document_id,),
+    ).fetchall()]
     return result

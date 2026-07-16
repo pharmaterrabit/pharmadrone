@@ -52,6 +52,7 @@ You choose your LLM provider — **no single provider is required**. The default
 OpenRouter with a free model, so you typically need just two keys:
 - `OPENROUTER_API_KEY` → https://openrouter.ai/keys  (default provider)
 - `TAVILY_API_KEY` → https://tavily.com  (web search)
+- `EPO_OPS_KEY` and `EPO_OPS_SECRET` → https://developers.epo.org/ (official EP/GB patent, family and legal-event enrichment)
 
 To use a different LLM, set `LLM_PROVIDER` to `groq`, `openai`, or `gemini` and
 fill that provider's key instead. Gemini is optional — only needed if you pick it.
