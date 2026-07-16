@@ -28,6 +28,7 @@ Repository commits and regression tests are the completion evidence.
 | Phase 9 A–D — Patent & Lifecycle Intelligence | Complete in code; production projection required | FDA Orange Book applications/products, listed patents and exclusivities, evidence-gated ownership/family resolution, expiry timelines, weekly monitoring and exports |
 | Phase 10 A–D — Research & Innovation Intelligence | Complete in code; production projection required | research organisations and authors, deduplicated publications, co-authorship and trial collaborations, evidence-gated technology transfer, weekly monitoring and exports |
 | Phase 11 A–D — Deals & Funding Intelligence | Complete in code; production projection required | licensing, M&A, commercial partnerships, corporate financing, publication-linked grants, verification-gated web signals, weekly monitoring and exports |
+| Phase 12 A–F — Customer Product | Complete in code; production migration required | tenant-scoped customer workspace, cross-module saved lists, daily alert evaluation, role permissions, governed internal/external exports and append-only activity history |
 
 Labels such as “1A” and “2A” were not used in the repository and are not silently
 invented here. The canonical sequence above is the permanent source of truth.

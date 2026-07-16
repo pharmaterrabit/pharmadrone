@@ -1062,6 +1062,113 @@ def _deals_funding_schema(conn) -> None:
     """)
 
 
+def _customer_product_schema(conn) -> None:
+    """Phase 12 tenant-scoped customer workflows and governed delivery."""
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS customer_saved_lists (
+        saved_list_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        organisation_id TEXT,
+        workspace_id TEXT,
+        name TEXT NOT NULL,
+        description TEXT,
+        visibility TEXT NOT NULL DEFAULT 'workspace',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        updated_at TEXT NOT NULL DEFAULT {ts},
+        archived INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(scope_key, name)
+    );
+    CREATE TABLE IF NOT EXISTS customer_saved_items (
+        saved_item_id TEXT PRIMARY KEY,
+        saved_list_id TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        record_label TEXT NOT NULL,
+        source_url TEXT,
+        evidence_status TEXT NOT NULL DEFAULT 'internal intelligence',
+        note TEXT,
+        added_by TEXT NOT NULL,
+        added_at TEXT NOT NULL DEFAULT {ts},
+        snapshot_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(saved_list_id, record_type, record_id),
+        FOREIGN KEY (saved_list_id) REFERENCES customer_saved_lists(saved_list_id)
+    );
+    CREATE TABLE IF NOT EXISTS customer_alert_rules (
+        alert_rule_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        saved_list_id TEXT,
+        name TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        search_term TEXT,
+        source_filter TEXT,
+        region_filter TEXT,
+        severity TEXT NOT NULL DEFAULT 'medium',
+        cadence TEXT NOT NULL DEFAULT 'daily',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        last_evaluated_at TEXT,
+        UNIQUE(scope_key, name),
+        FOREIGN KEY (saved_list_id) REFERENCES customer_saved_lists(saved_list_id)
+    );
+    CREATE TABLE IF NOT EXISTS customer_alert_events (
+        alert_event_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        alert_rule_id TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        source_url TEXT,
+        evidence_status TEXT NOT NULL,
+        event_fingerprint TEXT NOT NULL,
+        detected_at TEXT NOT NULL DEFAULT {ts},
+        read_at TEXT,
+        dismissed_at TEXT,
+        UNIQUE(alert_rule_id, event_fingerprint),
+        FOREIGN KEY (alert_rule_id) REFERENCES customer_alert_rules(alert_rule_id)
+    );
+    CREATE TABLE IF NOT EXISTS customer_exports (
+        export_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        saved_list_id TEXT NOT NULL,
+        export_kind TEXT NOT NULL,
+        export_format TEXT NOT NULL,
+        status TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        requested_role TEXT NOT NULL,
+        record_count INTEGER NOT NULL DEFAULT 0,
+        excluded_count INTEGER NOT NULL DEFAULT 0,
+        policy_snapshot TEXT NOT NULL,
+        checksum TEXT,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        metadata_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (saved_list_id) REFERENCES customer_saved_lists(saved_list_id)
+    );
+    CREATE TABLE IF NOT EXISTS customer_activity_events (
+        id {ident},
+        scope_key TEXT NOT NULL,
+        actor_name TEXT NOT NULL,
+        actor_role TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        safe_summary TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        metadata_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_customer_lists_scope ON customer_saved_lists(scope_key, archived, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_customer_items_list ON customer_saved_items(saved_list_id, added_at);
+    CREATE INDEX IF NOT EXISTS idx_customer_rules_scope ON customer_alert_rules(scope_key, enabled);
+    CREATE INDEX IF NOT EXISTS idx_customer_alerts_scope ON customer_alert_events(scope_key, dismissed_at, detected_at);
+    CREATE INDEX IF NOT EXISTS idx_customer_exports_scope ON customer_exports(scope_key, created_at);
+    CREATE INDEX IF NOT EXISTS idx_customer_activity_scope ON customer_activity_events(scope_key, created_at);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -1075,6 +1182,7 @@ MIGRATIONS = (
     Migration(10, "phase_9_patent_lifecycle_schema", _patent_lifecycle_schema),
     Migration(11, "phase_10_research_innovation_schema", _research_innovation_schema),
     Migration(12, "phase_11_deals_funding_schema", _deals_funding_schema),
+    Migration(13, "phase_12_customer_product_schema", _customer_product_schema),
 )
 
 

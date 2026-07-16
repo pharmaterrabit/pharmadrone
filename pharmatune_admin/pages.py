@@ -172,6 +172,18 @@ def workspace_administration(principal, state):
         if st.form_submit_button("Invite member",type="primary"):
             try: admin.invite_user(principal,org_id,email,name,role); st.success("Invitation recorded."); _refresh_after_write()
             except Exception as exc: st.error(str(exc))
+    members = {f"{user.get('display_name')} · {user.get('email')}": user for user in state["users"]}
+    if members:
+        with st.form("ws_member_permissions"):
+            label = st.selectbox("Member permissions", list(members))
+            member = members[label]
+            export_allowed = st.checkbox("Allow governed exports", value=bool(member.get("export_allowed")))
+            outreach_allowed = st.checkbox("Allow approved outreach workflows", value=bool(member.get("outreach_allowed")))
+            if st.form_submit_button("Save member permissions"):
+                try:
+                    admin.set_user_permissions(principal, member["user_id"], export_allowed=export_allowed, outreach_allowed=outreach_allowed)
+                    st.success("Member permissions saved."); _refresh_after_write()
+                except Exception as exc: st.error(str(exc))
     settings=state.get("settings") or {}
     with st.form("ws_settings"):
         export_options=list(admin.EXPORT_POLICIES); notification_options=list(admin.NOTIFICATION_MODES)

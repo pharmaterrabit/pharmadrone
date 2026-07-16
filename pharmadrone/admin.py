@@ -140,6 +140,24 @@ def set_user_status(principal: dict[str, Any], user_id: str, status: str) -> Non
         conn.close()
 
 
+def set_user_permissions(principal: dict[str, Any], user_id: str, *, export_allowed: bool,
+                         outreach_allowed: bool) -> None:
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT organisation_id,email FROM admin_users WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            raise ValueError("User not found.")
+        org = _scope(principal, row.get("organisation_id"))
+        with conn.transaction():
+            conn.execute(
+                "UPDATE admin_users SET export_allowed=?,outreach_allowed=? WHERE user_id=?",
+                (int(export_allowed), int(outreach_allowed), user_id),
+            )
+            log_event(conn, principal, "USER_PERMISSIONS_CHANGED", f"Updated governed permissions for {row.get('email')}.", organisation_id=org)
+    finally:
+        conn.close()
+
+
 def update_workspace_settings(principal: dict[str, Any], organisation_id: str, *, export_policy: str,
                               notification_mode: str, retention_days: int, mfa_required: bool) -> None:
     org = _scope(principal, organisation_id)

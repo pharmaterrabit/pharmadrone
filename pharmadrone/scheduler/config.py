@@ -41,6 +41,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec("research_innovation", "research and innovation projection", "weekly"),
     SourceSpec("deal_discovery", "commercial signal discovery", "weekly", enabled_env="TAVILY_API_KEY", default_enabled=False),
     SourceSpec("commercial_intelligence", "deals and funding projection", "weekly"),
+    SourceSpec("customer_alerts", "customer saved-intelligence alert evaluation", "daily"),
     SourceSpec("monthly_maintenance", "maintenance", "monthly"),
 )
 

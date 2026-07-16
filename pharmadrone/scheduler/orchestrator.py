@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from .. import db
-from ..pipeline import account_intelligence, commercial_intelligence, discover, opportunity_index, patent_lifecycle, research_innovation, score
+from ..pipeline import account_intelligence, commercial_intelligence, customer_product, discover, opportunity_index, patent_lifecycle, research_innovation, score
 from .config import guardrails, source_spec, source_names, utc_now
 from .errors import SchedulerError, classify_error, safe_summary
 from . import repository, sources
@@ -137,6 +137,18 @@ def _commercial_intelligence_refresh(conn, run_id: str, fetch_result: dict[str, 
     }
 
 
+def _customer_alerts_refresh(conn, run_id: str, fetch_result: dict[str, Any]) -> dict[str, Any]:
+    projection = customer_product.evaluate_alerts(conn=conn, transactional=False)
+    return {
+        "records_retrieved": int(projection.get("rules_evaluated", 0)),
+        "records_created": int(projection.get("alerts_created", 0)), "records_updated": 0,
+        "records_unchanged": 0, "records_rejected": 0, "opportunities_created": 0,
+        "duplicate_records_prevented": 0, "watermark_after": "",
+        "cursor_after": "daily-customer-alert-evaluation",
+        "metadata": {**(fetch_result.get("metadata") or {}), **projection},
+    }
+
+
 def _generate_opportunities(conn, material_records: list[dict[str, Any]]) -> dict[str, int]:
     eligible = [r for r in material_records if str(r.get("source_type") or "").lower() in {"recall", "trial", "shortage"}]
     if not eligible:
@@ -231,6 +243,8 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                     result = _research_innovation_refresh(conn, run_id, fetch_result)
                 elif source_name == "commercial_intelligence":
                     result = _commercial_intelligence_refresh(conn, run_id, fetch_result)
+                elif source_name == "customer_alerts":
+                    result = _customer_alerts_refresh(conn, run_id, fetch_result)
                 else:
                     ingest = repository.ingest_source_records(
                         conn, run_id=run_id, source_name=source_name, records=fetch_result.get("records") or []

@@ -9,12 +9,27 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
-from pharmadrone.pipeline import account_intelligence, commercial_intelligence, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
+from pharmadrone.pipeline import account_intelligence, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
 def connection():
     return db.connect()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def customer_workspace_snapshot(principal: dict[str, Any]) -> dict[str, Any]:
+    return customer_product.workspace_snapshot(principal)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def customer_saved_items(principal: dict[str, Any], saved_list_id: str) -> list[dict[str, Any]]:
+    return customer_product.list_items(principal, saved_list_id)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def customer_alert_inbox(principal: dict[str, Any]) -> list[dict[str, Any]]:
+    return customer_product.alert_inbox(principal)
 
 
 @st.cache_data(ttl=15, show_spinner=False)

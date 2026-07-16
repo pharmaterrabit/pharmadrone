@@ -10,7 +10,7 @@ from . import pages, theme
 NAV = {
     "DISCOVER":["Overview","Opportunity Explorer","Companies","Products","Technologies"],
     "INTELLIGENCE":["Research & Innovation","Regulatory Signals","Deals & Funding","Patents"],
-    "WORKFLOW":["Human Validation","Case Studies","Pharmaceutical Memory"],
+    "WORKFLOW":["My Workspace","Saved Lists","Alerts","Human Validation","Case Studies","Pharmaceutical Memory"],
     "PLATFORM":["Data Sources","System Health","Settings"],
 }
 
@@ -45,7 +45,7 @@ def _sync_navigation() -> None:
         st.session_state["page"] = selected
 
 
-def _sidebar() -> str:
+def _sidebar(principal: dict) -> str:
     with st.sidebar:
         st.markdown('<div class="pt-brand"><div class="pt-mark">P</div><div><b>PharmaTune</b><small>Intelligence Platform</small></div></div>',unsafe_allow_html=True)
         current=st.session_state.get("page","Overview")
@@ -63,8 +63,12 @@ def _sidebar() -> str:
             label_visibility="collapsed",
         )
         st.markdown("---")
-        st.markdown(theme.badge("Analyst workspace","blue"),unsafe_allow_html=True)
+        role_label = "Read-only executive" if principal.get("role") == "read_only_executive" else "Analyst workspace"
+        st.markdown(theme.badge(role_label,"blue"),unsafe_allow_html=True)
+        st.caption(str(principal.get("display_name") or "Authenticated customer"))
         st.caption("Evidence-backed opportunity signals. Human validation required.")
+        if st.button("Sign out", use_container_width=True):
+            auth.sign_out()
         return selected
 
 
@@ -73,12 +77,13 @@ def run(principal: dict | None = None) -> None:
     if principal.get("role") not in {"analyst_reviewer", "read_only_executive"}:
         st.error("This account is assigned to an administration workspace.")
         st.stop()
+    st.session_state["customer_principal"] = dict(principal)
     try:
         status=_database_status()
     except (DatabaseConfigurationError,DatabaseUnavailableError,RuntimeError) as exc:
         st.error("PharmaTune cannot connect to its durable database. Production remains closed rather than using a disposable fallback.")
         st.caption(str(exc)); st.stop()
-    selected=_sidebar()
+    selected=_sidebar(principal)
     page=st.session_state.get("page",selected)
     routes={
         "Overview":pages.overview,
@@ -88,6 +93,9 @@ def run(principal: dict | None = None) -> None:
         "Company Detail":lambda:pages.company_detail(_navigate),
         "Products":lambda:pages.entity_page("Products","Products represented in the current live opportunity index.","product"),
         "Technologies":pages.technology_profile,
+        "My Workspace":lambda:pages.customer_workspace(principal,_navigate),
+        "Saved Lists":lambda:pages.saved_lists(principal,_navigate),
+        "Alerts":lambda:pages.customer_alerts(principal,_navigate),
         "Human Validation":pages.validation,
         "Case Studies":lambda:pages.case_studies(principal,_navigate),
         "Pharmaceutical Memory":pages.pharmaceutical_memory,
@@ -101,7 +109,7 @@ def run(principal: dict | None = None) -> None:
         "Deal Detail":lambda:pages.deal_detail(_navigate),
         "Patents":lambda:pages.patents(_navigate),
         "Patent Detail":lambda:pages.patent_detail(_navigate),
-        "Settings":lambda:pages.placeholder("Settings","Workspace preferences will be introduced with authenticated workspace administration."),
+        "Settings":lambda:pages.customer_settings(principal),
     }
     routes.get(page,pages.overview)()
     st.markdown(f'<div class="pt-mono" style="margin-top:40px;border-top:1px solid rgba(151,168,205,.13);padding-top:14px">PharmaTune · PostgreSQL schema v{status.get("schema_version",0)} · Human validation required for every opportunity signal</div>',unsafe_allow_html=True)
