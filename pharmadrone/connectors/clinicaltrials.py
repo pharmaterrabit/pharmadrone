@@ -168,7 +168,30 @@ def _row(study: dict, discovery_topic: str = ""):
     conditions = ps.get("conditionsModule", {}) or {}
     sponsor_mod = ps.get("sponsorCollaboratorsModule", {}) or {}
     sponsor = sponsor_mod.get("leadSponsor", {}) or {}
-    locations = (ps.get("contactsLocationsModule", {}) or {}).get("locations", []) or []
+    contacts_module = ps.get("contactsLocationsModule", {}) or {}
+    locations = contacts_module.get("locations", []) or []
+    public_contacts = []
+    for contact in contacts_module.get("centralContacts", []) or []:
+        name = _clean((contact or {}).get("name"))
+        if name:
+            public_contacts.append({
+                "name": name,
+                "role": _clean((contact or {}).get("role")),
+                "phone": _clean((contact or {}).get("phone")),
+                "email": _clean((contact or {}).get("email")),
+                "source_scope": "central study contact",
+            })
+    for location in locations:
+        for contact in (location or {}).get("contacts", []) or []:
+            name = _clean((contact or {}).get("name"))
+            if name:
+                public_contacts.append({
+                    "name": name,
+                    "role": _clean((contact or {}).get("role")),
+                    "phone": _clean((contact or {}).get("phone")),
+                    "email": _clean((contact or {}).get("email")),
+                    "source_scope": _clean((location or {}).get("facility")) or "study location contact",
+                })
 
     nct = _clean(ident.get("nctId"))
     title = _clean(ident.get("briefTitle"))
@@ -259,6 +282,7 @@ def _row(study: dict, discovery_topic: str = ""):
             "regulator": "ClinicalTrials.gov",
             "country": countries[0] if len(countries) == 1 else None,
             "countries": countries,
+            "contacts": public_contacts,
             "official_source_url": official_url,
         },
     )

@@ -15,6 +15,7 @@ NAV = {
 }
 
 HIDDEN_ROUTE_PARENT = {"Opportunity Detail": "Opportunity Explorer"}
+HIDDEN_ROUTE_PARENT["Company Detail"] = "Companies"
 NAV_OPTIONS = [page for group in NAV.values() for page in group]
 NAVIGATION_KEY = "navigation_page"
 PENDING_NAVIGATION_KEY = "_pending_navigation_page"
@@ -79,7 +80,8 @@ def run(principal: dict | None = None) -> None:
         "Overview":pages.overview,
         "Opportunity Explorer":lambda:pages.explorer(_navigate),
         "Opportunity Detail":lambda:pages.opportunity_detail(_navigate),
-        "Companies":lambda:pages.entity_page("Companies","Organisations represented in the current live opportunity index.","company"),
+        "Companies":lambda:pages.entity_page("Companies","Evidence-governed organisations, linked products and signals, and weekly-reviewed contact routes.","company",_navigate),
+        "Company Detail":lambda:pages.company_detail(_navigate),
         "Products":lambda:pages.entity_page("Products","Products represented in the current live opportunity index.","product"),
         "Technologies":pages.technology_profile,
         "Human Validation":pages.validation,

@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from .. import db
-from ..pipeline import discover, opportunity_index, score
+from ..pipeline import account_intelligence, discover, opportunity_index, score
 from .config import guardrails, source_spec, source_names, utc_now
 from .errors import SchedulerError, classify_error, safe_summary
 from . import repository, sources
@@ -81,6 +81,21 @@ def _monthly_maintenance(conn, run_id: str, fetch_result: dict[str, Any]) -> dic
             "url_checks_available": sum(1 for c in url_checks if c.get("status") == "available"),
             "url_checks_unavailable": sum(1 for c in url_checks if c.get("status") != "available"),
         },
+    }
+
+
+def _account_intelligence_refresh(conn, run_id: str, fetch_result: dict[str, Any]) -> dict[str, Any]:
+    projection = account_intelligence.sync_account_intelligence(conn, run_id=run_id)
+    return {
+        "records_retrieved": int(projection.get("organisations_seen", 0)) + int(projection.get("contacts_seen", 0)),
+        "records_created": int(projection.get("organisations_changed", 0)) + int(projection.get("contacts_changed", 0)),
+        "records_updated": 0,
+        "records_unchanged": max(0, int(projection.get("organisations_seen", 0)) - int(projection.get("organisations_changed", 0))),
+        "records_rejected": 0,
+        "opportunities_created": 0, "duplicate_records_prevented": 0,
+        "watermark_after": "",
+        "cursor_after": "weekly-account-projection",
+        "metadata": {**(fetch_result.get("metadata") or {}), **projection},
     }
 
 
@@ -170,6 +185,8 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
             with conn.transaction():
                 if source_name == "monthly_maintenance":
                     result = _monthly_maintenance(conn, run_id, fetch_result)
+                elif source_name == "account_intelligence":
+                    result = _account_intelligence_refresh(conn, run_id, fetch_result)
                 else:
                     ingest = repository.ingest_source_records(
                         conn, run_id=run_id, source_name=source_name, records=fetch_result.get("records") or []

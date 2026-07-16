@@ -36,6 +36,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec("openalex", "literature", "weekly"),
     SourceSpec("crossref", "literature", "weekly"),
     SourceSpec("tavily", "web enrichment", "weekly", enabled_env="TAVILY_API_KEY", default_enabled=False),
+    SourceSpec("account_intelligence", "organisation and contact intelligence", "weekly"),
     SourceSpec("monthly_maintenance", "maintenance", "monthly"),
 )
 

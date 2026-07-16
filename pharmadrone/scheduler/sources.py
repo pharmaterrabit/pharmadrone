@@ -381,6 +381,15 @@ def fetch_tavily(conn, state: dict[str, Any], guards: Guardrails, *, force: bool
     }
 
 
+def fetch_account_intelligence(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    """The orchestrator projects already-stored evidence; no network fetch is needed."""
+    return {
+        "records": [], "cursor_after": "weekly-account-projection",
+        "watermark_after": state.get("last_watermark") or "",
+        "metadata": {"mode": "evidence-governed organisation/contact projection"},
+    }
+
+
 FETCHERS = {
     "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
@@ -398,6 +407,7 @@ FETCHERS = {
     "openalex": fetch_openalex,
     "crossref": fetch_crossref,
     "tavily": fetch_tavily,
+    "account_intelligence": fetch_account_intelligence,
     "monthly_maintenance": fetch_monthly_maintenance,
 }
 
