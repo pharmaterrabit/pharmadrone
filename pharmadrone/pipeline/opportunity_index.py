@@ -161,9 +161,29 @@ def enrich_ema_companies(conn, candidates: list[dict[str, Any]]) -> int:
 
 
 def repair_regulator_entities(conn) -> dict[str, int]:
-    """Repair existing EMA holders and regulator company/product columns."""
+    """Repair existing regulator company/product/region fields.
+
+    Stored source records are the authority for legacy repairs.  This matters
+    when a connector parser improves after an opportunity was first indexed:
+    the source row may contain the corrected manufacturer, product and region
+    while the opportunity still carries the older incomplete projection.
+    """
     by_product, by_molecule = _ema_company_indexes(conn)
     counts = {"ema_companies": 0, "regulator_entities": 0}
+    source_entities: dict[str, dict[str, Any]] = {}
+    for stored in conn.execute(
+        "SELECT source_id,record_json FROM source_records WHERE active=1"
+    ).fetchall():
+        item = dict(stored)
+        try:
+            source_record = json.loads(item.get("record_json") or "{}")
+        except Exception:
+            continue
+        if not isinstance(source_record, dict):
+            continue
+        entities = source_record.get("entities") or {}
+        if isinstance(entities, dict):
+            source_entities[str(item.get("source_id") or "")] = entities
     rows = conn.execute(
         "SELECT stable_lead_id,company,product,region,source_type,data_json FROM opportunity_index"
     ).fetchall()
@@ -177,11 +197,29 @@ def repair_regulator_entities(conn) -> dict[str, int]:
             data = {}
         evidence = _first_evidence(data)
         entities = evidence.get("entities") or {}
+        authoritative = source_entities.get(str(row.get("source_id") or ""), {})
+        if not authoritative:
+            authoritative = source_entities.get(str(evidence.get("record_id") or ""), {})
         rf = entities.get("recall_fields") or {}
-        company = str(entities.get("company") or rf.get("recalling_firm") or "").strip()
-        product = str(entities.get("product") or rf.get("product_description") or row.get("product") or "").strip()
-        regulator = _norm(entities.get("regulator"))
-        region = str(entities.get("region") or entities.get("country") or row.get("region") or "").strip()
+        authoritative_rf = authoritative.get("recall_fields") or {}
+        company = str(
+            authoritative.get("company") or authoritative_rf.get("recalling_firm")
+            or entities.get("company") or rf.get("recalling_firm") or ""
+        ).strip()
+        product = str(
+            authoritative.get("product") or authoritative_rf.get("product_description")
+            or entities.get("product") or rf.get("product_description") or row.get("product") or ""
+        ).strip()
+        regulator = _norm(authoritative.get("regulator") or entities.get("regulator"))
+        region = str(
+            authoritative.get("region") or authoritative.get("country")
+            or entities.get("region") or entities.get("country") or row.get("region") or ""
+        ).strip()
+        if authoritative:
+            for key in ("company", "product", "molecule", "region", "country", "regulator", "official_source_url"):
+                if authoritative.get(key):
+                    entities[key] = authoritative[key]
+            evidence["entities"] = entities
         if regulator == "ema" and not company:
             company = by_product.get(_norm(product)) or by_molecule.get(_norm(entities.get("molecule"))) or ""
             if company:
@@ -193,6 +231,7 @@ def repair_regulator_entities(conn) -> dict[str, int]:
         # into Company. A missing company is more honest than a false one.
         if company and product and _norm(company) == _norm(product):
             company = ""
+            entities["company"] = None
         if company != str(row.get("company") or "") or product != str(row.get("product") or "") or region != str(row.get("region") or ""):
             data["company"] = company
             data["product"] = product
@@ -202,6 +241,100 @@ def repair_regulator_entities(conn) -> dict[str, int]:
             )
             counts["regulator_entities"] += 1
     return counts
+
+
+def _regulator_index_rows(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT stable_lead_id,company,product,problem_category,source_type,source_id,region,"
+        "score,grade,lead_status,evidence_links_json,data_json FROM opportunity_index "
+        "WHERE source_type LIKE 'FDA %' OR source_type LIKE 'EMA %' "
+        "OR source_type LIKE 'MHRA %' OR source_type='ClinicalTrials.gov trial'"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def regulator_data_quality(conn) -> dict[str, Any]:
+    """Return auditable field/link completeness for sales-facing source rows."""
+    grouped: dict[str, dict[str, int]] = {}
+    for row in _regulator_index_rows(conn):
+        source = str(row.get("source_type") or "Unknown source")
+        metrics = grouped.setdefault(source, {
+            "total": 0, "missing_company": 0, "missing_product": 0,
+            "missing_region": 0, "missing_official_link": 0,
+            "missing_problem": 0, "missing_score_or_grade": 0,
+        })
+        metrics["total"] += 1
+        for field, key in (
+            ("company", "missing_company"), ("product", "missing_product"),
+            ("region", "missing_region"), ("problem_category", "missing_problem"),
+        ):
+            if not str(row.get(field) or "").strip():
+                metrics[key] += 1
+        try:
+            links = json.loads(row.get("evidence_links_json") or "[]")
+        except Exception:
+            links = []
+        if not any(str(link).startswith(("https://", "http://")) for link in links):
+            metrics["missing_official_link"] += 1
+        if row.get("score") is None or not str(row.get("grade") or "").strip():
+            metrics["missing_score_or_grade"] += 1
+    sources = []
+    for source, metrics in sorted(grouped.items()):
+        required = metrics["total"] * 5
+        missing = sum(metrics[key] for key in (
+            "missing_product", "missing_region", "missing_official_link",
+            "missing_problem", "missing_score_or_grade",
+        ))
+        sources.append({
+            "source_type": source, **metrics,
+            "required_field_completeness": round(100 * (required - missing) / required, 1) if required else 100.0,
+        })
+    return {
+        "total": sum(row["total"] for row in sources),
+        "sources": sources,
+        "missing_company": sum(row["missing_company"] for row in sources),
+        "missing_official_link": sum(row["missing_official_link"] for row in sources),
+        "missing_score_or_grade": sum(row["missing_score_or_grade"] for row in sources),
+    }
+
+
+def build_sales_qualification_briefs(conn) -> int:
+    """Persist a deterministic, non-LLM sales brief for every official signal."""
+    updated = 0
+    for row in _regulator_index_rows(conn):
+        try:
+            data = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        company = str(row.get("company") or "").strip()
+        product = str(row.get("product") or "").strip()
+        problem = str(row.get("problem_category") or "").strip()
+        source = str(row.get("source_type") or "official source").strip()
+        brief = {
+            "brief_type": "deterministic regulator signal brief",
+            "target_account": company or "Manufacturer / authorisation holder not stated by official source",
+            "product": product or "Product not stated by official source",
+            "public_signal": problem or "Official regulatory event requires classification",
+            "evidence_basis": f"{source} · {row.get('source_id') or 'source ID not recorded'}",
+            "qualification_status": "Human validation required",
+            "recommended_next_step": (
+                "Confirm the responsible company and whether the public event creates a current, addressable technical need."
+                if not company else
+                "Validate recency, root cause, company responsibility and solution fit before any outreach."
+            ),
+            "commercial_limit": "A public regulatory signal does not prove budget, urgency, buying intent or solution fit.",
+        }
+        if data.get("sales_qualification_brief") == brief:
+            continue
+        data["sales_qualification_brief"] = brief
+        conn.execute(
+            "UPDATE opportunity_index SET data_json=? WHERE stable_lead_id=?",
+            (json.dumps(data, ensure_ascii=False, default=str), row["stable_lead_id"]),
+        )
+        updated += 1
+    return updated
 
 
 def repair_evidence_urls(conn) -> int:

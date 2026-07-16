@@ -181,6 +181,7 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                     entity_repairs = opportunity_index.repair_regulator_entities(conn)
                     evidence_url_repairs = opportunity_index.repair_evidence_urls(conn)
                     scoring_backfill = opportunity_index.backfill_missing_scores(conn)
+                    qualification_briefs = opportunity_index.build_sales_qualification_briefs(conn)
                     result = {
                         "records_retrieved": ingest["retrieved"],
                         "records_created": ingest["created"],
@@ -196,7 +197,8 @@ def run_one_source(conn, *, run_id: str, source_name: str, force: bool = False,
                                      "regulator_source_labels_repaired": repaired_labels,
                                      "regulator_entities_repaired": entity_repairs,
                                      "evidence_urls_repaired": evidence_url_repairs,
-                                     "missing_scores_backfilled": scoring_backfill},
+                                     "missing_scores_backfilled": scoring_backfill,
+                                     "qualification_briefs_built": qualification_briefs},
                     }
                 after = _benchmark_snapshot(conn)
                 if before != after:

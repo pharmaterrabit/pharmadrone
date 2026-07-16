@@ -84,8 +84,12 @@ def explorer(navigate: Callable[[str], None]) -> None:
     if page > pages: st.session_state["opp_page"] = 1; st.rerun()
     st.caption(f"{result['total']:,} matching records · page {page} of {pages}")
     if not result["rows"]: theme.empty("No matching opportunities", "Try a broader search or remove one of the filters.", "No results"); return
-    frame = pd.DataFrame([{ "Company":r.get("company") or "Not stated by source","Product":r.get("product") or "Not stated by source","Problem":r.get("problem_category"),"Source":r.get("source_type"),"Region":r.get("region"),"Score":r.get("score"),"Grade":r.get("grade"),"Status":r.get("lead_status"),"Lead ID":r.get("stable_lead_id")} for r in result["rows"]])
-    event = st.dataframe(frame, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="opp_table")
+    frame = pd.DataFrame([{ "Company":r.get("company") or "Not stated by source","Product":r.get("product") or "Not stated by source","Problem":r.get("problem_category"),"Source":r.get("source_type"),"Region":r.get("region"),"Score":r.get("score"),"Grade":r.get("grade"),"Status":r.get("lead_status"),"Official evidence":r.get("official_source_url"),"Lead ID":r.get("stable_lead_id")} for r in result["rows"]])
+    event = st.dataframe(
+        frame, use_container_width=True, hide_index=True, on_select="rerun",
+        selection_mode="single-row", key="opp_table",
+        column_config={"Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Open ↗")},
+    )
     selected = event.selection.rows if event and hasattr(event,"selection") else []
     if selected:
         st.session_state["selected_lead_id"] = result["rows"][selected[0]]["stable_lead_id"]
@@ -112,7 +116,8 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
     official_url = _official_evidence_url(row)
     st.markdown(theme.badge(evidence,"green")+theme.badge(_safe(row.get("lead_status"),"Requires validation"),"blue")+theme.badge("Human validation required","violet"),unsafe_allow_html=True)
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Opportunity score", _safe(row.get("score"),"—")); c2.metric("Grade",_safe(row.get("grade"),"—")); c3.metric("Source",_safe(row.get("source_type"))); c4.metric("Full report","Available" if row.get("has_full_report") else "Not generated")
+    brief = (row.get("details") or {}).get("sales_qualification_brief") or {}
+    c1.metric("Opportunity score", _safe(row.get("score"),"—")); c2.metric("Grade",_safe(row.get("grade"),"—")); c3.metric("Source",_safe(row.get("source_type"))); c4.metric("Qualification brief","Available" if brief else "Pending refresh")
     st.markdown("### Evidence chain")
     a,b,c = st.columns(3)
     with a:
@@ -125,6 +130,15 @@ def opportunity_detail(navigate: Callable[[str], None]) -> None:
         st.markdown(f'<div class="pt-card pt-evidence"><h4 style="color:#4D8DFF">B · PharmaTune interpretation</h4><p><b>{evidence}</b></p><p>This is a deterministic opportunity signal. It does not establish commercial need, urgency, budget or buying intent.</p></div>',unsafe_allow_html=True)
     with c:
         st.markdown('<div class="pt-card pt-evidence"><h4 style="color:#9180F4">C · Human decision</h4><p><b>Requires validation</b></p><p>Approval is managed in the Human Validation workspace. Internal, external-case-study and outreach approvals remain separate.</p></div>',unsafe_allow_html=True)
+    if brief:
+        st.markdown("### Sales qualification brief")
+        st.markdown(
+            f"**Target account:** {_safe(brief.get('target_account'))}  \n"
+            f"**Public signal:** {_safe(brief.get('public_signal'))}  \n"
+            f"**Evidence basis:** {_safe(brief.get('evidence_basis'))}  \n"
+            f"**Next step:** {_safe(brief.get('recommended_next_step'))}"
+        )
+        st.info(_safe(brief.get("commercial_limit")))
     with st.expander("Technical record"):
         fields = {k:v for k,v in row.items() if k not in {"data_json","details"} and v not in (None,"")}
         st.json(fields, expanded=False)
@@ -312,6 +326,23 @@ def sources() -> None:
         rows.append({"Source job":r.get("source_name"),"Cadence":r.get("cadence"),"Status":r.get("last_status") or "Not run","Last success":r.get("last_success_at"),"Next due":r.get("next_due_at"),"Created":r.get("records_created") or 0,"Updated":r.get("records_updated") or 0,"Unchanged":r.get("records_unchanged") or 0})
     st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
     st.caption("Connected does not mean a source automatically establishes a pharmaceutical problem or commercial need.")
+    quality = data.regulator_quality()
+    st.markdown("### Checkpoint 8.1 · sales-data quality")
+    q1,q2,q3,q4 = st.columns(4)
+    q1.metric("Official signals", f"{quality.get('total', 0):,}")
+    q2.metric("Company not stated", f"{quality.get('missing_company', 0):,}")
+    q3.metric("Missing official link", f"{quality.get('missing_official_link', 0):,}")
+    q4.metric("Missing score / grade", f"{quality.get('missing_score_or_grade', 0):,}")
+    quality_rows = quality.get("sources") or []
+    if quality_rows:
+        st.dataframe(pd.DataFrame([{
+            "Source": row.get("source_type"), "Signals": row.get("total"),
+            "Required fields complete": f"{row.get('required_field_completeness', 0):.1f}%",
+            "Company not stated": row.get("missing_company"), "Product missing": row.get("missing_product"),
+            "Region missing": row.get("missing_region"), "Official link missing": row.get("missing_official_link"),
+            "Problem missing": row.get("missing_problem"), "Score / grade missing": row.get("missing_score_or_grade"),
+        } for row in quality_rows]), use_container_width=True, hide_index=True)
+    st.caption("A blank company means the official source did not state a manufacturer or authorisation holder. PharmaTune does not copy a product name into the Company field.")
     ema = data.ema_coverage()
     st.markdown("### European Medicines Agency")
     e1,e2,e3 = st.columns(3)
