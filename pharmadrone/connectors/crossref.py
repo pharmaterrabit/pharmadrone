@@ -25,6 +25,19 @@ def _authors(item: dict) -> list[dict]:
     return [row for row in output if row["name"]]
 
 
+def _funders(item: dict) -> list[dict]:
+    output = []
+    for funder in item.get("funder", []) or []:
+        awards = funder.get("award") or [""]
+        for award in awards:
+            output.append({
+                "funder": str(funder.get("name") or "").strip(),
+                "funder_doi": str(funder.get("DOI") or "").strip(),
+                "award_id": str(award or "").strip(),
+            })
+    return [row for row in output if row["funder"] or row["award_id"]]
+
+
 def search(term: str, max_results: int = 10) -> ConnectorResult:
     params = {"query": term, "rows": min(max_results, 25)}
     if settings.env("CONTACT_EMAIL"):
@@ -47,5 +60,6 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
                               "publication_type": it.get("type") or "", "publisher": it.get("publisher") or "",
                               "abstract": it.get("abstract") or "", "citation_count": int(it.get("is-referenced-by-count") or 0),
                               "authors": _authors(it),
+                              "grants": _funders(it),
                           }))
     return ConnectorResult(NAME, term, ok=True, count=len(out), records=out)

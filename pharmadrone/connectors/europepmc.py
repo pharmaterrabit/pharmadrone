@@ -25,6 +25,18 @@ def _authors(row: dict) -> list[dict]:
     return [item for item in output if item["name"]]
 
 
+def _grants(row: dict) -> list[dict]:
+    output = []
+    for grant in (row.get("grantsList") or {}).get("grant", []) or []:
+        output.append({
+            "funder": str(grant.get("agency") or "").strip(),
+            "award_id": str(grant.get("grantId") or "").strip(),
+            "acronym": str(grant.get("acronym") or "").strip(),
+            "country": str(grant.get("country") or "").strip(),
+        })
+    return [item for item in output if item["funder"] or item["award_id"]]
+
+
 def search(term: str, max_results: int = 10) -> ConnectorResult:
     try:
         data = get_json(BASE, {"query": term, "format": "json",
@@ -45,6 +57,7 @@ def search(term: str, max_results: int = 10) -> ConnectorResult:
             "journal": r.get("journalTitle") or (journal.get("journal") or {}).get("title") or "",
             "publication_year": r.get("pubYear") or "", "publication_date": r.get("firstPublicationDate") or "",
             "abstract": r.get("abstractText") or "", "authors": _authors(r),
+            "grants": _grants(r),
             "publication_type": ", ".join((r.get("pubTypeList") or {}).get("pubType", []) or []),
             "open_access": str(r.get("isOpenAccess") or "").upper() == "Y",
             "citation_count": int(r.get("citedByCount") or 0),
