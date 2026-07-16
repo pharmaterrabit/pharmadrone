@@ -26,6 +26,7 @@ Repository commits and regression tests are the completion evidence.
 | Checkpoint 8.3 A–D — Account Intelligence | Complete in code; production refresh required | canonical organisations and aliases, MAH/manufacturer/product/signal relationships, public-evidence contact governance and weekly monitoring |
 | Checkpoint 8.4 A–D — Regulatory Intelligence workspace | Complete in code; production refresh required | dedicated FDA/EMA/MHRA event workspace, database filters, official-evidence detail, monitoring and export |
 | Phase 9 A–D — Patent & Lifecycle Intelligence | Complete in code; production projection required | FDA Orange Book applications/products, listed patents and exclusivities, evidence-gated ownership/family resolution, expiry timelines, weekly monitoring and exports |
+| Phase 10 A–D — Research & Innovation Intelligence | Complete in code; production projection required | research organisations and authors, deduplicated publications, co-authorship and trial collaborations, evidence-gated technology transfer, weekly monitoring and exports |
 
 Labels such as “1A” and “2A” were not used in the repository and are not silently
 invented here. The canonical sequence above is the permanent source of truth.

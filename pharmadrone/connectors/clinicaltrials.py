@@ -228,6 +228,10 @@ def _row(study: dict, discovery_topic: str = ""):
         country = _clean((loc or {}).get("country"))
         if country and country not in countries:
             countries.append(country)
+    collaborators = [
+        _clean(item.get("name")) for item in (sponsor_mod.get("collaborators", []) or [])
+        if _clean(item.get("name"))
+    ]
 
     raw_text = (
         f"Title: {title}. Sponsor: {sponsor_name}. Study type: {study_type}. "
@@ -263,6 +267,7 @@ def _row(study: dict, discovery_topic: str = ""):
             "intervention_names": intervention_names,
             "phase": phases,
             "sponsor": sponsor_name or None,
+            "collaborators": collaborators,
             "conditions": conditions.get("conditions", []) or [],
             "brief_title": title or None,
             "official_title": official_title or None,

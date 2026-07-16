@@ -278,10 +278,25 @@ def fetch_openfda_labels(conn, state: dict[str, Any], guards: Guardrails, *, for
 def _fetch_literature(conn, guards: Guardrails, connector, source_name: str) -> dict[str, Any]:
     records: list[dict] = []
     queries = 0
-    for item in _priority_terms(conn, min(20, guards.max_records_per_connector)):
+    priority = _priority_terms(conn, min(20, guards.max_records_per_connector))
+    research_seeds = [
+        {"term": "pharmaceutical formulation drug delivery", "problem": ""},
+        {"term": "solubility enhancement pharmaceutical", "problem": ""},
+        {"term": "modified release formulation", "problem": ""},
+        {"term": "nanoparticle drug delivery", "problem": ""},
+        {"term": "biologics formulation stability", "problem": ""},
+        {"term": "continuous pharmaceutical manufacturing", "problem": ""},
+        {"term": "pharmaceutical excipient compatibility", "problem": ""},
+        {"term": "university pharmaceutical technology transfer", "problem": ""},
+    ]
+    seen_queries: set[str] = set()
+    for item in [*priority, *research_seeds]:
         if len(records) >= guards.max_records_per_connector:
             break
         query = " ".join(x for x in (item["term"], item["problem"], "formulation") if x).strip()
+        if query.casefold() in seen_queries:
+            continue
+        seen_queries.add(query.casefold())
         res = connector.search(query, max_results=3)
         queries += 1
         if res.ok:
@@ -398,6 +413,14 @@ def fetch_patent_lifecycle(conn, state: dict[str, Any], guards: Guardrails, *, f
     }
 
 
+def fetch_research_innovation(conn, state: dict[str, Any], guards: Guardrails, *, force: bool = False) -> dict[str, Any]:
+    return {
+        "records": [], "cursor_after": "weekly-research-innovation-projection",
+        "watermark_after": state.get("last_watermark") or "",
+        "metadata": {"mode": "stored publication, institution, trial-collaboration and transfer-evidence projection"},
+    }
+
+
 FETCHERS = {
     "fda_orange_book": fetch_fda_orange_book,
     "ema_medicines": fetch_ema_medicines,
@@ -417,6 +440,7 @@ FETCHERS = {
     "tavily": fetch_tavily,
     "account_intelligence": fetch_account_intelligence,
     "patent_lifecycle": fetch_patent_lifecycle,
+    "research_innovation": fetch_research_innovation,
     "monthly_maintenance": fetch_monthly_maintenance,
 }
 
