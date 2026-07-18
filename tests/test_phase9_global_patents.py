@@ -172,6 +172,39 @@ def test_drugsfda_fallback_explains_zero_patent_counts_without_fabrication(tmp_p
     assert patent_lifecycle.global_metrics(conn)["documents"] == 0
 
 
+def test_fallback_status_is_visible_and_later_archive_refresh_restores_records(tmp_path):
+    from tests.test_phase4c_fda_orange_book import _archive
+    from pharmadrone.connectors import fda_orange_book
+
+    fallback_payload = {"results": [{
+        "application_number": "NDA012345", "sponsor_name": "Example Pharma Inc",
+        "products": [{"product_number": "001", "brand_name": "EXAMPLE DRUG",
+                       "active_ingredients": [{"name": "EXAMPLINE", "strength": "10MG"}]}],
+    }]}
+    conn = db.connect(tmp_path / "fallback-recovery.db")
+    fallback = fda_orange_book.parse_drugsfda_payload(fallback_payload).records[0]
+    archive = fda_orange_book.parse_archive(_archive()).records[0]
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="fallback-run", source_name="fda_orange_book", records=[fallback])
+        patent_lifecycle.sync(conn, run_id="fallback-projection", observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc))
+    status = patent_lifecycle.orange_book_status(conn)
+    assert status["dataset_mode"] == "Drugs@FDA product fallback"
+    assert status["source_coverage"] == "Drugs@FDA product-only fallback"
+    assert patent_lifecycle.metrics(conn)["patents"] == 0
+    assert patent_lifecycle.metrics(conn)["exclusivities"] == 0
+
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="archive-run", source_name="fda_orange_book", records=[archive])
+        patent_lifecycle.sync(conn, run_id="archive-projection", observed_at=datetime(2026, 7, 17, tzinfo=timezone.utc))
+    assert patent_lifecycle.metrics(conn)["patents"] == 1
+    assert patent_lifecycle.metrics(conn)["exclusivities"] == 1
+    assert patent_lifecycle.global_metrics(conn)["us_documents"] == 1
+
+    page = open("pharmatune_ui/pages.py", encoding="utf-8").read()
+    assert "product-only Drugs@FDA fallback data" in page
+    assert "Orange Book patent and exclusivity records are unavailable" in page
+
+
 def test_patent_page_uses_database_reads_without_network_fetches():
     source = open("pharmatune_ui/pages.py", encoding="utf-8").read()
     page = source[source.index("def patents"):source.index("def patent_detail")]
