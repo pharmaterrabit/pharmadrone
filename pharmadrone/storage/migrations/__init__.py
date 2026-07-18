@@ -1278,6 +1278,174 @@ def _global_patent_schema(conn) -> None:
     """)
 
 
+def _canonical_patent_foundation_schema(conn) -> None:
+    """Additive canonical patent identity, provenance and verification fields."""
+    additions = {
+        "patent_documents": {
+            "normalized_publication_number": "TEXT",
+            "normalized_application_number": "TEXT",
+            "publication_kind": "TEXT",
+            "legal_status_code": "TEXT",
+            "legal_status_label": "TEXT",
+            "legal_status_basis": "TEXT",
+            "status_as_of_date": "TEXT",
+            "expiry_date": "TEXT",
+            "expiry_basis": "TEXT",
+            "expiry_status": "TEXT",
+            "expiry_as_of_date": "TEXT",
+            "last_source_refresh_id": "TEXT",
+        },
+        "patent_parties": {
+            "normalized_party_name": "TEXT",
+            "party_identity_key": "TEXT",
+            "party_identity_basis": "TEXT",
+        },
+        "patent_product_links": {
+            "evidence_basis": "TEXT",
+            "evidence_source_record_id": "TEXT",
+            "verification_status": "TEXT",
+            "verified_at": "TEXT",
+            "verification_basis": "TEXT",
+        },
+    }
+    for table, columns in additions.items():
+        if not conn.has_table(table):
+            continue
+        existing = conn.columns(table)
+        for column, spec in columns.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+
+    ts = _timestamp_default(conn)
+    ident = _identity(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS patent_families (
+        family_id TEXT PRIMARY KEY,
+        canonical_family_id TEXT NOT NULL UNIQUE,
+        family_status TEXT NOT NULL,
+        source_authority TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS patent_document_sources (
+        patent_document_source_id TEXT PRIMARY KEY,
+        patent_document_id TEXT NOT NULL,
+        source_system TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        source_authority TEXT NOT NULL,
+        official_source_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        last_source_refresh_id TEXT,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(patent_document_id, source_system, source_record_id),
+        FOREIGN KEY (patent_document_id) REFERENCES patent_documents(patent_document_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_patent_family_canonical ON patent_families(canonical_family_id);
+    CREATE INDEX IF NOT EXISTS idx_patent_source_document ON patent_document_sources(patent_document_id, last_verified_at);
+    CREATE INDEX IF NOT EXISTS idx_patent_source_record ON patent_document_sources(source_system, source_record_id);
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_normalized_application ON patent_documents(normalized_application_number);
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_legal_status ON patent_documents(legal_status_code, legal_status_label);
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_expiry ON patent_documents(expiry_date, expiry_status);
+    CREATE INDEX IF NOT EXISTS idx_patent_doc_refresh ON patent_documents(last_source_refresh_id);
+    CREATE INDEX IF NOT EXISTS idx_patent_party_identity ON patent_parties(party_identity_key, party_type);
+    CREATE INDEX IF NOT EXISTS idx_patent_link_verification ON patent_product_links(verification_status, verified_at);
+    """)
+
+    def normalise(value: Any) -> str:
+        return " ".join(str(value or "").casefold().split())
+
+    def canonical(value: Any) -> str:
+        return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+    if conn.has_table("patent_documents"):
+        rows = conn.execute(
+            "SELECT patent_document_id,publication_number,application_number,document_kind,legal_status_summary,"
+            "legal_status_as_of,source_name,source_authority,official_source_url,evidence_status,first_seen_at,"
+            "last_verified_at,next_review_at,last_source_refresh_id FROM patent_documents"
+        ).fetchall()
+        for row in rows:
+            publication = canonical(row.get("publication_number"))
+            application = canonical(row.get("application_number"))
+            label = str(row.get("legal_status_summary") or "Legal status not established")
+            basis = "Source-reported label; no legal conclusion inferred"
+            source_refresh = row.get("last_source_refresh_id")
+            conn.execute(
+                "UPDATE patent_documents SET normalized_publication_number=?, normalized_application_number=?, "
+                "publication_kind=?, legal_status_code=COALESCE(legal_status_code,''), legal_status_label=?, "
+                "legal_status_basis=COALESCE(legal_status_basis,?), status_as_of_date=COALESCE(status_as_of_date,?), "
+                "expiry_basis=COALESCE(expiry_basis,''), expiry_status=COALESCE(expiry_status,''), "
+                "expiry_as_of_date=COALESCE(expiry_as_of_date,''), last_source_refresh_id=COALESCE(last_source_refresh_id,?) "
+                "WHERE patent_document_id=?",
+                (publication, application, row.get("document_kind") or "", label, basis, row.get("legal_status_as_of"),
+                 source_refresh, row["patent_document_id"]),
+            )
+            source_id = str(row["patent_document_id"])
+            conn.execute(
+                "INSERT INTO patent_document_sources "
+                "(patent_document_source_id,patent_document_id,source_system,source_record_id,source_authority,"
+                "official_source_url,evidence_status,first_seen_at,last_verified_at,next_review_at,last_source_refresh_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(patent_document_id,source_system,source_record_id) DO NOTHING",
+                (f"patentsource_{row['patent_document_id']}", row["patent_document_id"], row.get("source_name") or "",
+                 source_id, row.get("source_authority") or "", row.get("official_source_url") or "",
+                 row.get("evidence_status") or "", row.get("first_seen_at") or row.get("last_verified_at") or "",
+                 row.get("last_verified_at") or "", row.get("next_review_at") or "", source_refresh),
+            )
+
+    if conn.has_table("patent_parties"):
+        rows = conn.execute("SELECT patent_party_id,party_name FROM patent_parties").fetchall()
+        for row in rows:
+            normalized = normalise(row.get("party_name"))
+            conn.execute(
+                "UPDATE patent_parties SET normalized_party_name=?, party_identity_key=?, "
+                "party_identity_basis=COALESCE(party_identity_basis,?) WHERE patent_party_id=?",
+                (normalized, normalized, "Name normalization only; identity and ownership not verified", row["patent_party_id"]),
+            )
+
+    family_rows = conn.execute(
+        "SELECT family_id, family_status, source_authority, official_source_url, evidence_status, first_seen_at, "
+        "last_verified_at, next_review_at FROM patent_documents WHERE COALESCE(family_id,'')<>'' "
+        "UNION SELECT family_id, '', '', official_source_url, evidence_status, observed_at, observed_at, observed_at "
+        "FROM patent_family_members WHERE COALESCE(family_id,'')<>''"
+    ).fetchall()
+    for row in family_rows:
+        family_id = str(row.get("family_id") or "")
+        if not family_id:
+            continue
+        conn.execute(
+            "INSERT INTO patent_families "
+            "(family_id,canonical_family_id,family_status,source_authority,official_source_url,evidence_status,"
+            "first_seen_at,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(family_id) DO UPDATE SET family_status=CASE WHEN excluded.family_status<>'' THEN excluded.family_status ELSE patent_families.family_status END, "
+            "source_authority=CASE WHEN excluded.source_authority<>'' THEN excluded.source_authority ELSE patent_families.source_authority END, "
+            "official_source_url=CASE WHEN excluded.official_source_url<>'' THEN excluded.official_source_url ELSE patent_families.official_source_url END, "
+            "evidence_status=CASE WHEN excluded.evidence_status<>'' THEN excluded.evidence_status ELSE patent_families.evidence_status END, "
+            "last_verified_at=excluded.last_verified_at,next_review_at=excluded.next_review_at",
+            (family_id, family_id, row.get("family_status") or "Family evidence retained", row.get("source_authority") or "",
+             row.get("official_source_url") or "", row.get("evidence_status") or "Family evidence retained",
+             row.get("first_seen_at") or row.get("last_verified_at") or "", row.get("last_verified_at") or "",
+             row.get("next_review_at") or row.get("last_verified_at") or ""),
+        )
+
+    if conn.has_table("patent_product_links"):
+        conn.execute(
+            "UPDATE patent_product_links SET evidence_basis=COALESCE(evidence_basis,link_basis), "
+            "verification_status=COALESCE(verification_status,CASE WHEN verified=1 THEN 'verified' ELSE 'unverified' END), "
+            "verified_at=COALESCE(verified_at,CASE WHEN verified=1 THEN observed_at ELSE NULL END), "
+            "verification_basis=COALESCE(verification_basis,evidence_status)"
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_patent_doc_normalized_identity "
+        "ON patent_documents(jurisdiction, normalized_publication_number)"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -1293,6 +1461,7 @@ MIGRATIONS = (
     Migration(12, "phase_11_deals_funding_schema", _deals_funding_schema),
     Migration(13, "phase_12_customer_product_schema", _customer_product_schema),
     Migration(14, "phase_9_global_patent_intelligence_schema", _global_patent_schema),
+    Migration(15, "phase_9_canonical_patent_foundation_schema", _canonical_patent_foundation_schema),
 )
 
 
