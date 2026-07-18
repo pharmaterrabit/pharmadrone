@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from .. import db
-from ..pipeline import account_intelligence, commercial_intelligence, customer_product, discover, opportunity_index, patent_lifecycle, research_innovation, score
+from ..pipeline import account_intelligence, commercial_intelligence, customer_product, discover, opportunity_index, patent_lifecycle, pharmaceutical_memory, research_innovation, score
 from .config import guardrails, source_spec, source_names, utc_now
 from .errors import SchedulerError, classify_error, safe_summary
 from . import repository, sources
@@ -340,6 +340,10 @@ def run_sources(*, selected: list[str] | None = None, force: bool = False, dry_r
     status = ("Failed" if totals["sources_completed"] == 0 and errors else
               "Partial" if errors or any_partial else "Healthy")
     repository.finish_run(conn, run_id, status=status, totals=totals, error_summary="; ".join(errors), metadata={"source_results": results})
+    if status in {"Healthy", "Partial"} and (totals["records_created"] or totals["records_updated"]):
+        pharmaceutical_memory.sync_from_opportunity_index(conn)
+        pharmaceutical_memory.sync_ema_medicines(conn)
+        pharmaceutical_memory.sync_fda_orange_book(conn)
     summary = repository.scheduler_summary(conn)
     conn.close()
     return {"run_id": run_id, "status": status, "sources_due": selected, "totals": totals, "results": results, "scheduler": summary}

@@ -29,21 +29,28 @@ def ensure_source_states(conn) -> None:
             "VALUES (?,?,?,?,?,?,?)",
             (spec.name, spec.source_type, spec.cadence, now, "Never run", int(source_enabled(spec)), now),
         )
-        conn.execute(
-            "UPDATE source_refresh_state SET source_type=?, cadence=?, enabled=?, updated_at=? WHERE source_name=?",
-            (spec.source_type, spec.cadence, int(source_enabled(spec)), now, spec.name),
-        )
+        current = conn.execute(
+            "SELECT source_type, cadence, enabled FROM source_refresh_state WHERE source_name=?",
+            (spec.name,),
+        ).fetchone()
+        if current and (
+            current.get("source_type") != spec.source_type
+            or current.get("cadence") != spec.cadence
+            or int(current.get("enabled") or 0) != int(source_enabled(spec))
+        ):
+            conn.execute(
+                "UPDATE source_refresh_state SET source_type=?, cadence=?, enabled=?, updated_at=? WHERE source_name=?",
+                (spec.source_type, spec.cadence, int(source_enabled(spec)), now, spec.name),
+            )
     conn.commit()
 
 
 def get_refresh_states(conn) -> list[dict[str, Any]]:
-    ensure_source_states(conn)
     rows = conn.execute("SELECT * FROM source_refresh_state ORDER BY source_name").fetchall()
     return [dict(r) for r in rows]
 
 
 def due_source_names(conn, *, now=None, include_failed_only: bool = False) -> list[str]:
-    ensure_source_states(conn)
     current = now or utc_now()
     due = []
     for row in get_refresh_states(conn):
@@ -61,7 +68,6 @@ def due_source_names(conn, *, now=None, include_failed_only: bool = False) -> li
 
 
 def source_state(conn, source_name: str) -> dict[str, Any]:
-    ensure_source_states(conn)
     row = conn.execute("SELECT * FROM source_refresh_state WHERE source_name=?", (source_name,)).fetchone()
     if not row:
         raise KeyError(source_name)
@@ -234,10 +240,12 @@ def ingest_source_records(conn, *, run_id: str, source_name: str, records: Itera
             continue
         current = dict(current)
         if current.get("content_checksum") == checksum:
-            conn.execute(
-                "UPDATE source_records SET last_seen_at=?, last_refresh_run_id=?, active=1 WHERE source_type=? AND source_id=?",
-                (now, run_id, source_type, source_id),
-            )
+            last_seen = parse_time(current.get("last_seen_at"))
+            if last_seen is None or last_seen.date() < utc_now().date():
+                conn.execute(
+                    "UPDATE source_records SET last_seen_at=?, last_refresh_run_id=?, active=1 WHERE source_type=? AND source_id=?",
+                    (now, run_id, source_type, source_id),
+                )
             counts["unchanged"] += 1
             counts["duplicates_prevented"] += 1
             continue
@@ -267,7 +275,6 @@ def latest_run(conn) -> dict[str, Any] | None:
 
 
 def source_status_rows(conn) -> list[dict[str, Any]]:
-    ensure_source_states(conn)
     rows = conn.execute(
         "SELECT s.*, r.records_retrieved, r.records_created, r.records_updated, r.records_unchanged, "
         "r.records_rejected, r.retry_count, r.error_summary AS latest_run_error "
