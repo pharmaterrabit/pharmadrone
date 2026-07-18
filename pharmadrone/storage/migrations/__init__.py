@@ -1668,16 +1668,17 @@ def _foundation_pr_a_schema(conn) -> None:
         END;
         $function$ LANGUAGE plpgsql;
         """)
-        conn.executescript("""
-        DROP TRIGGER IF EXISTS foundation_taxonomy_parent_namespace ON intelligence_taxonomy_terms;
-        CREATE TRIGGER foundation_taxonomy_parent_namespace BEFORE INSERT OR UPDATE OF parent_term_id,taxonomy_namespace ON intelligence_taxonomy_terms FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
-        DROP TRIGGER IF EXISTS foundation_problem_taxonomy_namespace ON pharmaceutical_problems;
-        CREATE TRIGGER foundation_problem_taxonomy_namespace BEFORE INSERT OR UPDATE OF taxonomy_term_id ON pharmaceutical_problems FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
-        DROP TRIGGER IF EXISTS foundation_solution_taxonomy_namespace ON technology_solutions;
-        CREATE TRIGGER foundation_solution_taxonomy_namespace BEFORE INSERT OR UPDATE OF taxonomy_term_id,solution_type_term_id ON technology_solutions FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
-        DROP TRIGGER IF EXISTS foundation_relationship_validation ON technology_problem_relationships;
-        CREATE TRIGGER foundation_relationship_validation BEFORE INSERT OR UPDATE OF relationship_type,inference_status ON technology_problem_relationships FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
-        """)
+        for statement in (
+            "DROP TRIGGER IF EXISTS foundation_taxonomy_parent_namespace ON intelligence_taxonomy_terms",
+            "CREATE TRIGGER foundation_taxonomy_parent_namespace BEFORE INSERT OR UPDATE ON intelligence_taxonomy_terms FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate()",
+            "DROP TRIGGER IF EXISTS foundation_problem_taxonomy_namespace ON pharmaceutical_problems",
+            "CREATE TRIGGER foundation_problem_taxonomy_namespace BEFORE INSERT OR UPDATE ON pharmaceutical_problems FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate()",
+            "DROP TRIGGER IF EXISTS foundation_solution_taxonomy_namespace ON technology_solutions",
+            "CREATE TRIGGER foundation_solution_taxonomy_namespace BEFORE INSERT OR UPDATE ON technology_solutions FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate()",
+            "DROP TRIGGER IF EXISTS foundation_relationship_validation ON technology_problem_relationships",
+            "CREATE TRIGGER foundation_relationship_validation BEFORE INSERT OR UPDATE ON technology_problem_relationships FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate()",
+        ):
+            conn.execute(statement)
 
     # Representative, cross-domain seeds only. These are not an exhaustive
     # pharmaceutical taxonomy and do not create any product/provider records.
