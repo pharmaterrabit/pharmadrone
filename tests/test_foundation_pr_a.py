@@ -124,6 +124,67 @@ def test_duplicate_and_validation_constraints_are_enforced(tmp_path):
         )
 
 
+def test_database_triggers_reject_invalid_taxonomy_namespaces_and_parent_namespace(tmp_path):
+    conn = db.connect(tmp_path / "foundation-pr-a-trigger-constraints.sqlite")
+    ids = _seed_ids(conn)
+    now = "2026-07-18T00:00:00+00:00"
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO pharmaceutical_problems "
+            "(problem_id,canonical_key,display_name,taxonomy_term_id,definition,identity_status,evidence_status,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            ("bad-problem", "bad-problem", "Bad problem", ids[("solution_domain", "formulation-technologies")], "Invalid", "controlled", "test", now, now),
+        )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO technology_solutions "
+            "(technology_id,canonical_key,display_name,taxonomy_term_id,solution_type_term_id,maturity_status,identity_status,evidence_status,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("bad-solution", "bad-solution", "Bad solution", ids[("problem_domain", "poor-solubility")], ids[("solution_type", "tool")], "unknown", "controlled", "test", now, now),
+        )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO technology_solutions "
+            "(technology_id,canonical_key,display_name,taxonomy_term_id,solution_type_term_id,maturity_status,identity_status,evidence_status,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("bad-type", "bad-type", "Bad type", ids[("solution_domain", "formulation-technologies")], ids[("problem_domain", "poor-solubility")], "unknown", "controlled", "test", now, now),
+        )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO intelligence_taxonomy_terms "
+            "(term_id,taxonomy_namespace,term_kind,parent_term_id,code,label,definition,version,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("bad-parent", "problem_domain", "category", ids[("solution_domain", "formulation-technologies")], "bad-parent", "Bad parent", "Invalid", "1.0", now, now),
+        )
+
+
+def test_addresses_relationship_rejects_inferred_and_accepts_valid_evidence(tmp_path):
+    conn = db.connect(tmp_path / "foundation-pr-a-relationship-triggers.sqlite")
+    ids = _seed_ids(conn)
+    now = "2026-07-18T00:00:00+00:00"
+    with conn.transaction():
+        conn.execute(
+            "INSERT INTO pharmaceutical_problems (problem_id,canonical_key,display_name,taxonomy_term_id,definition,identity_status,evidence_status,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            ("problem-trigger", "trigger-problem", "Trigger problem", ids[("problem_domain", "poor-solubility")], "A problem", "controlled", "test", now, now),
+        )
+        conn.execute(
+            "INSERT INTO technology_solutions (technology_id,canonical_key,display_name,taxonomy_term_id,solution_type_term_id,maturity_status,identity_status,evidence_status,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("solution-trigger", "trigger-solution", "Trigger solution", ids[("solution_domain", "formulation-technologies")], ids[("solution_type", "technology")], "research", "controlled", "test", now, now),
+        )
+    values = ("rel-invalid", "solution-trigger", "problem-trigger", "addresses", "Invalid", "test", "1", "https://example.test/evidence", "test", "inferred", 0.6, "test", now, now)
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO technology_problem_relationships (relationship_id,technology_id,problem_id,relationship_type,relationship_statement,source_type,source_id,evidence_url,evidence_status,inference_status,confidence_score,confidence_basis,verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            values,
+        )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO technology_problem_relationships (relationship_id,technology_id,problem_id,relationship_type,relationship_statement,source_type,source_id,evidence_url,evidence_status,inference_status,confidence_score,confidence_basis,verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (*values[:9], "requires-review", 0.6, "test", now, now),
+        )
+    conn.execute(
+        "INSERT INTO technology_problem_relationships (relationship_id,technology_id,problem_id,relationship_type,relationship_statement,source_type,source_id,evidence_url,evidence_status,inference_status,confidence_score,confidence_basis,verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (*values[:9], "reported", 0.9, "Direct source statement", now, now),
+    )
+    assert conn.execute("SELECT COUNT(*) AS n FROM technology_problem_relationships").fetchone()["n"] == 1
+
+
 def test_existing_reads_and_new_foundation_are_isolated(tmp_path):
     conn = db.connect(tmp_path / "foundation-pr-a-compatibility.sqlite")
     assert conn.execute("SELECT COUNT(*) AS n FROM opportunities").fetchone()["n"] == 0
