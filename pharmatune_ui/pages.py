@@ -1594,9 +1594,9 @@ def health() -> None:
     a,b,c,d=st.columns(4); a.metric("Database",str(dbs.get("connection_status","unknown")).title()); b.metric("Backend",str(dbs.get("backend","unknown")).upper()); c.metric("Schema",f"v{dbs.get('schema_version',0)}"); d.metric("Migrations",dbs.get("migration_count",0))
     st.markdown("### Scheduled refresh")
     theme.card("GitHub Actions orchestrator",f"Latest run: {_safe(latest.get('started_at'))}",[(sched.get("scheduler_status","Unknown"),"green" if sched.get("failed_sources",0)==0 else "amber")],f"Next run {sched.get('next_orchestrator_run')} · {sched.get('failed_sources',0)} failed sources")
-    st.success("Checkpoint 6C.1 — stable. Automatic scheduled refresh validated on 13 July 2026; frozen 100-record benchmark remained unchanged.")
+    st.success("Phase 12 — stable. Automatic scheduled refresh validated on 13 July 2026; frozen 100-record benchmark remained unchanged.")
     st.caption("Cold-start performance is measured separately from warm page navigation on Streamlit Community Cloud.")
-    st.markdown("### Checkpoint 7B production readiness")
+    st.markdown("### Phase 12 production readiness")
     readiness = data.readiness()
     if readiness["ready"]:
         st.success(f"Production ready · {readiness['passed']} of {readiness['total']} operational gates passed.")
