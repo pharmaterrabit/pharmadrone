@@ -1463,6 +1463,268 @@ def _canonical_patent_foundation_schema(conn) -> None:
     )
 
 
+def _foundation_pr_a_schema(conn) -> None:
+    """Additive, domain-neutral problem/solution evidence foundation."""
+    ts = _timestamp_default(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS intelligence_taxonomy_terms (
+        term_id TEXT PRIMARY KEY,
+        taxonomy_namespace TEXT NOT NULL CHECK (taxonomy_namespace IN ('problem_domain','solution_domain','solution_type')),
+        term_kind TEXT NOT NULL CHECK (term_kind IN ('domain','category','sub_category','type')),
+        parent_term_id TEXT,
+        code TEXT NOT NULL,
+        label TEXT NOT NULL,
+        definition TEXT NOT NULL,
+        scope_note TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(taxonomy_namespace, code),
+        UNIQUE(taxonomy_namespace, label),
+        FOREIGN KEY (parent_term_id) REFERENCES intelligence_taxonomy_terms(term_id)
+    );
+    CREATE TABLE IF NOT EXISTS pharmaceutical_problems (
+        problem_id TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        taxonomy_term_id TEXT NOT NULL,
+        definition TEXT NOT NULL,
+        identity_status TEXT NOT NULL CHECK (identity_status IN ('controlled','source-derived','requires-review')),
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (taxonomy_term_id) REFERENCES intelligence_taxonomy_terms(term_id)
+    );
+    CREATE TABLE IF NOT EXISTS technology_solutions (
+        technology_id TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        taxonomy_term_id TEXT NOT NULL,
+        solution_type_term_id TEXT NOT NULL,
+        mechanism_summary TEXT NOT NULL DEFAULT '',
+        scope_note TEXT NOT NULL DEFAULT '',
+        maturity_status TEXT NOT NULL CHECK (maturity_status IN ('research','development','commercial','service-delivered','unknown')),
+        identity_status TEXT NOT NULL CHECK (identity_status IN ('controlled','source-derived','requires-review')),
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (taxonomy_term_id) REFERENCES intelligence_taxonomy_terms(term_id),
+        FOREIGN KEY (solution_type_term_id) REFERENCES intelligence_taxonomy_terms(term_id)
+    );
+    CREATE TABLE IF NOT EXISTS technology_problem_relationships (
+        relationship_id TEXT PRIMARY KEY,
+        technology_id TEXT NOT NULL,
+        problem_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN ('addresses','may-address','supports','enables','diagnoses','mitigates','requires-review')),
+        relationship_statement TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        evidence_title TEXT,
+        evidence_excerpt TEXT,
+        evidence_status TEXT NOT NULL,
+        inference_status TEXT NOT NULL CHECK (inference_status IN ('reported','source-derived','inferred','human-verified','contradicted','requires-review')),
+        confidence_score REAL NOT NULL CHECK (confidence_score >= 0.0 AND confidence_score <= 1.0),
+        confidence_basis TEXT NOT NULL,
+        verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(technology_id, problem_id, relationship_type, source_type, source_id),
+        FOREIGN KEY (technology_id) REFERENCES technology_solutions(technology_id),
+        FOREIGN KEY (problem_id) REFERENCES pharmaceutical_problems(problem_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_foundation_taxonomy_parent ON intelligence_taxonomy_terms(taxonomy_namespace, parent_term_id);
+    CREATE INDEX IF NOT EXISTS idx_foundation_problem_taxonomy ON pharmaceutical_problems(taxonomy_term_id, active);
+    CREATE INDEX IF NOT EXISTS idx_foundation_solution_taxonomy ON technology_solutions(taxonomy_term_id, solution_type_term_id, active);
+    CREATE INDEX IF NOT EXISTS idx_foundation_relationship_problem ON technology_problem_relationships(problem_id, active);
+    CREATE INDEX IF NOT EXISTS idx_foundation_relationship_solution ON technology_problem_relationships(technology_id, active);
+    CREATE INDEX IF NOT EXISTS idx_foundation_relationship_source ON technology_problem_relationships(source_type, source_id);
+    """)
+
+    if conn.backend == "sqlite":
+        for trigger_sql in """
+        CREATE TRIGGER IF NOT EXISTS foundation_taxonomy_parent_namespace_insert
+        BEFORE INSERT ON intelligence_taxonomy_terms
+        WHEN NEW.parent_term_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms parent
+            WHERE parent.term_id=NEW.parent_term_id
+              AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+        )
+        BEGIN SELECT RAISE(ABORT, 'taxonomy parent must use the same namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_taxonomy_parent_namespace_update
+        BEFORE UPDATE OF parent_term_id,taxonomy_namespace ON intelligence_taxonomy_terms
+        WHEN NEW.parent_term_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms parent
+            WHERE parent.term_id=NEW.parent_term_id
+              AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+        )
+        BEGIN SELECT RAISE(ABORT, 'taxonomy parent must use the same namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_problem_taxonomy_namespace_insert
+        BEFORE INSERT ON pharmaceutical_problems
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'problem taxonomy term must use problem_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_problem_taxonomy_namespace_update
+        BEFORE UPDATE OF taxonomy_term_id ON pharmaceutical_problems
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'problem taxonomy term must use problem_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_taxonomy_namespace_insert
+        BEFORE INSERT ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution taxonomy term must use solution_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_taxonomy_namespace_update
+        BEFORE UPDATE OF taxonomy_term_id ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution taxonomy term must use solution_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_type_namespace_insert
+        BEFORE INSERT ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution type term must use solution_type namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_type_namespace_update
+        BEFORE UPDATE OF solution_type_term_id ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution type term must use solution_type namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_addresses_inference_insert
+        BEFORE INSERT ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+        BEGIN SELECT RAISE(ABORT, 'addresses relationship requires direct or human-verified evidence'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_addresses_inference_update
+        BEFORE UPDATE OF relationship_type,inference_status ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+        BEGIN SELECT RAISE(ABORT, 'addresses relationship requires direct or human-verified evidence'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_inferred_addresses_insert
+        BEFORE INSERT ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status='inferred'
+        BEGIN SELECT RAISE(ABORT, 'inferred evidence cannot create an addresses relationship'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_inferred_addresses_update
+        BEFORE UPDATE OF relationship_type,inference_status ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status='inferred'
+        BEGIN SELECT RAISE(ABORT, 'inferred evidence cannot create an addresses relationship'); END;
+        """.split("-- FOUNDATION_TRIGGER_SEPARATOR"):
+            if trigger_sql.strip():
+                conn.execute(trigger_sql)
+    else:
+        conn.execute("""
+        CREATE OR REPLACE FUNCTION foundation_pr_a_validate() RETURNS trigger AS $function$
+        BEGIN
+            IF TG_TABLE_NAME = 'intelligence_taxonomy_terms' AND NEW.parent_term_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms parent
+                WHERE parent.term_id=NEW.parent_term_id AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+            ) THEN RAISE EXCEPTION 'taxonomy parent must use the same namespace'; END IF;
+            IF TG_TABLE_NAME = 'pharmaceutical_problems' AND NOT EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms term
+                WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+            ) THEN RAISE EXCEPTION 'problem taxonomy term must use problem_domain namespace'; END IF;
+            IF TG_TABLE_NAME = 'technology_solutions' AND NOT EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms term
+                WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+            ) THEN RAISE EXCEPTION 'solution taxonomy term must use solution_domain namespace'; END IF;
+            IF TG_TABLE_NAME = 'technology_solutions' AND NOT EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms term
+                WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+            ) THEN RAISE EXCEPTION 'solution type term must use solution_type namespace'; END IF;
+            IF TG_TABLE_NAME = 'technology_problem_relationships' AND NEW.relationship_type='addresses'
+               AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+            THEN RAISE EXCEPTION 'addresses relationship requires direct or human-verified evidence'; END IF;
+            RETURN NEW;
+        END;
+        $function$ LANGUAGE plpgsql;
+        """)
+        conn.executescript("""
+        DROP TRIGGER IF EXISTS foundation_taxonomy_parent_namespace ON intelligence_taxonomy_terms;
+        CREATE TRIGGER foundation_taxonomy_parent_namespace BEFORE INSERT OR UPDATE OF parent_term_id,taxonomy_namespace ON intelligence_taxonomy_terms FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        DROP TRIGGER IF EXISTS foundation_problem_taxonomy_namespace ON pharmaceutical_problems;
+        CREATE TRIGGER foundation_problem_taxonomy_namespace BEFORE INSERT OR UPDATE OF taxonomy_term_id ON pharmaceutical_problems FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        DROP TRIGGER IF EXISTS foundation_solution_taxonomy_namespace ON technology_solutions;
+        CREATE TRIGGER foundation_solution_taxonomy_namespace BEFORE INSERT OR UPDATE OF taxonomy_term_id,solution_type_term_id ON technology_solutions FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        DROP TRIGGER IF EXISTS foundation_relationship_validation ON technology_problem_relationships;
+        CREATE TRIGGER foundation_relationship_validation BEFORE INSERT OR UPDATE OF relationship_type,inference_status ON technology_problem_relationships FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        """)
+
+    # Representative, cross-domain seeds only. These are not an exhaustive
+    # pharmaceutical taxonomy and do not create any product/provider records.
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    terms = [
+        ("problem-domain-formulation", "problem_domain", "domain", None, "formulation-and-drug-delivery", "Formulation and drug delivery", "Problems involving formulation design, dosage form and drug delivery performance.", "", "1.0"),
+        ("problem-domain-physchem", "problem_domain", "domain", None, "physicochemical-and-solid-state", "Physicochemical and solid-state", "Problems involving physicochemical properties, solid state and material behavior.", "", "1.0"),
+        ("problem-domain-stability", "problem_domain", "domain", None, "stability-and-degradation", "Stability and degradation", "Problems involving degradation, instability and shelf-life performance.", "", "1.0"),
+        ("problem-domain-manufacturing", "problem_domain", "domain", None, "manufacturing-process-development-and-scale-up", "Manufacturing, process development and scale-up", "Problems involving process design, reproducibility, manufacturability and scale-up.", "", "1.0"),
+        ("problem-domain-analytical", "problem_domain", "domain", None, "analytical-and-quality-control", "Analytical and quality control", "Problems involving measurement, assay, specifications and quality-control capability.", "", "1.0"),
+        ("problem-domain-packaging", "problem_domain", "domain", None, "packaging-and-container-closure", "Packaging and container closure", "Problems involving packaging systems, compatibility and container closure.", "", "1.0"),
+        ("problem-domain-devices", "problem_domain", "domain", None, "devices-and-combination-products", "Devices and combination products", "Problems involving device integration, delivery devices and combination products.", "", "1.0"),
+        ("problem-domain-regulatory", "problem_domain", "domain", None, "regulatory-and-lifecycle", "Regulatory and lifecycle", "Problems involving regulatory pathways, lifecycle management and post-approval change.", "", "1.0"),
+        ("problem-domain-biologics", "problem_domain", "domain", None, "biologics-and-advanced-therapies", "Biologics and advanced therapies", "Problems involving biologics, cell and gene therapies and advanced modalities.", "", "1.0"),
+        ("problem-domain-digital", "problem_domain", "domain", None, "digital-data-and-ai-enabled-pharmaceutical-problems", "Digital, data and AI-enabled pharmaceutical problems", "Problems involving pharmaceutical data, interoperability, automation and AI-enabled workflows.", "", "1.0"),
+        ("solution-domain-formulation", "solution_domain", "domain", None, "formulation-technologies", "Formulation technologies", "Technologies and capabilities for formulation design and optimization.", "", "1.0"),
+        ("solution-domain-delivery", "solution_domain", "domain", None, "drug-delivery-technologies", "Drug-delivery technologies", "Technologies and capabilities for delivery and release of pharmaceutical substances.", "", "1.0"),
+        ("solution-domain-excipients", "solution_domain", "domain", None, "excipient-technologies", "Excipient technologies", "Excipient systems and enabling material technologies.", "", "1.0"),
+        ("solution-domain-manufacturing", "solution_domain", "domain", None, "manufacturing-and-process-technologies", "Manufacturing and process technologies", "Manufacturing, process-development and scale-up technologies.", "", "1.0"),
+        ("solution-domain-analytical", "solution_domain", "domain", None, "analytical-and-quality-control-technologies", "Analytical and quality-control technologies", "Analytical, testing and quality-control technologies.", "", "1.0"),
+        ("solution-domain-packaging", "solution_domain", "domain", None, "packaging-technologies", "Packaging technologies", "Packaging, container-closure and protection technologies.", "", "1.0"),
+        ("solution-domain-devices", "solution_domain", "domain", None, "device-and-combination-product-technologies", "Device and combination-product technologies", "Device and combination-product technologies.", "", "1.0"),
+        ("solution-domain-regulatory", "solution_domain", "domain", None, "regulatory-and-lifecycle-services", "Regulatory and lifecycle services", "Services supporting regulatory strategy and lifecycle management.", "", "1.0"),
+        ("solution-domain-biologics", "solution_domain", "domain", None, "biologics-and-advanced-therapy-technologies", "Biologics and advanced-therapy technologies", "Technologies for biologics and advanced therapies.", "", "1.0"),
+        ("solution-domain-digital", "solution_domain", "domain", None, "digital-data-and-ai-enabled-capabilities", "Digital, data and AI-enabled capabilities", "Digital, data and AI-enabled pharmaceutical capabilities.", "", "1.0"),
+        ("solution-domain-services", "solution_domain", "domain", None, "specialist-pharmaceutical-services", "Specialist pharmaceutical services", "Specialist scientific, technical and operational pharmaceutical services.", "", "1.0"),
+        ("solution-type-technology", "solution_type", "type", None, "technology", "Technology", "A technical method, system or material approach.", "", "1.0"),
+        ("solution-type-tool", "solution_type", "type", None, "tool", "Tool", "A software, laboratory or operational tool.", "", "1.0"),
+        ("solution-type-service", "solution_type", "type", None, "service", "Service", "A delivered specialist service.", "", "1.0"),
+        ("solution-type-platform", "solution_type", "type", None, "platform", "Platform", "A reusable technical or operational platform.", "", "1.0"),
+        ("solution-type-process", "solution_type", "type", None, "process", "Process", "A defined process or workflow capability.", "", "1.0"),
+        ("solution-type-capability", "solution_type", "type", None, "capability", "Capability", "A described organisational or technical capability.", "", "1.0"),
+        ("problem-poor-solubility", "problem_domain", "sub_category", "problem-domain-physchem", "poor-solubility", "Poor solubility", "A solubility limitation affecting pharmaceutical development or performance.", "Representative child seed; not an exhaustive domain taxonomy.", "1.0"),
+        ("problem-slow-dissolution", "problem_domain", "sub_category", "problem-domain-physchem", "slow-dissolution", "Slow dissolution", "A dissolution-rate limitation affecting pharmaceutical development or performance.", "Representative child seed; not an exhaustive domain taxonomy.", "1.0"),
+        ("problem-scale-up-variability", "problem_domain", "sub_category", "problem-domain-manufacturing", "scale-up-variability", "Scale-up variability", "A reproducibility or process-performance problem during scale-up.", "Representative child seed; not an exhaustive domain taxonomy.", "1.0"),
+        ("problem-assay-limitation", "problem_domain", "sub_category", "problem-domain-analytical", "assay-method-limitation", "Assay-method limitation", "A limitation in analytical measurement or quality-control capability.", "Representative child seed; not an exhaustive domain taxonomy.", "1.0"),
+    ]
+    for term_id, namespace, kind, parent, code, label, definition, scope_note, version in terms:
+        conn.execute(
+            "INSERT INTO intelligence_taxonomy_terms "
+            "(term_id,taxonomy_namespace,term_kind,parent_term_id,code,label,definition,scope_note,version,active,first_seen_at,last_verified_at,next_review_at,attributes_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?,'{}') "
+            "ON CONFLICT(taxonomy_namespace,code) DO NOTHING",
+            (term_id, namespace, kind, parent, code, label, definition, scope_note, version, now, now, now),
+        )
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -1479,6 +1741,7 @@ MIGRATIONS = (
     Migration(13, "phase_12_customer_product_schema", _customer_product_schema),
     Migration(14, "phase_9_global_patent_intelligence_schema", _global_patent_schema),
     Migration(15, "phase_9_canonical_patent_foundation_schema", _canonical_patent_foundation_schema),
+    Migration(16, "foundation_pr_a_domain_neutral_intelligence_schema", _foundation_pr_a_schema),
 )
 
 
