@@ -515,6 +515,14 @@ def patents(navigate: Callable[[str], None]) -> None:
         "Results are read from retained FDA Orange Book, EPO/EP and UK/GB records. "
         "Google Patents is discovery/cross-check only and is never official evidence."
     )
+    fda_status = initial.get("fda_status") or {}
+    if "fallback" in str(fda_status.get("dataset_mode") or "").casefold():
+        st.warning(
+            "FDA currently has product-only Drugs@FDA fallback data. "
+            "Orange Book patent and exclusivity records are unavailable until the official archive refresh succeeds."
+        )
+        if fda_status.get("fallback_reason") or fda_status.get("archive_error"):
+            st.caption(f"FDA source status: {fda_status.get('fallback_reason') or fda_status.get('archive_error')}")
     search = st.text_input("Search patents", placeholder="Publication, product, ingredient, title, company or application")
     result = data.unified_patent_directory(search)
     st.link_button("Discover the same query in Google Patents ↗", result["google_discovery_url"])
