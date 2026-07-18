@@ -353,6 +353,7 @@ def unified_patent_directory(search: str = "") -> dict[str, Any]:
         return {
             "metrics": patent_lifecycle.global_metrics(conn),
             "lifecycle_metrics": patent_lifecycle.metrics(conn),
+            "fda_status": patent_lifecycle.orange_book_status(conn),
             "documents": patent_lifecycle.global_documents(conn, search=search),
             "google_discovery_url": patent_lifecycle.google_discovery_url(search),
         }
