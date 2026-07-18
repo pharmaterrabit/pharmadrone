@@ -223,12 +223,21 @@ def fetch(*, max_results: int = 5000) -> ConnectorResult:
         if not result.ok:
             raise ValueError(result.error or "invalid Orange Book archive")
         result.stats.update({"archive_url": url, "dataset_mode": "Orange Book archive"})
+        result.stats.update({
+            "source_coverage": "Orange Book products, patents and exclusivities",
+            "fallback_reason": "",
+        })
         return result
     except Exception as exc:
         archive_error = describe_error(exc)
         try:
             fallback = fetch_drugsfda_fallback(max_results=max_results)
-            fallback.stats.update({"archive_url": url, "archive_error": archive_error})
+            fallback.stats.update({
+                "archive_url": url,
+                "archive_error": archive_error,
+                "fallback_reason": "Official Orange Book archive unavailable; product-only Drugs@FDA fallback used; patents and exclusivities unavailable.",
+                "source_coverage": "Drugs@FDA product-only fallback",
+            })
             return fallback
         except Exception as fallback_exc:
             return ConnectorResult(
