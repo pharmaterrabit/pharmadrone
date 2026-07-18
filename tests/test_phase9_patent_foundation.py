@@ -7,7 +7,15 @@ from pharmadrone.pipeline import patent_lifecycle
 from pharmadrone.storage.migrations import MIGRATIONS, _canonical_patent_foundation_schema
 
 
-def _legacy_document(conn, *, publication="EP1234567A1", family_id="42"):
+def _legacy_document(
+    conn,
+    *,
+    publication="EP1234567A1",
+    family_id="42",
+    document_id="legacy-doc",
+    party_id="legacy-party",
+    family_member_id="legacy-family-member",
+):
     conn.execute(
         """INSERT INTO patent_documents
         (patent_document_id,publication_number,application_number,jurisdiction,document_kind,title,abstract_text,
@@ -15,7 +23,7 @@ def _legacy_document(conn, *, publication="EP1234567A1", family_id="42"):
          source_name,source_authority,official_source_url,google_patents_url,uk_register_url,evidence_status,
          first_seen_at,last_verified_at,next_review_at,attributes_json)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        ("legacy-doc", publication, "EP1234567", "EP", "A1", "Example patent", "Abstract", "2025-01-01",
+        (document_id, publication, "EP1234567", "EP", "A1", "Example patent", "Abstract", "2025-01-01",
          "2026-01-02", "", family_id, "Official family evidence", "Latest reported legal event", "2026-03-04",
          "EPO OPS", "official", "https://official.example/patent", "https://patents.google.com/patent/EP1234567A1/en",
          "", "Official patent-office evidence", "2026-07-16", "2026-07-16", "2026-07-23", "{}"),
@@ -25,7 +33,7 @@ def _legacy_document(conn, *, publication="EP1234567A1", family_id="42"):
         (patent_party_id,patent_document_id,party_type,party_name,country_code,sequence_number,evidence_status,
          official_source_url,first_seen_at,last_verified_at,next_review_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        ("legacy-party", "legacy-doc", "applicant", "Example Pharma AG", "CH", "1",
+        (party_id, document_id, "applicant", "Example Pharma AG", "CH", "1",
          "Officially reported party; current ownership not inferred", "https://official.example/patent",
          "2026-07-16", "2026-07-16", "2026-07-23"),
     )
@@ -34,7 +42,7 @@ def _legacy_document(conn, *, publication="EP1234567A1", family_id="42"):
         (patent_family_member_id,family_id,patent_document_id,publication_number,jurisdiction,relationship_type,
          evidence_status,official_source_url,observed_at)
         VALUES (?,?,?,?,?,?,?,?,?)""",
-        ("legacy-family-member", family_id, "legacy-doc", publication, "EP", "family member",
+        (family_member_id, family_id, document_id, publication, "EP", "family member",
          "Official patent-office family evidence", "https://official.example/patent", "2026-07-16"),
     )
 
@@ -157,3 +165,31 @@ def test_product_link_evidence_and_verification_fields_are_additive(tmp_path):
     assert link["verification_status"] == "verified"
     assert link["verified_at"] == "2026-07-16T00:00:00+00:00"
     assert "ownership" in link["verification_basis"]
+
+
+def test_legacy_canonical_identity_collision_fails_before_unique_index(tmp_path):
+    conn = db.connect(tmp_path / "foundation-collision.sqlite")
+    conn.execute("DROP INDEX uq_patent_doc_normalized_identity")
+    _legacy_document(conn, publication="EP1234567A1", family_id="family-1")
+    _legacy_document(
+        conn,
+        publication="EP-1234567A1",
+        family_id="family-2",
+        document_id="legacy-doc-2",
+        party_id="legacy-party-2",
+        family_member_id="legacy-family-member-2",
+    )
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="canonical patent identity index") as exc_info:
+        with conn.transaction():
+            _canonical_patent_foundation_schema(conn)
+
+    message = str(exc_info.value)
+    assert "EP/EP1234567A1" in message
+    assert "legacy-doc" in message and "legacy-doc-2" in message
+    assert conn.execute("SELECT COUNT(*) AS n FROM patent_documents").fetchone()["n"] == 2
+    assert {row["publication_number"] for row in conn.execute("SELECT publication_number FROM patent_documents").fetchall()} == {"EP1234567A1", "EP-1234567A1"}
+    assert not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_patent_doc_normalized_identity'"
+    ).fetchone()
