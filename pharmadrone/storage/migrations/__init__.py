@@ -1440,6 +1440,23 @@ def _canonical_patent_foundation_schema(conn) -> None:
             "verified_at=COALESCE(verified_at,CASE WHEN verified=1 THEN observed_at ELSE NULL END), "
             "verification_basis=COALESCE(verification_basis,evidence_status)"
         )
+    collisions: dict[tuple[str, str], list[str]] = {}
+    for row in conn.execute(
+        "SELECT patent_document_id,jurisdiction,normalized_publication_number FROM patent_documents "
+        "WHERE COALESCE(normalized_publication_number,'')<>'' ORDER BY jurisdiction,normalized_publication_number,patent_document_id"
+    ).fetchall():
+        key = (str(row.get("jurisdiction") or ""), str(row.get("normalized_publication_number") or ""))
+        collisions.setdefault(key, []).append(str(row["patent_document_id"]))
+    conflicts = {key: ids for key, ids in collisions.items() if len(ids) > 1}
+    if conflicts:
+        details = "; ".join(
+            f"{jurisdiction}/{publication}: document IDs {', '.join(ids)}"
+            for (jurisdiction, publication), ids in conflicts.items()
+        )
+        raise RuntimeError(
+            "Migration 15 refused to create the canonical patent identity index because "
+            f"{len(conflicts)} canonical identity collision(s) exist: {details}"
+        )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_patent_doc_normalized_identity "
         "ON patent_documents(jurisdiction, normalized_publication_number)"
