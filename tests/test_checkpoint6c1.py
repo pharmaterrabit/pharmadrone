@@ -278,6 +278,19 @@ class Checkpoint6C1Tests(unittest.TestCase):
         self.assertEqual(result["status"], "Healthy")
         sync_opportunities.assert_not_called()
 
+    def test_memory_sync_skips_partial_cycle_with_material_records(self):
+        payload = {"records": [self._recall()], "cursor_after": "c", "watermark_after": "w", "partial": True, "metadata": {}}
+        with patch("pharmadrone.scheduler.orchestrator.db.connect", side_effect=self._factory), \
+             patch("pharmadrone.scheduler.sources.fetch_source", return_value=payload), \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_from_opportunity_index") as sync_opportunities, \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_ema_medicines") as sync_ema, \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_fda_orange_book") as sync_fda:
+            result = run_sources(selected=["openfda_enforcement"], force=True)
+        self.assertEqual(result["status"], "Partial")
+        sync_opportunities.assert_not_called()
+        sync_ema.assert_not_called()
+        sync_fda.assert_not_called()
+
     def test_postgresql_scheduler_schema_uses_supported_ddl(self):
         from pharmadrone.storage.migrations import _scheduler_schema
         class FakePostgres:
