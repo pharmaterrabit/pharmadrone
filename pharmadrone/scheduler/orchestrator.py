@@ -340,7 +340,7 @@ def run_sources(*, selected: list[str] | None = None, force: bool = False, dry_r
     status = ("Failed" if totals["sources_completed"] == 0 and errors else
               "Partial" if errors or any_partial else "Healthy")
     repository.finish_run(conn, run_id, status=status, totals=totals, error_summary="; ".join(errors), metadata={"source_results": results})
-    if status in {"Healthy", "Partial"} and (totals["records_created"] or totals["records_updated"]):
+    if status == "Healthy" and (totals["records_created"] or totals["records_updated"]):
         pharmaceutical_memory.sync_from_opportunity_index(conn)
         pharmaceutical_memory.sync_ema_medicines(conn)
         pharmaceutical_memory.sync_fda_orange_book(conn)
