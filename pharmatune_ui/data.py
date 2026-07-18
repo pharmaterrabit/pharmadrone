@@ -461,12 +461,10 @@ def seller_case_study_history(principal: dict[str, Any] | None = None) -> list[d
 
 @st.cache_data(ttl=30, show_spinner=False)
 def pharmaceutical_memory(search: str = "") -> dict[str, Any]:
-    """Synchronise and read the governed Phase 7 memory projection."""
+    """Read the governed Phase 7 memory projection."""
     conn = connection()
     try:
-        metrics = memory.sync_from_opportunity_index(conn)
-        metrics = memory.sync_ema_medicines(conn)
-        metrics = memory.sync_fda_orange_book(conn)
+        metrics = memory.memory_metrics(conn)
         companies = memory.company_memories(conn, search=search)
         return {"metrics": metrics, "companies": companies}
     finally:
@@ -597,7 +595,7 @@ def readiness() -> dict[str, Any]:
             human_audit.benchmark_rows(conn), human_audit.latest_audit_map(conn)
         )
         audit = human_audit.audit_metrics(queue)
-        memory_metrics = memory.sync_from_opportunity_index(conn)
+        memory_metrics = memory.memory_metrics(conn)
         return production_readiness.evaluate(database, scheduler, audit, memory_metrics)
     finally:
         conn.close()

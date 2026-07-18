@@ -76,6 +76,26 @@ class Checkpoint6C1Tests(unittest.TestCase):
         self.assertIn("europepmc", due)
         self.assertIn("monthly_maintenance", due)
 
+    def test_ensure_source_states_does_not_repeat_unchanged_updates(self):
+        before = self.conn.execute(
+            "SELECT updated_at FROM source_refresh_state WHERE source_name='openfda_enforcement'"
+        ).fetchone()["updated_at"]
+        repository.ensure_source_states(self.conn)
+        after = self.conn.execute(
+            "SELECT updated_at FROM source_refresh_state WHERE source_name='openfda_enforcement'"
+        ).fetchone()["updated_at"]
+        self.assertEqual(after, before)
+
+    def test_scheduler_summary_is_read_only_for_source_refresh_state(self):
+        before = self.conn.execute(
+            "SELECT updated_at FROM source_refresh_state WHERE source_name='openfda_enforcement'"
+        ).fetchone()["updated_at"]
+        repository.scheduler_summary(self.conn)
+        after = self.conn.execute(
+            "SELECT updated_at FROM source_refresh_state WHERE source_name='openfda_enforcement'"
+        ).fetchone()["updated_at"]
+        self.assertEqual(after, before)
+
     def test_dry_run_does_not_write_refresh_run(self):
         with patch("pharmadrone.scheduler.orchestrator.db.connect", side_effect=self._factory):
             result = run_sources(selected=["openfda_enforcement"], force=True, dry_run=True)
@@ -93,6 +113,20 @@ class Checkpoint6C1Tests(unittest.TestCase):
         self.assertEqual(second["unchanged"], 1)
         self.assertEqual(second["duplicates_prevented"], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) AS n FROM source_records").fetchone()["n"], 1)
+
+    def test_unchanged_source_record_updates_last_seen_once_per_day(self):
+        rec = self._recall()
+        with self.conn.transaction(): repository.ingest_source_records(self.conn, run_id="r1", source_name="openfda_enforcement", records=[rec])
+        first = dict(self.conn.execute("SELECT * FROM source_records").fetchone())
+        with self.conn.transaction(): repository.ingest_source_records(self.conn, run_id="r2", source_name="openfda_enforcement", records=[rec])
+        same_day = dict(self.conn.execute("SELECT * FROM source_records").fetchone())
+        self.assertEqual(same_day["last_seen_at"], first["last_seen_at"])
+        self.assertEqual(same_day["last_refresh_run_id"], first["last_refresh_run_id"])
+        self.conn.execute("UPDATE source_records SET last_seen_at='2026-01-01T00:00:00+00:00'")
+        self.conn.commit()
+        with self.conn.transaction(): repository.ingest_source_records(self.conn, run_id="r3", source_name="openfda_enforcement", records=[rec])
+        next_day = dict(self.conn.execute("SELECT * FROM source_records").fetchone())
+        self.assertEqual(next_day["last_refresh_run_id"], "r3")
 
     def test_change_detection_preserves_history(self):
         rec1 = self._recall(reason="Failed dissolution specifications")
@@ -221,6 +255,41 @@ class Checkpoint6C1Tests(unittest.TestCase):
              patch("pharmadrone.llm.complete", side_effect=AssertionError("LLM called")):
             result = run_sources(selected=["openfda_enforcement"], force=True)
         self.assertEqual(result["status"], "Healthy")
+
+    def test_memory_sync_runs_once_after_successful_cycle_with_material_records(self):
+        payload = {"records": [self._recall()], "cursor_after": "c", "watermark_after": "w", "metadata": {}}
+        with patch("pharmadrone.scheduler.orchestrator.db.connect", side_effect=self._factory), \
+             patch("pharmadrone.scheduler.sources.fetch_source", return_value=payload), \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_from_opportunity_index") as sync_opportunities, \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_ema_medicines") as sync_ema, \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_fda_orange_book") as sync_fda:
+            result = run_sources(selected=["openfda_enforcement"], force=True)
+        self.assertEqual(result["status"], "Healthy")
+        sync_opportunities.assert_called_once()
+        sync_ema.assert_called_once()
+        sync_fda.assert_called_once()
+
+    def test_memory_sync_skips_successful_cycle_without_material_records(self):
+        payload = {"records": [], "cursor_after": "c", "watermark_after": "w", "metadata": {}}
+        with patch("pharmadrone.scheduler.orchestrator.db.connect", side_effect=self._factory), \
+             patch("pharmadrone.scheduler.sources.fetch_source", return_value=payload), \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_from_opportunity_index") as sync_opportunities:
+            result = run_sources(selected=["openfda_enforcement"], force=True)
+        self.assertEqual(result["status"], "Healthy")
+        sync_opportunities.assert_not_called()
+
+    def test_memory_sync_skips_partial_cycle_with_material_records(self):
+        payload = {"records": [self._recall()], "cursor_after": "c", "watermark_after": "w", "partial": True, "metadata": {}}
+        with patch("pharmadrone.scheduler.orchestrator.db.connect", side_effect=self._factory), \
+             patch("pharmadrone.scheduler.sources.fetch_source", return_value=payload), \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_from_opportunity_index") as sync_opportunities, \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_ema_medicines") as sync_ema, \
+             patch("pharmadrone.scheduler.orchestrator.pharmaceutical_memory.sync_fda_orange_book") as sync_fda:
+            result = run_sources(selected=["openfda_enforcement"], force=True)
+        self.assertEqual(result["status"], "Partial")
+        sync_opportunities.assert_not_called()
+        sync_ema.assert_not_called()
+        sync_fda.assert_not_called()
 
     def test_postgresql_scheduler_schema_uses_supported_ddl(self):
         from pharmadrone.storage.migrations import _scheduler_schema
