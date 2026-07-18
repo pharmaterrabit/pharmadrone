@@ -501,112 +501,60 @@ def patents(navigate: Callable[[str], None]) -> None:
         "EPO OPS and the UK register are official evidence routes. Google Patents is included for discovery and "
         "cross-checking only; it is never treated as authority for ownership, legal status, expiry or enforceability."
     )
-    global_initial = data.global_patent_directory()
-    gm = global_initial["metrics"]
-    g1, g2, g3, g4, g5 = st.columns(5)
-    g1.metric("Global documents", f"{gm.get('documents', 0):,}")
-    g2.metric("US documents", f"{gm.get('us_documents', 0):,}")
-    g3.metric("EPO / EP", f"{gm.get('eu_documents', 0):,}")
-    g4.metric("UK / GB", f"{gm.get('uk_documents', 0):,}")
-    g5.metric("Officially reported parties", f"{gm.get('parties', 0):,}")
-    st.markdown("### Global patent documents")
-    gf1, gf2, gf3 = st.columns([2, 1, 1])
-    global_search = gf1.text_input("Search global patents", placeholder="Publication, title, applicant or inventor")
-    global_jurisdiction = gf2.selectbox(
-        "Jurisdiction", ["All"] + list(global_initial["facets"].get("jurisdiction") or []), key="global_patent_jurisdiction"
+    initial = data.unified_patent_directory()
+    metrics = initial["metrics"]
+    lifecycle_metrics = initial["lifecycle_metrics"]
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Stored documents", f"{metrics.get('documents', 0):,}")
+    m2.metric("US", f"{metrics.get('us_documents', 0):,}")
+    m3.metric("EPO / EP", f"{metrics.get('eu_documents', 0):,}")
+    m4.metric("UK / GB", f"{metrics.get('uk_documents', 0):,}")
+    m5.metric("Listed patents", f"{lifecycle_metrics.get('patents', 0):,}")
+    m6.metric("Exclusivities", f"{lifecycle_metrics.get('exclusivities', 0):,}")
+    st.info(
+        "Results are read from retained FDA Orange Book, EPO/EP and UK/GB records. "
+        "Google Patents is discovery/cross-check only and is never official evidence."
     )
-    global_source = gf3.selectbox("Database", ["All", "FDA Orange Book", "EPO / EP", "UK / GB", "Google Patents"], key="global_patent_source")
-    global_result = data.global_patent_directory(global_search, global_jurisdiction, global_source)
-    global_rows = global_result["documents"]
-    if global_source == "Google Patents":
-        query = quote_plus(global_search.strip() or "pharmaceutical patent")
-        st.info("Google Patents is a discovery search. Results are not imported into PharmaTune until an official patent-office record is retained.")
-        st.link_button("Search this in Google Patents ↗", f"https://patents.google.com/?q={query}")
-    elif global_rows:
-        global_labels = {
-            f"{row['publication_number']} · {row.get('title') or 'Title unavailable'}": row for row in global_rows
-        }
-        global_selected = st.selectbox("Global patent profile", list(global_labels))
-        global_frame = pd.DataFrame(global_rows)[[
-            "publication_number", "jurisdiction", "title", "reported_parties", "publication_date",
-            "family_status", "legal_status_summary", "source_name", "source_authority", "official_source_url",
-            "google_patents_url", "uk_register_url", "last_verified_at",
-        ]].rename(columns={
-            "publication_number": "Publication", "jurisdiction": "Office", "title": "Title",
-            "reported_parties": "Reported applicants / inventors", "publication_date": "Published",
-            "family_status": "Family evidence", "legal_status_summary": "Legal-status evidence",
-            "source_name": "Source", "source_authority": "Authority", "official_source_url": "Official evidence",
-            "google_patents_url": "Google Patents discovery", "uk_register_url": "UK register",
-            "last_verified_at": "Last verified",
-        })
-        st.dataframe(global_frame, use_container_width=True, hide_index=True, column_config={
-            "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Official source ↗"),
-            "Google Patents discovery": st.column_config.LinkColumn("Google Patents discovery", display_text="Discover ↗"),
-            "UK register": st.column_config.LinkColumn("UK register", display_text="UK register ↗"),
-        })
-        if st.button("Open global patent detail", type="primary"):
-            st.session_state["patent_document_id"] = global_labels[global_selected]["patent_document_id"]
-            st.session_state.pop("patent_lifecycle_id", None)
-            navigate("Patent Detail")
-    else:
-        st.caption("No retained records match these filters. EPO/UK records populate after the authorised weekly OPS job runs; Google Patents can be opened with the database selector.")
-    st.divider()
-    st.markdown("### FDA Orange Book product lifecycle")
-    initial = data.patent_lifecycle_directory()
-    facets = initial["facets"]
-    f1, f2, f3 = st.columns([2, 1, 1])
-    search = f1.text_input("Search lifecycle records", placeholder="Product, ingredient or application number")
-    status = f2.selectbox("Lifecycle state", ["All"] + list(facets.get("status") or []))
-    holder = f3.selectbox("Application holder", ["All"] + list(facets.get("holder") or []))
-    result = data.patent_lifecycle_directory(search, status, holder)
-    metrics = result["metrics"]
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Products", f"{metrics.get('products', 0):,}")
-    m2.metric("Listed patents", f"{metrics.get('patents', 0):,}")
-    m3.metric("Exclusivities", f"{metrics.get('exclusivities', 0):,}")
-    m4.metric("Expiry ≤24 months", f"{metrics.get('approaching_expiry', 0):,}")
-    m5.metric("Family resolution queue", f"{metrics.get('family_resolution_required', 0):,}")
-    monitor = metrics.get("latest_monitor") or {}
-    if monitor:
-        st.info(
-            f"Latest weekly lifecycle monitor: {_safe(monitor.get('completed_at'))} · "
-            f"{int(monitor.get('products_changed') or 0):,} changed products · "
-            f"{int(monitor.get('family_resolution_required') or 0):,} patents awaiting official family evidence"
+    fda_status = initial.get("fda_status") or {}
+    if "fallback" in str(fda_status.get("dataset_mode") or "").casefold():
+        st.warning(
+            "FDA currently has product-only Drugs@FDA fallback data. "
+            "Orange Book patent and exclusivity records are unavailable until the official archive refresh succeeds."
         )
-    rows = result["products"]
+        if fda_status.get("fallback_reason") or fda_status.get("archive_error"):
+            st.caption(f"FDA source status: {fda_status.get('fallback_reason') or fda_status.get('archive_error')}")
+    search = st.text_input("Search patents", placeholder="Publication, product, ingredient, title, company or application")
+    result = data.unified_patent_directory(search)
+    st.link_button("Discover the same query in Google Patents ↗", result["google_discovery_url"])
+    st.caption("Google Patents discovery/cross-check only; results are not imported or treated as official evidence.")
+    rows = result["documents"]
     if not rows:
-        theme.empty("No lifecycle records found", "Run FDA Orange Book, then the patent_lifecycle projection, or broaden the filters.", "No matches")
+        theme.empty("No stored patent records found", "The page is database-first. Run the official Orange Book or EPO/UK refresh jobs to retain records.", "No matches")
         return
-    labels = {
-        f"{row['trade_name']} · {row['application_number']}-{row['product_number']} · {row.get('lifecycle_status')}": row
-        for row in rows
-    }
-    selected = st.selectbox("Lifecycle profile", list(labels))
-    columns = [
-        "trade_name", "ingredient", "application_number", "product_number", "application_holder",
-        "application_type", "reference_listed_drug", "reference_standard", "patent_count",
-        "exclusivity_count", "lifecycle_status", "next_expiry_date", "evidence_status", "last_verified_at",
-    ]
-    frame = pd.DataFrame(rows)[columns].rename(columns={
-        "trade_name": "Product", "ingredient": "Ingredient", "application_number": "Application",
-        "product_number": "Product no.", "application_holder": "FDA application holder",
-        "application_type": "Application type", "reference_listed_drug": "RLD",
-        "reference_standard": "RS", "patent_count": "Listed patents",
-        "exclusivity_count": "Exclusivities", "lifecycle_status": "Lifecycle state",
-        "next_expiry_date": "Next listed expiry", "evidence_status": "Evidence status",
-        "last_verified_at": "Last verified",
+    labels = {f"{row['publication_number']} · {row.get('title') or 'Title unavailable'}": row for row in rows}
+    selected = st.selectbox("Patent record", list(labels))
+    display_rows = []
+    for row in rows:
+        products = row.get("linked_products") or []
+        display_rows.append({
+            "Publication": row.get("publication_number"), "Office": row.get("jurisdiction"),
+            "Title": row.get("title"), "Product / ingredient": " · ".join(
+                f"{item.get('trade_name')} ({item.get('ingredient') or 'ingredient not recorded'})" for item in products
+            ), "Reported parties": row.get("reported_parties"), "Published": row.get("publication_date"),
+            "Legal-status evidence": row.get("legal_status_label") or row.get("legal_status_summary"),
+            "Expiry": row.get("expiry_date"), "Source": row.get("source_name"),
+            "Official evidence": row.get("official_source_url"),
+            "Google Patents discovery": row.get("google_patents_url"), "Last verified": row.get("last_verified_at"),
+        })
+    frame = pd.DataFrame(display_rows)
+    st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
+        "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Official source ↗"),
+        "Google Patents discovery": st.column_config.LinkColumn("Google Patents discovery", display_text="Cross-check ↗"),
     })
-    st.dataframe(frame, use_container_width=True, hide_index=True)
-    left, right = st.columns([1, 4])
-    if left.button("Open lifecycle detail", type="primary"):
-        st.session_state["patent_lifecycle_id"] = labels[selected]["lifecycle_id"]
-        st.session_state.pop("patent_document_id", None)
+    if st.button("Open patent detail", type="primary"):
+        st.session_state["patent_document_id"] = labels[selected]["patent_document_id"]
+        st.session_state.pop("patent_lifecycle_id", None)
         navigate("Patent Detail")
-    if _can_export():
-        right.download_button(
-            "Export filtered lifecycle records (.csv)", frame.to_csv(index=False).encode("utf-8"),
-            "pharmatune_patent_lifecycle.csv", "text/csv",
-        )
 
 
 def patent_detail(navigate: Callable[[str], None]) -> None:

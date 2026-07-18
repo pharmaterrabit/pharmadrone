@@ -105,3 +105,16 @@ def test_fetch_uses_official_drugsfda_fallback_when_archive_is_blocked():
     assert result.ok
     assert result.stats["archive_error"]
     assert result.stats["dataset_mode"] == "Drugs@FDA product fallback"
+    assert result.stats["source_coverage"] == "Drugs@FDA product-only fallback"
+    assert "patents and exclusivities unavailable" in result.stats["fallback_reason"]
+
+
+def test_successful_archive_reports_complete_orange_book_coverage():
+    with patch("httpx.Client.get", return_value=__import__("httpx").Response(
+        200, content=_archive(), request=__import__("httpx").Request("GET", fda_orange_book.DEFAULT_ARCHIVE_URL)
+    )):
+        result = fda_orange_book.fetch(max_results=10)
+    assert result.ok
+    assert result.stats["dataset_mode"] == "Orange Book archive"
+    assert result.stats["source_coverage"] == "Orange Book products, patents and exclusivities"
+    assert result.stats["fallback_reason"] == ""

@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 
 FDA_SOURCE = "https://www.fda.gov/drugs/drug-approvals-and-databases/orange-book-data-files"
@@ -61,6 +61,11 @@ def google_patents_url(publication_number: str, jurisdiction: str = "") -> str:
     if number and country and not number.startswith(country):
         number = country + number
     return f"https://patents.google.com/patent/{number}/en" if number else ""
+
+
+def google_discovery_url(query: str) -> str:
+    """Return a query-preserving discovery link; Google is never a data source."""
+    return f"https://patents.google.com/?q={quote_plus(_text(query) or 'pharmaceutical patent')}"
 
 
 def uk_register_url(publication_number: str) -> str:
@@ -502,6 +507,31 @@ def global_metrics(conn) -> dict[str, Any]:
     return {key: int(value or 0) if key != "latest_monitor" else value for key, value in counts.items()}
 
 
+def orange_book_status(conn) -> dict[str, Any]:
+    """Expose the latest FDA archive/fallback boundary from stored source state."""
+    run = conn.execute(
+        "SELECT status,error_class,error_summary,metadata_json,completed_at FROM source_refresh_runs "
+        "WHERE source_name='fda_orange_book' ORDER BY completed_at DESC LIMIT 1"
+    ).fetchone()
+    state = conn.execute(
+        "SELECT last_status,last_error_summary,last_success_at FROM source_refresh_state WHERE source_name='fda_orange_book'"
+    ).fetchone()
+    metadata = _json((run or {}).get("metadata_json"), {})
+    fallback_products = int(conn.execute(
+        "SELECT COUNT(*) AS n FROM lifecycle_products WHERE active=1 AND LOWER(COALESCE(dataset_mode,'')) LIKE '%fallback%'"
+    ).fetchone()["n"])
+    return {
+        "status": _text((run or {}).get("status") or (state or {}).get("last_status")),
+        "error_class": _text((run or {}).get("error_class")),
+        "error_summary": _text((run or {}).get("error_summary") or (state or {}).get("last_error_summary")),
+        "dataset_mode": _text(metadata.get("dataset_mode")) or ("Drugs@FDA product fallback" if fallback_products else "Not reported"),
+        "source_coverage": _text(metadata.get("source_coverage")) or ("Drugs@FDA product-only fallback" if fallback_products else "Not reported"),
+        "fallback_reason": _text(metadata.get("fallback_reason")),
+        "archive_error": _text(metadata.get("archive_error")),
+        "completed_at": _text((run or {}).get("completed_at")),
+    }
+
+
 def global_facets(conn) -> dict[str, list[str]]:
     return {"jurisdiction": [str(row[0]) for row in conn.execute(
         "SELECT DISTINCT jurisdiction FROM patent_documents WHERE active=1 ORDER BY jurisdiction"
@@ -514,8 +544,11 @@ def global_documents(conn, *, search: str = "", jurisdiction: str = "All", sourc
         q = f"%{search.strip().casefold()}%"
         clauses.append("(LOWER(d.publication_number) LIKE ? OR LOWER(d.title) LIKE ? OR EXISTS "
                        "(SELECT 1 FROM patent_parties pt WHERE pt.patent_document_id=d.patent_document_id "
-                       "AND LOWER(pt.party_name) LIKE ?))")
-        params.extend([q, q, q])
+                       "AND LOWER(pt.party_name) LIKE ?) OR EXISTS "
+                       "(SELECT 1 FROM patent_product_links l JOIN lifecycle_products p ON p.lifecycle_id=l.lifecycle_id "
+                       "WHERE l.patent_document_id=d.patent_document_id AND "
+                       "(LOWER(p.trade_name) LIKE ? OR LOWER(p.ingredient) LIKE ? OR LOWER(p.application_number) LIKE ?)))")
+        params.extend([q, q, q, q, q, q])
     if jurisdiction != "All": clauses.append("d.jurisdiction=?"); params.append(jurisdiction)
     if source == "FDA Orange Book": clauses.append("d.source_name=?"); params.append(source)
     elif source == "EPO / EP": clauses.append("d.jurisdiction='EP'")
@@ -536,6 +569,12 @@ def global_documents(conn, *, search: str = "", jurisdiction: str = "All", sourc
             parties.setdefault(str(party["patent_document_id"]), []).append(str(party["party_name"]))
     for row in rows:
         row["reported_parties"] = " · ".join(parties.get(row["patent_document_id"], []))
+        row["linked_products"] = [dict(item) for item in conn.execute(
+            "SELECT p.lifecycle_id,p.trade_name,p.ingredient,p.application_number,p.product_number "
+            "FROM patent_product_links l JOIN lifecycle_products p ON p.lifecycle_id=l.lifecycle_id "
+            "WHERE l.patent_document_id=? AND p.active=1 ORDER BY p.trade_name",
+            (row["patent_document_id"],),
+        ).fetchall()]
     return rows
 
 

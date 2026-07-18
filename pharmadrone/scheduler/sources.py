@@ -164,7 +164,8 @@ def fetch_fda_orange_book(conn, state: dict[str, Any], guards: Guardrails, *, fo
     return {
         "records": records, "cursor_after": f"archive:{stats.get('products_in_archive', 0)}",
         "watermark_after": newest,
-        "metadata": {**stats, "incremental_strategy": "monthly official archive, deterministic record checksum and application/product key"},
+        "metadata": {**stats, "incremental_strategy": "monthly official archive, deterministic record checksum and application/product key",
+                     "archive_attempted": True, "fallback_is_product_only": stats.get("dataset_mode") == "Drugs@FDA product fallback"},
     }
 
 

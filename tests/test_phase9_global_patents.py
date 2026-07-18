@@ -4,6 +4,7 @@ from pharmadrone import db
 from pharmadrone.connectors import epo_ops
 from pharmadrone.pipeline import patent_lifecycle
 from pharmadrone.scheduler import config, repository
+from pharmatune_ui import data
 
 
 OPS_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -113,8 +114,9 @@ def test_global_database_filters_are_separate_and_fda_links_are_application_spec
     assert "ApplNo=012345" in us[0]["official_source_url"]
     assert patent_lifecycle.global_documents(conn, source="EPO / EP") == []
     pages = open("pharmatune_ui/pages.py", encoding="utf-8").read()
-    assert '"FDA Orange Book", "EPO / EP", "UK / GB", "Google Patents"' in pages
-    assert "Search this in Google Patents" in pages
+    assert "unified_patent_directory" in pages
+    assert "Jurisdiction" not in pages[pages.index("def patents"):pages.index("def patent_detail")]
+    assert "Database" not in pages[pages.index("def patents"):pages.index("def patent_detail")]
 
 
 def test_google_patents_is_labelled_discovery_only_in_ui():
@@ -122,3 +124,90 @@ def test_google_patents_is_labelled_discovery_only_in_ui():
     assert "Google Patents is included for discovery" in pages
     assert "never treated as authority" in pages
     assert "current ownership not inferred" not in pages  # stored evidence language, not a UI claim
+
+
+def test_unified_search_combines_stored_jurisdictions_and_preserves_query_link(tmp_path):
+    conn = db.connect(tmp_path / "unified-search.db")
+    records = epo_ops.parse_search_xml(OPS_XML, query="example").records
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="epo-1", source_name="epo_ops_patents", records=records)
+    patent_lifecycle.sync_global(conn, run_id="global-1", observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc))
+    rows = patent_lifecycle.global_documents(conn, search="Example Pharma")
+    assert {row["jurisdiction"] for row in rows} == {"EP"}
+    assert patent_lifecycle.google_discovery_url("Example Pharma") == "https://patents.google.com/?q=Example+Pharma"
+    assert rows[0]["google_patents_url"].startswith("https://patents.google.com/patent/EP1234567A1")
+
+
+def test_official_orange_book_records_project_patents_and_exclusivities(tmp_path):
+    from tests.test_phase4c_fda_orange_book import _archive
+    from pharmadrone.connectors import fda_orange_book
+
+    conn = db.connect(tmp_path / "orange-book-projection.db")
+    record = fda_orange_book.parse_archive(_archive()).records[0]
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="fda-ob-run", source_name="fda_orange_book", records=[record])
+        patent_lifecycle.sync(conn, run_id="projection-run", observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc))
+    assert patent_lifecycle.metrics(conn)["patents"] == 1
+    assert patent_lifecycle.metrics(conn)["exclusivities"] == 1
+    assert patent_lifecycle.global_metrics(conn)["us_documents"] == 1
+    assert patent_lifecycle.global_documents(conn)[0]["source_name"] == "FDA Orange Book"
+
+
+def test_drugsfda_fallback_explains_zero_patent_counts_without_fabrication(tmp_path):
+    from pharmadrone.connectors import fda_orange_book
+
+    conn = db.connect(tmp_path / "fallback-zero-counts.db")
+    record = fda_orange_book.parse_drugsfda_payload({"results": [{
+        "application_number": "NDA012345", "sponsor_name": "Example Pharma Inc",
+        "products": [{"product_number": "001", "brand_name": "EXAMPLE DRUG",
+                       "active_ingredients": [{"name": "EXAMPLINE", "strength": "10MG"}]}],
+    }]}).records[0]
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="fallback-run", source_name="fda_orange_book", records=[record])
+        projection = patent_lifecycle.sync(conn, run_id="projection-run", observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc))
+    assert projection["products_seen"] == 1
+    assert patent_lifecycle.metrics(conn)["products"] == 1
+    assert patent_lifecycle.metrics(conn)["patents"] == 0
+    assert patent_lifecycle.metrics(conn)["exclusivities"] == 0
+    assert patent_lifecycle.global_metrics(conn)["documents"] == 0
+
+
+def test_fallback_status_is_visible_and_later_archive_refresh_restores_records(tmp_path):
+    from tests.test_phase4c_fda_orange_book import _archive
+    from pharmadrone.connectors import fda_orange_book
+
+    fallback_payload = {"results": [{
+        "application_number": "NDA012345", "sponsor_name": "Example Pharma Inc",
+        "products": [{"product_number": "001", "brand_name": "EXAMPLE DRUG",
+                       "active_ingredients": [{"name": "EXAMPLINE", "strength": "10MG"}]}],
+    }]}
+    conn = db.connect(tmp_path / "fallback-recovery.db")
+    fallback = fda_orange_book.parse_drugsfda_payload(fallback_payload).records[0]
+    archive = fda_orange_book.parse_archive(_archive()).records[0]
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="fallback-run", source_name="fda_orange_book", records=[fallback])
+        patent_lifecycle.sync(conn, run_id="fallback-projection", observed_at=datetime(2026, 7, 16, tzinfo=timezone.utc))
+    status = patent_lifecycle.orange_book_status(conn)
+    assert status["dataset_mode"] == "Drugs@FDA product fallback"
+    assert status["source_coverage"] == "Drugs@FDA product-only fallback"
+    assert patent_lifecycle.metrics(conn)["patents"] == 0
+    assert patent_lifecycle.metrics(conn)["exclusivities"] == 0
+
+    with conn.transaction():
+        repository.ingest_source_records(conn, run_id="archive-run", source_name="fda_orange_book", records=[archive])
+        patent_lifecycle.sync(conn, run_id="archive-projection", observed_at=datetime(2026, 7, 17, tzinfo=timezone.utc))
+    assert patent_lifecycle.metrics(conn)["patents"] == 1
+    assert patent_lifecycle.metrics(conn)["exclusivities"] == 1
+    assert patent_lifecycle.global_metrics(conn)["us_documents"] == 1
+
+    page = open("pharmatune_ui/pages.py", encoding="utf-8").read()
+    assert "product-only Drugs@FDA fallback data" in page
+    assert "Orange Book patent and exclusivity records are unavailable" in page
+
+
+def test_patent_page_uses_database_reads_without_network_fetches():
+    source = open("pharmatune_ui/pages.py", encoding="utf-8").read()
+    page = source[source.index("def patents"):source.index("def patent_detail")]
+    assert "fda_orange_book.fetch" not in page
+    assert "epo_ops.search" not in page
+    assert "unified_patent_directory" in page

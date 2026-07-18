@@ -346,6 +346,22 @@ def global_patent_directory(search: str = "", jurisdiction: str = "All", source:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def unified_patent_directory(search: str = "") -> dict[str, Any]:
+    """Read one stored, cross-jurisdiction patent result set without network work."""
+    conn = connection()
+    try:
+        return {
+            "metrics": patent_lifecycle.global_metrics(conn),
+            "lifecycle_metrics": patent_lifecycle.metrics(conn),
+            "fda_status": patent_lifecycle.orange_book_status(conn),
+            "documents": patent_lifecycle.global_documents(conn, search=search),
+            "google_discovery_url": patent_lifecycle.google_discovery_url(search),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def global_patent_profile(patent_document_id: str) -> dict[str, Any] | None:
     conn = connection()
     try:
