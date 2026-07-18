@@ -42,6 +42,14 @@ def _date(value: Any) -> date | None:
         return None
 
 
+def _canonical(value: Any) -> str:
+    return "".join(ch for ch in _text(value).upper() if ch.isalnum())
+
+
+def _party_identity(value: Any) -> str:
+    return " ".join(_text(value).casefold().split())
+
+
 def family_lookup_url(patent_number: str) -> str:
     number = re.sub(r"[^A-Za-z0-9]", "", _text(patent_number))
     return f"https://worldwide.espacenet.com/patent/search?q={quote('pn=US' + number)}" if number else ""
@@ -269,60 +277,112 @@ def profile(conn, lifecycle_id: str) -> dict[str, Any] | None:
 
 
 def _upsert_document(conn, entities: dict[str, Any], *, source_name: str, authority: str,
-                     observed: str, next_review: str) -> str:
+                     observed: str, next_review: str, source_record_id: str = "",
+                     source_refresh_id: str = "") -> str:
     publication = re.sub(r"[^A-Za-z0-9]", "", _text(entities.get("publication_number"))).upper()
     jurisdiction = _text(entities.get("jurisdiction")).upper() or publication[:2]
     document_id = _id("patdoc", jurisdiction, publication)
     official = _text(entities.get("official_source_url"))
     google = _text(entities.get("google_patents_url")) or google_patents_url(publication, jurisdiction)
+    application = _text(entities.get("application_number"))
+    legal_label = _text(entities.get("legal_status_label") or entities.get("legal_status_summary")) or "Legal status not established"
+    legal_basis = _text(entities.get("legal_status_basis")) or "Source-reported label; no legal conclusion inferred"
+    expiry = _text(entities.get("expiry_date"))
+    expiry_basis = _text(entities.get("expiry_basis"))
+    expiry_status = _text(entities.get("expiry_status")) or ("source-reported" if expiry else "not-reported")
+    source_record_id = _text(source_record_id) or document_id
+    source_refresh_id = _text(source_refresh_id)
     conn.execute(
         """INSERT INTO patent_documents
         (patent_document_id,publication_number,application_number,jurisdiction,document_kind,title,abstract_text,
          filing_date,publication_date,grant_date,family_id,family_status,legal_status_summary,legal_status_as_of,
          source_name,source_authority,official_source_url,google_patents_url,uk_register_url,evidence_status,
-         first_seen_at,last_verified_at,next_review_at,attributes_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         first_seen_at,last_verified_at,next_review_at,attributes_json,normalized_publication_number,
+         normalized_application_number,publication_kind,legal_status_code,legal_status_label,legal_status_basis,
+         status_as_of_date,expiry_date,expiry_basis,expiry_status,expiry_as_of_date,last_source_refresh_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(patent_document_id) DO UPDATE SET application_number=excluded.application_number,
         document_kind=excluded.document_kind,title=excluded.title,abstract_text=excluded.abstract_text,
         filing_date=excluded.filing_date,publication_date=excluded.publication_date,grant_date=excluded.grant_date,
         family_id=excluded.family_id,family_status=excluded.family_status,
         legal_status_summary=excluded.legal_status_summary,legal_status_as_of=excluded.legal_status_as_of,
+        normalized_publication_number=excluded.normalized_publication_number,
+        normalized_application_number=excluded.normalized_application_number,
+        publication_kind=excluded.publication_kind,legal_status_code=excluded.legal_status_code,
+        legal_status_label=excluded.legal_status_label,legal_status_basis=excluded.legal_status_basis,
+        status_as_of_date=excluded.status_as_of_date,expiry_date=excluded.expiry_date,
+        expiry_basis=excluded.expiry_basis,expiry_status=excluded.expiry_status,
+        expiry_as_of_date=excluded.expiry_as_of_date,last_source_refresh_id=excluded.last_source_refresh_id,
         source_name=excluded.source_name,source_authority=excluded.source_authority,
         official_source_url=excluded.official_source_url,google_patents_url=excluded.google_patents_url,
         uk_register_url=excluded.uk_register_url,evidence_status=excluded.evidence_status,active=1,
         last_verified_at=excluded.last_verified_at,next_review_at=excluded.next_review_at,
         attributes_json=excluded.attributes_json""",
-        (document_id, publication, _text(entities.get("application_number")), jurisdiction,
+        (document_id, publication, application, jurisdiction,
          _text(entities.get("document_kind")), _text(entities.get("title")), _text(entities.get("abstract")),
          _text(entities.get("filing_date")), _text(entities.get("publication_date")), _text(entities.get("grant_date")),
          _text(entities.get("family_id")), _text(entities.get("family_status")) or "Family not established",
-         _text(entities.get("legal_status_summary")) or "Legal status not established",
-         _text(entities.get("legal_status_as_of")), source_name, authority, official, google,
+         legal_label, _text(entities.get("legal_status_as_of")), source_name, authority, official, google,
          _text(entities.get("uk_register_url")) or (uk_register_url(publication) if jurisdiction == "GB" else ""),
          "Official patent-office evidence" if authority == "official" else "Discovery context only",
-         observed, observed, next_review, json.dumps({"query_context": _text(entities.get("query_context"))})),
+         observed, observed, next_review, json.dumps({"query_context": _text(entities.get("query_context")), "legal_status_basis": legal_basis}),
+         _canonical(publication), _canonical(application), _text(entities.get("document_kind")),
+         _text(entities.get("legal_status_code")), legal_label, legal_basis,
+         _text(entities.get("legal_status_as_of")), expiry, expiry_basis, expiry_status,
+         _text(entities.get("expiry_as_of_date")) or (observed if expiry else ""), source_refresh_id),
     )
+    conn.execute(
+        """INSERT INTO patent_document_sources
+        (patent_document_source_id,patent_document_id,source_system,source_record_id,source_authority,
+         official_source_url,evidence_status,first_seen_at,last_verified_at,next_review_at,last_source_refresh_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(patent_document_id,source_system,source_record_id) DO UPDATE SET
+        source_authority=excluded.source_authority,official_source_url=excluded.official_source_url,
+        evidence_status=excluded.evidence_status,last_verified_at=excluded.last_verified_at,
+        next_review_at=excluded.next_review_at,last_source_refresh_id=excluded.last_source_refresh_id""",
+        (_id("patsource", document_id, source_name, source_record_id), document_id, source_name, source_record_id,
+         authority, official, "Official source evidence" if authority == "official" else "Discovery context only",
+         observed, observed, next_review, source_refresh_id),
+    )
+    family_id = _text(entities.get("family_id"))
+    if family_id:
+        conn.execute(
+            """INSERT INTO patent_families
+            (family_id,canonical_family_id,family_status,source_authority,official_source_url,evidence_status,
+             first_seen_at,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(family_id) DO UPDATE SET family_status=excluded.family_status,
+            source_authority=excluded.source_authority,official_source_url=excluded.official_source_url,
+            evidence_status=excluded.evidence_status,last_verified_at=excluded.last_verified_at,
+            next_review_at=excluded.next_review_at""",
+            (family_id, family_id, _text(entities.get("family_status")) or "Family not established",
+             authority, official, "Official family evidence" if authority == "official" else "Family context only",
+             observed, observed, next_review),
+        )
     for party in entities.get("parties") or []:
         if not isinstance(party, dict) or not _text(party.get("party_name")):
             continue
         party_type = _text(party.get("party_type")) or "party"
         party_name = _text(party.get("party_name"))
+        identity = _party_identity(party_name)
         conn.execute(
             """INSERT INTO patent_parties
             (patent_party_id,patent_document_id,party_type,party_name,country_code,sequence_number,evidence_status,
-             official_source_url,first_seen_at,last_verified_at,next_review_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             official_source_url,first_seen_at,last_verified_at,next_review_at,normalized_party_name,
+             party_identity_key,party_identity_basis) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(patent_party_id) DO UPDATE SET country_code=excluded.country_code,
             sequence_number=excluded.sequence_number,evidence_status=excluded.evidence_status,
             official_source_url=excluded.official_source_url,last_verified_at=excluded.last_verified_at,
-            next_review_at=excluded.next_review_at""",
+            next_review_at=excluded.next_review_at,normalized_party_name=excluded.normalized_party_name,
+            party_identity_key=excluded.party_identity_key,party_identity_basis=excluded.party_identity_basis""",
             (_id("patparty", document_id, party_type, party_name), document_id, party_type, party_name,
              _text(party.get("country_code")), _text(party.get("sequence_number")),
-             "Officially reported party; current ownership not inferred", official, observed, observed, next_review),
+             "Officially reported party; current ownership not inferred", official, observed, observed, next_review,
+             identity, identity, "Name normalization only; identity and ownership not verified"),
         )
     for member in entities.get("family_members") or []:
         if not isinstance(member, dict) or not _text(member.get("publication_number")) or not _text(entities.get("family_id")):
             continue
-        member_number = re.sub(r"[^A-Za-z0-9]", "", _text(member.get("publication_number"))).upper()
+        member_number = _canonical(member.get("publication_number"))
         family_id = _text(entities.get("family_id"))
         conn.execute(
             """INSERT INTO patent_family_members
@@ -365,25 +425,36 @@ def sync_global(conn, *, run_id: str = "manual-global-patents", observed_at: dat
             "publication_number": publication, "jurisdiction": "US", "title": "",
             "family_status": _text(row["family_status"]), "family_id": _text(row["family_id"]),
             "legal_status_summary": "Not established by Orange Book listing",
+            "legal_status_basis": "Orange Book listing does not establish legal status",
+            "expiry_date": _text(row.get("expiry_date")),
+            "expiry_basis": "FDA Orange Book listed expiry (source-reported)" if _text(row.get("expiry_date")) else "",
+            "expiry_status": "source-reported" if _text(row.get("expiry_date")) else "not-reported",
             "official_source_url": fda_application_url(_text(row["application_number"])),
             "google_patents_url": google_patents_url(publication),
         }
         document_id = _upsert_document(conn, entities, source_name="FDA Orange Book", authority="official",
-                                       observed=observed, next_review=next_review)
+                                       observed=observed, next_review=next_review,
+                                       source_record_id=f"{row['lifecycle_id']}:{row['patent_number']}",
+                                       source_refresh_id=run_id)
         document_ids.add(document_id)
         conn.execute(
             """INSERT INTO patent_product_links
             (patent_product_link_id,patent_document_id,lifecycle_id,link_basis,evidence_status,official_source_url,
-             verified,observed_at) VALUES (?,?,?,?,?,?,?,?)
+             verified,observed_at,evidence_basis,evidence_source_record_id,verification_status,verified_at,verification_basis) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(patent_product_link_id) DO UPDATE SET evidence_status=excluded.evidence_status,
-            official_source_url=excluded.official_source_url,observed_at=excluded.observed_at""",
+            official_source_url=excluded.official_source_url,observed_at=excluded.observed_at,
+            evidence_basis=excluded.evidence_basis,evidence_source_record_id=excluded.evidence_source_record_id,
+            verification_status=excluded.verification_status,verified_at=excluded.verified_at,
+            verification_basis=excluded.verification_basis""",
             (_id("patlink", document_id, row["lifecycle_id"], "orange-book-listed"), document_id,
              row["lifecycle_id"], "Patent number listed for FDA application/product",
-             "Verified Orange Book listing; scope, validity and ownership not inferred", fda_application_url(_text(row["application_number"])), 1, observed),
+             "Verified Orange Book listing; scope, validity and ownership not inferred", fda_application_url(_text(row["application_number"])), 1, observed,
+             "Orange Book application/product listing", f"{row['lifecycle_id']}:{row['patent_number']}", "verified", observed,
+             "Explicit FDA Orange Book listing; no ownership or validity inference"),
         )
     # EPO OPS records include EP and GB publications and official reported parties.
     stored = conn.execute(
-        "SELECT source_name,record_json FROM source_records WHERE source_type='epo_patent_document' AND active=1"
+        "SELECT source_id,source_name,record_json FROM source_records WHERE source_type='epo_patent_document' AND active=1"
     ).fetchall()
     for item in stored:
         record = _json(item["record_json"], {})
@@ -391,7 +462,8 @@ def sync_global(conn, *, run_id: str = "manual-global-patents", observed_at: dat
         if not _text(entities.get("publication_number")):
             continue
         document_ids.add(_upsert_document(conn, entities, source_name=_text(item["source_name"]) or "EPO OPS",
-                                          authority="official", observed=observed, next_review=next_review))
+                                          authority="official", observed=observed, next_review=next_review,
+                                          source_record_id=_text(item["source_id"]), source_refresh_id=run_id))
     counts = {
         "documents_seen": len(document_ids),
         "eu_documents_seen": int(conn.execute("SELECT COUNT(*) AS n FROM patent_documents WHERE active=1 AND jurisdiction='EP'").fetchone()["n"]),
