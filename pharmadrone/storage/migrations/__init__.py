@@ -1551,6 +1551,134 @@ def _foundation_pr_a_schema(conn) -> None:
     CREATE INDEX IF NOT EXISTS idx_foundation_relationship_source ON technology_problem_relationships(source_type, source_id);
     """)
 
+    if conn.backend == "sqlite":
+        for trigger_sql in """
+        CREATE TRIGGER IF NOT EXISTS foundation_taxonomy_parent_namespace_insert
+        BEFORE INSERT ON intelligence_taxonomy_terms
+        WHEN NEW.parent_term_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms parent
+            WHERE parent.term_id=NEW.parent_term_id
+              AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+        )
+        BEGIN SELECT RAISE(ABORT, 'taxonomy parent must use the same namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_taxonomy_parent_namespace_update
+        BEFORE UPDATE OF parent_term_id,taxonomy_namespace ON intelligence_taxonomy_terms
+        WHEN NEW.parent_term_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms parent
+            WHERE parent.term_id=NEW.parent_term_id
+              AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+        )
+        BEGIN SELECT RAISE(ABORT, 'taxonomy parent must use the same namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_problem_taxonomy_namespace_insert
+        BEFORE INSERT ON pharmaceutical_problems
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'problem taxonomy term must use problem_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_problem_taxonomy_namespace_update
+        BEFORE UPDATE OF taxonomy_term_id ON pharmaceutical_problems
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'problem taxonomy term must use problem_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_taxonomy_namespace_insert
+        BEFORE INSERT ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution taxonomy term must use solution_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_taxonomy_namespace_update
+        BEFORE UPDATE OF taxonomy_term_id ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution taxonomy term must use solution_domain namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_type_namespace_insert
+        BEFORE INSERT ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution type term must use solution_type namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_solution_type_namespace_update
+        BEFORE UPDATE OF solution_type_term_id ON technology_solutions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM intelligence_taxonomy_terms term
+            WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+        )
+        BEGIN SELECT RAISE(ABORT, 'solution type term must use solution_type namespace'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_addresses_inference_insert
+        BEFORE INSERT ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+        BEGIN SELECT RAISE(ABORT, 'addresses relationship requires direct or human-verified evidence'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_addresses_inference_update
+        BEFORE UPDATE OF relationship_type,inference_status ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+        BEGIN SELECT RAISE(ABORT, 'addresses relationship requires direct or human-verified evidence'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_inferred_addresses_insert
+        BEFORE INSERT ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status='inferred'
+        BEGIN SELECT RAISE(ABORT, 'inferred evidence cannot create an addresses relationship'); END;
+        -- FOUNDATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS foundation_inferred_addresses_update
+        BEFORE UPDATE OF relationship_type,inference_status ON technology_problem_relationships
+        WHEN NEW.relationship_type='addresses' AND NEW.inference_status='inferred'
+        BEGIN SELECT RAISE(ABORT, 'inferred evidence cannot create an addresses relationship'); END;
+        """.split("-- FOUNDATION_TRIGGER_SEPARATOR"):
+            if trigger_sql.strip():
+                conn.execute(trigger_sql)
+    else:
+        conn.execute("""
+        CREATE OR REPLACE FUNCTION foundation_pr_a_validate() RETURNS trigger AS $function$
+        BEGIN
+            IF TG_TABLE_NAME = 'intelligence_taxonomy_terms' AND NEW.parent_term_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms parent
+                WHERE parent.term_id=NEW.parent_term_id AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+            ) THEN RAISE EXCEPTION 'taxonomy parent must use the same namespace'; END IF;
+            IF TG_TABLE_NAME = 'pharmaceutical_problems' AND NOT EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms term
+                WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+            ) THEN RAISE EXCEPTION 'problem taxonomy term must use problem_domain namespace'; END IF;
+            IF TG_TABLE_NAME = 'technology_solutions' AND NOT EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms term
+                WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+            ) THEN RAISE EXCEPTION 'solution taxonomy term must use solution_domain namespace'; END IF;
+            IF TG_TABLE_NAME = 'technology_solutions' AND NOT EXISTS (
+                SELECT 1 FROM intelligence_taxonomy_terms term
+                WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+            ) THEN RAISE EXCEPTION 'solution type term must use solution_type namespace'; END IF;
+            IF TG_TABLE_NAME = 'technology_problem_relationships' AND NEW.relationship_type='addresses'
+               AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+            THEN RAISE EXCEPTION 'addresses relationship requires direct or human-verified evidence'; END IF;
+            RETURN NEW;
+        END;
+        $function$ LANGUAGE plpgsql;
+        """)
+        conn.executescript("""
+        DROP TRIGGER IF EXISTS foundation_taxonomy_parent_namespace ON intelligence_taxonomy_terms;
+        CREATE TRIGGER foundation_taxonomy_parent_namespace BEFORE INSERT OR UPDATE OF parent_term_id,taxonomy_namespace ON intelligence_taxonomy_terms FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        DROP TRIGGER IF EXISTS foundation_problem_taxonomy_namespace ON pharmaceutical_problems;
+        CREATE TRIGGER foundation_problem_taxonomy_namespace BEFORE INSERT OR UPDATE OF taxonomy_term_id ON pharmaceutical_problems FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        DROP TRIGGER IF EXISTS foundation_solution_taxonomy_namespace ON technology_solutions;
+        CREATE TRIGGER foundation_solution_taxonomy_namespace BEFORE INSERT OR UPDATE OF taxonomy_term_id,solution_type_term_id ON technology_solutions FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        DROP TRIGGER IF EXISTS foundation_relationship_validation ON technology_problem_relationships;
+        CREATE TRIGGER foundation_relationship_validation BEFORE INSERT OR UPDATE OF relationship_type,inference_status ON technology_problem_relationships FOR EACH ROW EXECUTE FUNCTION foundation_pr_a_validate();
+        """)
+
     # Representative, cross-domain seeds only. These are not an exhaustive
     # pharmaceutical taxonomy and do not create any product/provider records.
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
