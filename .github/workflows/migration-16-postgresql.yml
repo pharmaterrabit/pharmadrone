@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          output="$(pytest -q             tests/test_foundation_pr_a_postgres.py             tests/test_foundation_pr_a.py             tests/test_foundation_pr_a_rollback.py             tests/test_phase9_patent_foundation.py 2>&1)" || {
+          output="$(python -m pytest             tests/test_foundation_pr_a_postgres.py             tests/test_foundation_pr_a.py             tests/test_foundation_pr_a_rollback.py             tests/test_phase9_patent_foundation.py 2>&1)" || {
               printf '%s\n' "$output"
               exit 1
             }
