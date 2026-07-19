@@ -1742,6 +1742,7 @@ MIGRATIONS = (
     Migration(13, "phase_12_customer_product_schema", _customer_product_schema),
     Migration(14, "phase_9_global_patent_intelligence_schema", _global_patent_schema),
     Migration(15, "phase_9_canonical_patent_foundation_schema", _canonical_patent_foundation_schema),
+    Migration(16, "foundation_pr_a_domain_neutral_intelligence_schema", _foundation_pr_a_schema),
 )
 
 
