@@ -1,0 +1,58 @@
+name: Migration 16 PostgreSQL validation (exact path)
+
+on:
+  pull_request:
+    paths:
+      - "pharmadrone/storage/migrations/__init__.py"
+      - "tests/test_foundation_pr_a.py"
+      - "tests/test_foundation_pr_a_postgres.py"
+      - "tests/test_foundation_pr_a_rollback.py"
+      - "tests/test_phase9_patent_foundation.py"
+      - ".github/workflows/migration16-postgresql.yml"
+
+jobs:
+  migration16-postgresql-exact:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pharmadrone_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pharmadrone_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pharmadrone_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Run focused Migration 16 PostgreSQL and migration tests
+        shell: bash
+        run: |
+          set -o pipefail
+          output="$(python -m pytest -q             tests/test_foundation_pr_a_postgres.py             tests/test_foundation_pr_a.py             tests/test_foundation_pr_a_rollback.py             tests/test_phase9_patent_foundation.py 2>&1)" || {
+              printf '%s\n' "$output"
+              exit 1
+            }
+          printf '%s\n' "$output"
+          if printf '%s\n' "$output" | grep -Eq '[0-9]+ skipped'; then
+            echo "Focused Migration 16 PostgreSQL validation must not skip."
+            exit 1
+          fi
