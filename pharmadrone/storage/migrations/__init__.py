@@ -1645,25 +1645,30 @@ def _foundation_pr_a_schema(conn) -> None:
         conn.execute("""
         CREATE OR REPLACE FUNCTION foundation_pr_a_validate() RETURNS trigger AS $function$
         BEGIN
-            IF TG_TABLE_NAME = 'intelligence_taxonomy_terms' AND NEW.parent_term_id IS NOT NULL AND EXISTS (
-                SELECT 1 FROM intelligence_taxonomy_terms parent
-                WHERE parent.term_id=NEW.parent_term_id AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
-            ) THEN RAISE EXCEPTION 'taxonomy parent must use the same namespace'; END IF;
-            IF TG_TABLE_NAME = 'pharmaceutical_problems' AND NOT EXISTS (
-                SELECT 1 FROM intelligence_taxonomy_terms term
-                WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
-            ) THEN RAISE EXCEPTION 'problem taxonomy term must use problem_domain namespace'; END IF;
-            IF TG_TABLE_NAME = 'technology_solutions' AND NOT EXISTS (
-                SELECT 1 FROM intelligence_taxonomy_terms term
-                WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
-            ) THEN RAISE EXCEPTION 'solution taxonomy term must use solution_domain namespace'; END IF;
-            IF TG_TABLE_NAME = 'technology_solutions' AND NOT EXISTS (
-                SELECT 1 FROM intelligence_taxonomy_terms term
-                WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
-            ) THEN RAISE EXCEPTION 'solution type term must use solution_type namespace'; END IF;
-            IF TG_TABLE_NAME = 'technology_problem_relationships' AND NEW.relationship_type='addresses'
-               AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
-            THEN RAISE EXCEPTION 'addresses relationship requires direct or human-verified evidence'; END IF;
+            IF TG_TABLE_NAME = 'intelligence_taxonomy_terms' THEN
+                IF NEW.parent_term_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM intelligence_taxonomy_terms parent
+                    WHERE parent.term_id=NEW.parent_term_id AND parent.taxonomy_namespace<>NEW.taxonomy_namespace
+                ) THEN RAISE EXCEPTION 'taxonomy parent must use the same namespace'; END IF;
+            ELSIF TG_TABLE_NAME = 'pharmaceutical_problems' THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM intelligence_taxonomy_terms term
+                    WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='problem_domain'
+                ) THEN RAISE EXCEPTION 'problem taxonomy term must use problem_domain namespace'; END IF;
+            ELSIF TG_TABLE_NAME = 'technology_solutions' THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM intelligence_taxonomy_terms term
+                    WHERE term.term_id=NEW.taxonomy_term_id AND term.taxonomy_namespace='solution_domain'
+                ) THEN RAISE EXCEPTION 'solution taxonomy term must use solution_domain namespace'; END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM intelligence_taxonomy_terms term
+                    WHERE term.term_id=NEW.solution_type_term_id AND term.taxonomy_namespace='solution_type'
+                ) THEN RAISE EXCEPTION 'solution type term must use solution_type namespace'; END IF;
+            ELSIF TG_TABLE_NAME = 'technology_problem_relationships' THEN
+                IF NEW.relationship_type='addresses'
+                   AND NEW.inference_status NOT IN ('reported','source-derived','human-verified')
+                THEN RAISE EXCEPTION 'addresses relationship requires direct or human-verified evidence'; END IF;
+            END IF;
             RETURN NEW;
         END;
         $function$ LANGUAGE plpgsql;
