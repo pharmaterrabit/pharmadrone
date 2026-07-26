@@ -9,12 +9,83 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
+from pharmadrone.intelligence import CanonicalIntelligenceService
 from pharmadrone.pipeline import account_intelligence, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
 def connection():
     return db.connect()
+
+
+def _canonical_intelligence_call(method: str, *args, **kwargs):
+    """Run one bounded canonical read and close its database connection."""
+    conn = connection()
+    try:
+        return getattr(CanonicalIntelligenceService(conn), method)(*args, **kwargs)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def canonical_intelligence_search(
+    query: str,
+    *,
+    page: int,
+    page_size: int,
+    include_requires_review: bool,
+):
+    return _canonical_intelligence_call(
+        "search",
+        query,
+        page=page,
+        page_size=page_size,
+        include_requires_review=include_requires_review,
+    )
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def canonical_intelligence_profile(
+    entity_type: str,
+    canonical_id: str,
+    *,
+    include_requires_review: bool,
+):
+    methods = {
+        "pharmaceutical_problem": "problem_profile",
+        "technology_solution": "solution_profile",
+        "product": "product_profile",
+        "api": "api_profile",
+        "organisation": "organisation_profile",
+        "opportunity": "opportunity_profile",
+    }
+    method = methods.get(entity_type)
+    if method is None:
+        return None
+    return _canonical_intelligence_call(
+        method,
+        canonical_id,
+        include_requires_review=include_requires_review,
+        limit=50,
+    )
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def canonical_intelligence_graph(
+    entity_type: str,
+    canonical_id: str,
+    *,
+    max_depth: int,
+    include_requires_review: bool,
+):
+    return _canonical_intelligence_call(
+        "traverse",
+        entity_type,
+        canonical_id,
+        max_depth=max(1, min(int(max_depth), 5)),
+        max_nodes=100,
+        include_requires_review=include_requires_review,
+    )
 
 
 @st.cache_data(ttl=15, show_spinner=False)
