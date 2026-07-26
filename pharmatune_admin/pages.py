@@ -4,7 +4,12 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from pharmadrone import admin
+from pharmadrone import admin, db
+from pharmadrone.canonicalisation import (
+    CanonicalisationService,
+    DEFAULT_BATCH_SIZE,
+    MAX_BATCH_SIZE,
+)
 from pharmatune_ui import theme
 
 
@@ -145,6 +150,73 @@ def feature_flags(principal, state):
         keys=[r["scope_key"] for r in state["flags"]]; key=st.selectbox("Flag operation",keys); row=next(r for r in state["flags"] if r["scope_key"]==key)
         if st.button("Disable flag" if int(row.get("enabled") or 0) else "Enable flag"):
             admin.set_feature_flag(principal,key,not bool(int(row.get("enabled") or 0))); _refresh_after_write()
+
+
+def canonicalisation(principal, state):
+    theme.page_header(
+        "Canonicalisation",
+        "Generate bounded exact-match candidates for explicit review in Human Validation.",
+        "Platform Admin",
+    )
+    st.warning(
+        "Candidate generation never accepts links. Every proposed link requires an "
+        "explicit reviewer decision in the Human Validation workspace."
+    )
+    source_types = list(CanonicalisationService.source_types())
+    match_rules = list(CanonicalisationService.match_rules())
+    with st.form("canonicalisation_generate"):
+        source_table = st.selectbox("Source type", source_types)
+        maximum = st.number_input(
+            "Maximum source records",
+            min_value=1,
+            max_value=MAX_BATCH_SIZE,
+            value=DEFAULT_BATCH_SIZE,
+            step=1,
+        )
+        permitted_rules = st.multiselect(
+            "Permitted exact-match rules",
+            match_rules,
+            default=match_rules,
+        )
+        submitted = st.form_submit_button(
+            "Generate bounded candidate batch", type="primary"
+        )
+    if submitted:
+        conn = db.connect()
+        try:
+            result = CanonicalisationService(conn).generate_candidates(
+                principal,
+                source_table=source_table,
+                max_records=int(maximum),
+                permitted_rules=permitted_rules,
+            )
+            st.session_state["canonicalisation_admin_result"] = result
+            st.success(
+                f"Run {result['run_id']} completed: {result['records_scanned']} "
+                f"records scanned and {result['candidates_created']} candidates created."
+            )
+        except Exception as exc:
+            st.error(str(exc))
+        finally:
+            conn.close()
+    result = st.session_state.get("canonicalisation_admin_result")
+    if result:
+        _table(
+            [result],
+            "No canonicalisation run has been requested in this session.",
+            [
+                "run_id",
+                "source_table",
+                "records_scanned",
+                "candidates_created",
+                "max_records",
+                "status",
+            ],
+        )
+    st.caption(
+        "Only exact stored canonical names, governed aliases and identifiers, and "
+        "stable/legacy opportunity adapters are available. No network or fuzzy matching is used."
+    )
 
 
 def system_configuration(principal, state):

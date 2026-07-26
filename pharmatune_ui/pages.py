@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 import pandas as pd
 import streamlit as st
 
+from pharmadrone.canonicalisation import CANDIDATE_STATUSES, ENTITY_TYPES, MATCH_RULES, SOURCE_TYPES
 from pharmadrone.pipeline import customer_product, human_audit, seller_case_study
 from . import data, theme
 
@@ -1044,8 +1045,208 @@ def deal_detail(navigate: Callable[[str], None]) -> None:
         st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
 
 
-def validation() -> None:
+def _set_canonicalisation_page(page: int) -> None:
+    st.session_state["canonicalisation_review_page"] = max(1, int(page))
+
+
+def _canonicalisation_validation(principal: dict[str, Any]) -> None:
+    st.markdown("### Canonical entity-link review")
+    st.caption(
+        "Exact-match candidates remain proposals until one reviewer explicitly accepts "
+        "them. Ambiguous candidates are never selected automatically."
+    )
+    if principal.get("role") != "analyst_reviewer":
+        st.info("Canonical link decisions require an Analyst / Reviewer account.")
+        return
+    f1, f2, f3, f4, f5 = st.columns([1.2, 1.2, 1.4, 1.2, 0.7])
+    source = f1.selectbox(
+        "Canonical source",
+        ["All", *SOURCE_TYPES],
+        key="canonicalisation_filter_source",
+    )
+    entity_type = f2.selectbox(
+        "Entity type",
+        ["All", *ENTITY_TYPES],
+        key="canonicalisation_filter_entity",
+    )
+    rule = f3.selectbox(
+        "Match rule",
+        ["All", *MATCH_RULES],
+        key="canonicalisation_filter_rule",
+    )
+    status = f4.selectbox(
+        "Review status",
+        ["All", *CANDIDATE_STATUSES],
+        index=1,
+        key="canonicalisation_filter_status",
+    )
+    page_size = f5.selectbox(
+        "Rows",
+        [10, 25, 50],
+        index=0,
+        key="canonicalisation_review_size",
+    )
+    page = int(st.session_state.get("canonicalisation_review_page", 1))
+    result = data.canonicalisation_candidates(
+        principal,
+        page=page,
+        page_size=page_size,
+        source_table="" if source == "All" else source,
+        entity_type="" if entity_type == "All" else entity_type,
+        match_rule="" if rule == "All" else rule,
+        status="" if status == "All" else status,
+    )
+    if not result.candidates:
+        st.info("No governed canonicalisation candidates match these filters.")
+        return
+    labels = {
+        (
+            f"{row['source_table']} · {row['source_record_id']} · "
+            f"{row['proposed_entity_type']} · {row['proposed_canonical_id']}"
+        ): row
+        for row in result.candidates
+    }
+    selected_label = st.selectbox(
+        "Canonicalisation candidate",
+        list(labels),
+        key="canonicalisation_candidate_select",
+    )
+    selected = labels[selected_label]
+    st.session_state["canonicalisation_candidate_id"] = selected[
+        "canonicalisation_candidate_id"
+    ]
+    left, middle, right = st.columns([1, 3, 1])
+    left.button(
+        "← Previous candidates",
+        disabled=result.page <= 1,
+        on_click=_set_canonicalisation_page,
+        args=(result.page - 1,),
+        use_container_width=True,
+    )
+    middle.markdown(
+        f"<div style='text-align:center;padding:8px'>Candidate page {result.page}</div>",
+        unsafe_allow_html=True,
+    )
+    right.button(
+        "Next candidates →",
+        disabled=not result.has_more,
+        on_click=_set_canonicalisation_page,
+        args=(result.page + 1,),
+        use_container_width=True,
+    )
+    detail = data.canonicalisation_candidate_detail(
+        principal, selected["canonicalisation_candidate_id"]
+    )
+    if not detail:
+        st.warning("This candidate is no longer available.")
+        return
+    if detail.get("ambiguous"):
+        st.warning(
+            "Ambiguous exact match: more than one stored canonical record matched this "
+            "source value. Review the canonical ID and evidence before deciding."
+        )
+    a, b, c = st.columns(3)
+    with a:
+        theme.card(
+            "Source record",
+            _safe(detail.get("source_display_value")),
+            [(detail.get("source_table", "Source"), "green")],
+            f"{detail.get('source_field')} · {detail.get('source_record_id')}",
+        )
+    canonical = detail.get("canonical_profile") or {}
+    with b:
+        theme.card(
+            "Proposed canonical profile",
+            _safe(canonical.get("canonical_name"), "Canonical record unavailable"),
+            [(detail.get("proposed_entity_type", "Entity"), "blue")],
+            _safe(detail.get("proposed_canonical_id")),
+        )
+    with c:
+        theme.card(
+            "Governance",
+            _safe(detail.get("evidence_basis")),
+            [(detail.get("review_status", "pending-review"), "violet")],
+            f"{detail.get('match_rule')} · {detail.get('verification_status')}",
+        )
+    facts = pd.DataFrame(
+        [
+            {
+                "Evidence status": detail.get("evidence_status"),
+                "Verification status": detail.get("verification_status"),
+                "Identifier namespace": detail.get("identifier_namespace"),
+                "Identifier value": detail.get("identifier_value"),
+                "Evidence URL": detail.get("evidence_url"),
+            }
+        ]
+    )
+    st.dataframe(
+        facts,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Evidence URL": st.column_config.LinkColumn(
+                "Evidence URL", display_text="Open evidence ↗"
+            )
+        },
+    )
+    with st.expander("Source-record details"):
+        st.json(detail.get("source_record") or {})
+    final = detail.get("review_status") in {"accepted", "rejected", "superseded"}
+    notes = st.text_area(
+        "Reviewer notes",
+        key=f"canonicalisation_notes_{detail['canonicalisation_candidate_id']}",
+        disabled=final,
+    )
+    d1, d2, d3 = st.columns(3)
+    accept = d1.button(
+        "Accept canonical link",
+        type="primary",
+        disabled=final,
+        use_container_width=True,
+    )
+    reject = d2.button(
+        "Reject candidate",
+        disabled=final,
+        use_container_width=True,
+    )
+    more = d3.button(
+        "Requires more evidence",
+        disabled=final,
+        use_container_width=True,
+    )
+    decision = (
+        "accepted" if accept else "rejected" if reject else
+        "requires-more-evidence" if more else ""
+    )
+    if decision:
+        try:
+            saved = data.review_canonicalisation_candidate(
+                principal,
+                detail["canonicalisation_candidate_id"],
+                decision,
+                notes,
+            )
+            st.success(
+                f"Decision {saved['decision_status']} recorded for "
+                f"{saved['candidate_id']}."
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    with st.expander("Canonicalisation decision history"):
+        history = detail.get("decision_history") or []
+        if history:
+            st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No review decisions have been recorded.")
+
+
+def validation(principal: dict[str, Any] | None = None) -> None:
     theme.page_header("Human Validation", "Review immutable evidence, deterministic interpretation and append-only human decisions.", "Workflow")
+    principal = principal or st.session_state.get("customer_principal") or {}
+    _canonicalisation_validation(dict(principal))
+    st.markdown("---")
+    st.markdown("### Existing evidence audit queue")
     rows, metrics = data.audit_queue()
     m1,m2,m3,m4 = st.columns(4)
     m1.metric("Queue",metrics.get("total_queue_records",0)); m2.metric("Completed",metrics.get("audits_completed",0)); m3.metric("External approved",metrics.get("approved_for_external_use",0)); m4.metric("Warnings unresolved",metrics.get("unresolved_company_warnings",0))

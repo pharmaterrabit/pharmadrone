@@ -823,8 +823,7 @@ def test_read_layer_is_internal_only_and_preserves_existing_services(tmp_path):
     assert existing["commercial_event_id"] == "legacy-event-e"
     assert conn.execute(
         "SELECT MAX(version) AS version FROM schema_migrations"
-    ).fetchone()["version"] == 19
+    ).fetchone()["version"] == 20
     source = Path("pharmadrone/intelligence/repository.py").read_text()
     assert "SELECT *" not in source
     assert "tavily" not in source.casefold()
-

@@ -9,6 +9,7 @@ import streamlit as st
 
 from pharmadrone import db
 from pharmadrone import production_readiness
+from pharmadrone.canonicalisation import CanonicalisationService
 from pharmadrone.intelligence import CanonicalIntelligenceService
 from pharmadrone.pipeline import account_intelligence, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
@@ -512,6 +513,68 @@ def audit_histories(key: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]
     conn = connection()
     try: return human_audit.audit_history(conn, key), human_audit.correction_history(conn, key)
     finally: conn.close()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def canonicalisation_candidates(
+    principal: dict[str, Any],
+    *,
+    page: int,
+    page_size: int,
+    source_table: str = "",
+    entity_type: str = "",
+    match_rule: str = "",
+    status: str = "pending-review",
+):
+    conn = connection()
+    try:
+        return CanonicalisationService(conn).list_candidates(
+            principal,
+            page=page,
+            page_size=page_size,
+            source_table=source_table,
+            entity_type=entity_type,
+            match_rule=match_rule,
+            status=status,
+        )
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def canonicalisation_candidate_detail(
+    principal: dict[str, Any], candidate_id: str
+) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return CanonicalisationService(conn).candidate_detail(principal, candidate_id)
+    finally:
+        conn.close()
+
+
+def review_canonicalisation_candidate(
+    principal: dict[str, Any],
+    candidate_id: str,
+    decision: str,
+    reviewer_notes: str,
+) -> dict[str, Any]:
+    conn = connection()
+    try:
+        service = CanonicalisationService(conn)
+        actions = {
+            "accepted": service.accept_candidate,
+            "rejected": service.reject_candidate,
+            "requires-more-evidence": service.request_more_evidence,
+        }
+        action = actions.get(decision)
+        if action is None:
+            raise ValueError("Unsupported canonicalisation decision.")
+        result = action(principal, candidate_id, reviewer_notes)
+        canonicalisation_candidates.clear()
+        canonicalisation_candidate_detail.clear()
+        return result
+    finally:
+        conn.close()
 
 
 def build_seller_case_study(limit: int, principal: dict[str, Any] | None = None) -> dict[str, Any]:
