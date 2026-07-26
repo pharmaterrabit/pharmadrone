@@ -5,11 +5,11 @@ import streamlit as st
 
 from pharmadrone import auth, db
 from pharmadrone.storage import DatabaseConfigurationError, DatabaseUnavailableError
-from . import pages, theme
+from . import canonical_intelligence, pages, theme
 
 NAV = {
     "DISCOVER":["Overview","Opportunity Explorer","Companies","Products","Technologies"],
-    "INTELLIGENCE":["Research & Innovation","Regulatory Signals","Deals & Funding","Patents"],
+    "INTELLIGENCE":["Canonical Intelligence","Research & Innovation","Regulatory Signals","Deals & Funding","Patents"],
     "WORKFLOW":["My Workspace","Saved Lists","Alerts","Human Validation","Case Studies","Pharmaceutical Memory"],
     "PLATFORM":["Data Sources","System Health","Settings"],
 }
@@ -93,6 +93,7 @@ def run(principal: dict | None = None) -> None:
         "Company Detail":lambda:pages.company_detail(_navigate),
         "Products":lambda:pages.entity_page("Products","Products represented in the current live opportunity index.","product"),
         "Technologies":pages.technology_profile,
+        "Canonical Intelligence":canonical_intelligence.render_page,
         "My Workspace":lambda:pages.customer_workspace(principal,_navigate),
         "Saved Lists":lambda:pages.saved_lists(principal,_navigate),
         "Alerts":lambda:pages.customer_alerts(principal,_navigate),
