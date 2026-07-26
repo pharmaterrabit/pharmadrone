@@ -11,7 +11,7 @@ PLATFORM_NAV = (
     "Platform Overview", "Organisations", "Users", "Workspaces", "Roles & Permissions",
     "Source Connectors", "Scheduled Jobs", "Data Ingestion", "Failed Jobs & Retries",
     "API Usage & Costs", "Database & Backups", "Audit & Security Logs", "Feature Flags",
-    "System Configuration",
+    "Canonicalisation", "System Configuration",
 )
 
 
@@ -68,6 +68,7 @@ def run(principal: dict) -> None:
         "Database & Backups": pages.database_backups,
         "Audit & Security Logs": pages.audit_logs,
         "Feature Flags": pages.feature_flags,
+        "Canonicalisation": pages.canonicalisation,
         "System Configuration": pages.system_configuration,
     }
     routes[selected](principal, state)
