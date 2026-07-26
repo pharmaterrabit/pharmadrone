@@ -60,13 +60,13 @@ def test_foundation_pr_b_fresh_migration_is_additive_and_rerunnable(tmp_path):
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
     assert PR_B_TABLES.issubset(tables)
-    assert [migration.version for migration in MIGRATIONS] == list(range(1, 19))
+    assert [migration.version for migration in MIGRATIONS] == list(range(1, 20))
     assert conn.execute(
         "SELECT COUNT(*) AS n FROM schema_migrations WHERE version=17"
     ).fetchone()["n"] == 1
     assert conn.execute(
         "SELECT MAX(version) AS version FROM schema_migrations"
-    ).fetchone()["version"] == 18
+    ).fetchone()["version"] == 19
     assert all(
         conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0
         for table in PR_B_TABLES
@@ -83,7 +83,7 @@ def test_foundation_pr_b_fresh_migration_is_additive_and_rerunnable(tmp_path):
 def test_foundation_pr_b_upgrades_schema_16_and_preserves_existing_data(tmp_path, monkeypatch):
     conn = open_connection(configured_database(tmp_path / "foundation-pr-b-upgrade.sqlite"))
     all_migrations = migrations.MIGRATIONS
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-2])
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-3])
     assert conn.ensure_migrations()["schema_version"] == 16
 
     with conn.transaction():
@@ -132,7 +132,7 @@ def test_foundation_pr_b_upgrades_schema_16_and_preserves_existing_data(tmp_path
             ),
         )
 
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-1])
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-2])
     result = conn.ensure_migrations()
     assert result["schema_version"] == 17
     assert result["newly_applied"] == [17]
