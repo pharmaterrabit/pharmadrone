@@ -1964,6 +1964,475 @@ def _foundation_pr_b_identity_schema(conn) -> None:
                 conn.execute(trigger_sql)
 
 
+def _foundation_pr_c_organisation_provider_schema(conn) -> None:
+    """Additive canonical organisation, provider and capability identity foundation."""
+    ts = _timestamp_default(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS organisation_profiles (
+        organisation_profile_id TEXT PRIMARY KEY,
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL UNIQUE,
+        organisation_type TEXT NOT NULL CHECK (
+            organisation_type IN (
+                'pharmaceutical-company','biotechnology-company','cdmo','cro',
+                'technology-provider','university','research-institute',
+                'consultancy','service-provider','investor','corporate-partner',
+                'other','requires-review'
+            )
+        ),
+        country_code TEXT,
+        official_website_url TEXT,
+        identity_status TEXT NOT NULL CHECK (
+            identity_status IN ('source-derived','human-verified','requires-review')
+        ),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS organisation_aliases (
+        organisation_alias_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT NOT NULL,
+        alias_name TEXT NOT NULL,
+        normalized_alias TEXT NOT NULL,
+        alias_type TEXT NOT NULL CHECK (
+            alias_type IN (
+                'legal-name','trading-name','former-name','abbreviation',
+                'transliteration','alternative','requires-review'
+            )
+        ),
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('source-derived','human-verified','requires-review')
+        ),
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(organisation_profile_id, normalized_alias, source_type, source_record_id),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS organisation_identifiers (
+        organisation_identifier_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT NOT NULL,
+        identifier_namespace TEXT NOT NULL CHECK (LENGTH(TRIM(identifier_namespace)) > 0),
+        identifier_value TEXT NOT NULL,
+        normalized_identifier TEXT NOT NULL,
+        jurisdiction TEXT,
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('source-derived','human-verified','requires-review')
+        ),
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(identifier_namespace, normalized_identifier),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS capability_profiles (
+        capability_profile_id TEXT PRIMARY KEY,
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL UNIQUE,
+        capability_type TEXT NOT NULL CHECK (LENGTH(TRIM(capability_type)) > 0),
+        description TEXT NOT NULL DEFAULT '',
+        identity_status TEXT NOT NULL CHECK (
+            identity_status IN ('source-derived','human-verified','requires-review')
+        ),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS organisation_capability_relationships (
+        organisation_capability_relationship_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT NOT NULL,
+        capability_profile_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN ('provides','offers','develops','operates','requires-review')
+        ),
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        ),
+        UNIQUE(
+            organisation_profile_id, capability_profile_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id),
+        FOREIGN KEY (capability_profile_id) REFERENCES capability_profiles(capability_profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS organisation_solution_relationships (
+        organisation_solution_relationship_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT NOT NULL,
+        technology_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'develops','provides','licenses','operates','collaborates-on',
+                'invests-in','requires-review'
+            )
+        ),
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        ),
+        UNIQUE(
+            organisation_profile_id, technology_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id),
+        FOREIGN KEY (technology_id) REFERENCES technology_solutions(technology_id)
+    );
+    CREATE TABLE IF NOT EXISTS organisation_product_relationships (
+        organisation_product_relationship_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'developer','manufacturer','marketer','sponsor','licensor',
+                'licensee','partner','investor','service-provider','requires-review'
+            )
+        ),
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        ),
+        UNIQUE(
+            organisation_profile_id, product_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id),
+        FOREIGN KEY (product_id) REFERENCES product_profiles(product_id)
+    );
+    CREATE TABLE IF NOT EXISTS organisation_api_relationships (
+        organisation_api_relationship_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT NOT NULL,
+        api_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'developer','manufacturer','supplier','sponsor','licensor',
+                'licensee','partner','investor','service-provider','requires-review'
+            )
+        ),
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        ),
+        UNIQUE(
+            organisation_profile_id, api_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id),
+        FOREIGN KEY (api_id) REFERENCES api_profiles(api_id)
+    );
+    CREATE TABLE IF NOT EXISTS organisation_evidence_links (
+        organisation_evidence_link_id TEXT PRIMARY KEY,
+        organisation_profile_id TEXT,
+        capability_profile_id TEXT,
+        organisation_capability_relationship_id TEXT,
+        organisation_solution_relationship_id TEXT,
+        organisation_product_relationship_id TEXT,
+        organisation_api_relationship_id TEXT,
+        evidence_id BIGINT,
+        source_table TEXT NOT NULL CHECK (LENGTH(TRIM(source_table)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        link_type TEXT NOT NULL CHECK (
+            link_type IN ('identifies','supports-relationship','supports-capability','requires-review')
+        ),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (CASE WHEN organisation_profile_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN capability_profile_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN organisation_capability_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN organisation_solution_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN organisation_product_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN organisation_api_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            = 1
+        ),
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        ),
+        FOREIGN KEY (organisation_profile_id) REFERENCES organisation_profiles(organisation_profile_id),
+        FOREIGN KEY (capability_profile_id) REFERENCES capability_profiles(capability_profile_id),
+        FOREIGN KEY (organisation_capability_relationship_id)
+            REFERENCES organisation_capability_relationships(organisation_capability_relationship_id),
+        FOREIGN KEY (organisation_solution_relationship_id)
+            REFERENCES organisation_solution_relationships(organisation_solution_relationship_id),
+        FOREIGN KEY (organisation_product_relationship_id)
+            REFERENCES organisation_product_relationships(organisation_product_relationship_id),
+        FOREIGN KEY (organisation_api_relationship_id)
+            REFERENCES organisation_api_relationships(organisation_api_relationship_id),
+        FOREIGN KEY (evidence_id) REFERENCES evidence(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_organisation_profile_name
+        ON organisation_profiles(normalized_name, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_alias_name
+        ON organisation_aliases(normalized_alias, organisation_profile_id);
+    CREATE INDEX IF NOT EXISTS idx_organisation_identifier_profile
+        ON organisation_identifiers(organisation_profile_id, identifier_namespace);
+    CREATE INDEX IF NOT EXISTS idx_capability_profile_name
+        ON capability_profiles(normalized_name, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_capability_org
+        ON organisation_capability_relationships(organisation_profile_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_capability_capability
+        ON organisation_capability_relationships(capability_profile_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_solution_org
+        ON organisation_solution_relationships(organisation_profile_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_solution_solution
+        ON organisation_solution_relationships(technology_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_product_org
+        ON organisation_product_relationships(organisation_profile_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_product_product
+        ON organisation_product_relationships(product_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_api_org
+        ON organisation_api_relationships(organisation_profile_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_api_api
+        ON organisation_api_relationships(api_id, active);
+    CREATE INDEX IF NOT EXISTS idx_organisation_evidence_record
+        ON organisation_evidence_links(evidence_id, source_table, source_record_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_organisation_evidence_source
+        ON organisation_evidence_links(
+            organisation_profile_id, source_table, source_record_id, link_type
+        ) WHERE organisation_profile_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_evidence_source
+        ON organisation_evidence_links(
+            capability_profile_id, source_table, source_record_id, link_type
+        ) WHERE capability_profile_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_organisation_capability_evidence_source
+        ON organisation_evidence_links(
+            organisation_capability_relationship_id, source_table, source_record_id, link_type
+        ) WHERE organisation_capability_relationship_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_organisation_solution_evidence_source
+        ON organisation_evidence_links(
+            organisation_solution_relationship_id, source_table, source_record_id, link_type
+        ) WHERE organisation_solution_relationship_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_organisation_product_evidence_source
+        ON organisation_evidence_links(
+            organisation_product_relationship_id, source_table, source_record_id, link_type
+        ) WHERE organisation_product_relationship_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_organisation_api_evidence_source
+        ON organisation_evidence_links(
+            organisation_api_relationship_id, source_table, source_record_id, link_type
+        ) WHERE organisation_api_relationship_id IS NOT NULL;
+    """)
+
+    if conn.backend == "sqlite":
+        trigger_specs = (
+            (
+                "pr_c_alias_fk",
+                "organisation_aliases",
+                "organisation_profile_id",
+                "organisation_profiles",
+                "organisation_profile_id",
+                "organisation alias requires an existing canonical organisation",
+            ),
+            (
+                "pr_c_identifier_fk",
+                "organisation_identifiers",
+                "organisation_profile_id",
+                "organisation_profiles",
+                "organisation_profile_id",
+                "organisation identifier requires an existing canonical organisation",
+            ),
+            (
+                "pr_c_capability_org_fk",
+                "organisation_capability_relationships",
+                "organisation_profile_id",
+                "organisation_profiles",
+                "organisation_profile_id",
+                "capability relationship requires an existing canonical organisation",
+            ),
+            (
+                "pr_c_capability_profile_fk",
+                "organisation_capability_relationships",
+                "capability_profile_id",
+                "capability_profiles",
+                "capability_profile_id",
+                "capability relationship requires an existing capability",
+            ),
+            (
+                "pr_c_solution_org_fk",
+                "organisation_solution_relationships",
+                "organisation_profile_id",
+                "organisation_profiles",
+                "organisation_profile_id",
+                "solution relationship requires an existing canonical organisation",
+            ),
+            (
+                "pr_c_solution_fk",
+                "organisation_solution_relationships",
+                "technology_id",
+                "technology_solutions",
+                "technology_id",
+                "solution relationship requires an existing technology solution",
+            ),
+            (
+                "pr_c_product_org_fk",
+                "organisation_product_relationships",
+                "organisation_profile_id",
+                "organisation_profiles",
+                "organisation_profile_id",
+                "product relationship requires an existing canonical organisation",
+            ),
+            (
+                "pr_c_product_fk",
+                "organisation_product_relationships",
+                "product_id",
+                "product_profiles",
+                "product_id",
+                "product relationship requires an existing canonical product",
+            ),
+            (
+                "pr_c_api_org_fk",
+                "organisation_api_relationships",
+                "organisation_profile_id",
+                "organisation_profiles",
+                "organisation_profile_id",
+                "API relationship requires an existing canonical organisation",
+            ),
+            (
+                "pr_c_api_fk",
+                "organisation_api_relationships",
+                "api_id",
+                "api_profiles",
+                "api_id",
+                "API relationship requires an existing canonical API",
+            ),
+        )
+        for trigger_name, child_table, child_column, parent_table, parent_column, message in trigger_specs:
+            for operation in ("INSERT", "UPDATE"):
+                update_clause = f" OF {child_column}" if operation == "UPDATE" else ""
+                conn.execute(f"""
+                    CREATE TRIGGER IF NOT EXISTS {trigger_name}_{operation.lower()}
+                    BEFORE {operation}{update_clause} ON {child_table}
+                    WHEN NEW.{child_column} IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM {parent_table}
+                        WHERE {parent_column}=NEW.{child_column}
+                    )
+                    BEGIN SELECT RAISE(ABORT, '{message}'); END
+                """)
+
+        evidence_targets = (
+            ("organisation_profile_id", "organisation_profiles", "organisation_profile_id"),
+            ("capability_profile_id", "capability_profiles", "capability_profile_id"),
+            (
+                "organisation_capability_relationship_id",
+                "organisation_capability_relationships",
+                "organisation_capability_relationship_id",
+            ),
+            (
+                "organisation_solution_relationship_id",
+                "organisation_solution_relationships",
+                "organisation_solution_relationship_id",
+            ),
+            (
+                "organisation_product_relationship_id",
+                "organisation_product_relationships",
+                "organisation_product_relationship_id",
+            ),
+            (
+                "organisation_api_relationship_id",
+                "organisation_api_relationships",
+                "organisation_api_relationship_id",
+            ),
+        )
+        missing_parent_checks = " OR ".join(
+            f"(NEW.{column} IS NOT NULL AND NOT EXISTS "
+            f"(SELECT 1 FROM {table} WHERE {primary_key}=NEW.{column}))"
+            for column, table, primary_key in evidence_targets
+        )
+        for operation in ("INSERT", "UPDATE"):
+            update_clause = (
+                " OF organisation_profile_id,capability_profile_id,"
+                "organisation_capability_relationship_id,organisation_solution_relationship_id,"
+                "organisation_product_relationship_id,organisation_api_relationship_id,evidence_id"
+                if operation == "UPDATE"
+                else ""
+            )
+            conn.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS pr_c_evidence_fk_{operation.lower()}
+                BEFORE {operation}{update_clause} ON organisation_evidence_links
+                WHEN {missing_parent_checks}
+                  OR (NEW.evidence_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM evidence WHERE id=NEW.evidence_id
+                     ))
+                BEGIN SELECT RAISE(
+                    ABORT,
+                    'organisation evidence link requires existing evidence and parent records'
+                ); END
+            """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -1982,6 +2451,7 @@ MIGRATIONS = (
     Migration(15, "phase_9_canonical_patent_foundation_schema", _canonical_patent_foundation_schema),
     Migration(16, "foundation_pr_a_domain_neutral_intelligence_schema", _foundation_pr_a_schema),
     Migration(17, "foundation_pr_b_product_api_identity_schema", _foundation_pr_b_identity_schema),
+    Migration(18, "foundation_pr_c_organisation_provider_identity_schema", _foundation_pr_c_organisation_provider_schema),
 )
 
 
