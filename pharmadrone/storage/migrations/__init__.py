@@ -2433,6 +2433,429 @@ def _foundation_pr_c_organisation_provider_schema(conn) -> None:
             """)
 
 
+def _foundation_pr_d_opportunity_commercial_schema(conn) -> None:
+    """Additive canonical opportunity and governed commercial-event identity foundation."""
+    ts = _timestamp_default(conn)
+    governed = """
+        source_type TEXT NOT NULL CHECK (LENGTH(TRIM(source_type)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        next_review_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{}',
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        )
+    """
+    lifecycle = (
+        "'identified','under-review','validated','active','paused','completed',"
+        "'closed','rejected','archived','requires-review'"
+    )
+    participant_roles = (
+        "'problem-owner','technology-provider','developer','manufacturer','licensor',"
+        "'licensee','buyer','seller','investor','acquisition-target','strategic-partner',"
+        "'service-provider','sponsor','requires-review'"
+    )
+    event_types = (
+        "'licensing','partnership','acquisition','investment','funding',"
+        "'manufacturing-agreement','development-collaboration','distribution',"
+        "'supply-agreement','divestment','requires-review'"
+    )
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS opportunity_profiles (
+        opportunity_profile_id TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        opportunity_type TEXT NOT NULL CHECK (
+            opportunity_type IN (
+                'technology-partnership','service-engagement','licensing','investment',
+                'acquisition','development-collaboration','manufacturing','supply',
+                'distribution','other','requires-review'
+            )
+        ),
+        summary TEXT NOT NULL DEFAULT '',
+        lifecycle_status TEXT NOT NULL CHECK (lifecycle_status IN ({lifecycle})),
+        {governed}
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_identifiers (
+        opportunity_identifier_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        identifier_type TEXT NOT NULL CHECK (
+            identifier_type IN (
+                'alias','external-id','legacy-opportunity-id','stable-lead-id','requires-review'
+            )
+        ),
+        identifier_namespace TEXT NOT NULL CHECK (LENGTH(TRIM(identifier_namespace)) > 0),
+        identifier_value TEXT NOT NULL,
+        normalized_identifier TEXT NOT NULL,
+        legacy_opportunity_id TEXT,
+        stable_lead_id TEXT,
+        {governed},
+        CHECK (legacy_opportunity_id IS NULL OR stable_lead_id IS NULL),
+        UNIQUE(identifier_namespace, normalized_identifier),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (legacy_opportunity_id) REFERENCES opportunities(id),
+        FOREIGN KEY (stable_lead_id) REFERENCES opportunity_index(stable_lead_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_participants (
+        opportunity_participant_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        organisation_profile_id TEXT NOT NULL,
+        participant_role TEXT NOT NULL CHECK (participant_role IN ({participant_roles})),
+        {governed},
+        UNIQUE(
+            opportunity_profile_id, organisation_profile_id, participant_role,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (organisation_profile_id)
+            REFERENCES organisation_profiles(organisation_profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_problem_relationships (
+        opportunity_problem_relationship_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        problem_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'has-problem','addresses-problem','depends-on','requires-review'
+            )
+        ),
+        {governed},
+        UNIQUE(
+            opportunity_profile_id, problem_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (problem_id) REFERENCES pharmaceutical_problems(problem_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_solution_relationships (
+        opportunity_solution_relationship_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        technology_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'seeks','offers','uses','licenses','invests-in','requires-review'
+            )
+        ),
+        {governed},
+        UNIQUE(
+            opportunity_profile_id, technology_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (technology_id) REFERENCES technology_solutions(technology_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_product_relationships (
+        opportunity_product_relationship_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'concerns','develops','manufactures','licenses','invests-in','requires-review'
+            )
+        ),
+        {governed},
+        UNIQUE(
+            opportunity_profile_id, product_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (product_id) REFERENCES product_profiles(product_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_api_relationships (
+        opportunity_api_relationship_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        api_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'concerns','develops','manufactures','supplies','licenses',
+                'invests-in','requires-review'
+            )
+        ),
+        {governed},
+        UNIQUE(
+            opportunity_profile_id, api_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (api_id) REFERENCES api_profiles(api_id)
+    );
+    CREATE TABLE IF NOT EXISTS commercial_event_identity_links (
+        commercial_event_identity_id TEXT PRIMARY KEY,
+        canonical_event_key TEXT NOT NULL UNIQUE,
+        commercial_event_id TEXT,
+        funding_award_id TEXT,
+        event_type TEXT NOT NULL CHECK (event_type IN ({event_types})),
+        lifecycle_status TEXT NOT NULL CHECK (lifecycle_status IN ({lifecycle})),
+        {governed},
+        CHECK (
+            (commercial_event_id IS NOT NULL AND funding_award_id IS NULL)
+            OR (commercial_event_id IS NULL AND funding_award_id IS NOT NULL)
+        ),
+        UNIQUE(commercial_event_id),
+        UNIQUE(funding_award_id),
+        FOREIGN KEY (commercial_event_id)
+            REFERENCES commercial_events(commercial_event_id),
+        FOREIGN KEY (funding_award_id) REFERENCES funding_awards(funding_award_id)
+    );
+    CREATE TABLE IF NOT EXISTS commercial_event_participants (
+        commercial_event_participant_id TEXT PRIMARY KEY,
+        commercial_event_identity_id TEXT NOT NULL,
+        organisation_profile_id TEXT NOT NULL,
+        participant_role TEXT NOT NULL CHECK (participant_role IN ({participant_roles})),
+        {governed},
+        UNIQUE(
+            commercial_event_identity_id, organisation_profile_id, participant_role,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (commercial_event_identity_id)
+            REFERENCES commercial_event_identity_links(commercial_event_identity_id),
+        FOREIGN KEY (organisation_profile_id)
+            REFERENCES organisation_profiles(organisation_profile_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_commercial_event_relationships (
+        opportunity_commercial_event_relationship_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT NOT NULL,
+        commercial_event_identity_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (
+            relationship_type IN (
+                'evidenced-by','resulted-in','associated-with','supersedes','requires-review'
+            )
+        ),
+        {governed},
+        UNIQUE(
+            opportunity_profile_id, commercial_event_identity_id, relationship_type,
+            source_type, source_record_id
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (commercial_event_identity_id)
+            REFERENCES commercial_event_identity_links(commercial_event_identity_id)
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_evidence_links (
+        opportunity_evidence_link_id TEXT PRIMARY KEY,
+        opportunity_profile_id TEXT,
+        opportunity_participant_id TEXT,
+        opportunity_problem_relationship_id TEXT,
+        opportunity_solution_relationship_id TEXT,
+        opportunity_product_relationship_id TEXT,
+        opportunity_api_relationship_id TEXT,
+        commercial_event_identity_id TEXT,
+        commercial_event_participant_id TEXT,
+        opportunity_commercial_event_relationship_id TEXT,
+        evidence_id BIGINT,
+        source_table TEXT NOT NULL CHECK (LENGTH(TRIM(source_table)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        link_type TEXT NOT NULL CHECK (
+            link_type IN (
+                'identifies','supports-opportunity','supports-relationship',
+                'supports-transaction','requires-review'
+            )
+        ),
+        evidence_url TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_url)) > 0),
+        evidence_status TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_status)) > 0),
+        evidence_basis TEXT NOT NULL CHECK (LENGTH(TRIM(evidence_basis)) > 0),
+        verification_status TEXT NOT NULL CHECK (
+            verification_status IN ('human-verified','requires-review')
+        ),
+        inference_status TEXT NOT NULL DEFAULT 'not-inferred' CHECK (inference_status='not-inferred'),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (CASE WHEN opportunity_profile_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN opportunity_participant_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN opportunity_problem_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN opportunity_solution_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN opportunity_product_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN opportunity_api_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN commercial_event_identity_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN commercial_event_participant_id IS NOT NULL THEN 1 ELSE 0 END)
+            + (CASE WHEN opportunity_commercial_event_relationship_id IS NOT NULL THEN 1 ELSE 0 END)
+            = 1
+        ),
+        CHECK (
+            (verification_status='human-verified' AND verified_at IS NOT NULL)
+            OR (verification_status='requires-review' AND verified_at IS NULL)
+        ),
+        FOREIGN KEY (opportunity_profile_id)
+            REFERENCES opportunity_profiles(opportunity_profile_id),
+        FOREIGN KEY (opportunity_participant_id)
+            REFERENCES opportunity_participants(opportunity_participant_id),
+        FOREIGN KEY (opportunity_problem_relationship_id)
+            REFERENCES opportunity_problem_relationships(opportunity_problem_relationship_id),
+        FOREIGN KEY (opportunity_solution_relationship_id)
+            REFERENCES opportunity_solution_relationships(opportunity_solution_relationship_id),
+        FOREIGN KEY (opportunity_product_relationship_id)
+            REFERENCES opportunity_product_relationships(opportunity_product_relationship_id),
+        FOREIGN KEY (opportunity_api_relationship_id)
+            REFERENCES opportunity_api_relationships(opportunity_api_relationship_id),
+        FOREIGN KEY (commercial_event_identity_id)
+            REFERENCES commercial_event_identity_links(commercial_event_identity_id),
+        FOREIGN KEY (commercial_event_participant_id)
+            REFERENCES commercial_event_participants(commercial_event_participant_id),
+        FOREIGN KEY (opportunity_commercial_event_relationship_id)
+            REFERENCES opportunity_commercial_event_relationships(
+                opportunity_commercial_event_relationship_id
+            ),
+        FOREIGN KEY (evidence_id) REFERENCES evidence(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_opportunity_profile_status
+        ON opportunity_profiles(lifecycle_status, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_identifier_profile
+        ON opportunity_identifiers(opportunity_profile_id, identifier_namespace);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_identifier_legacy
+        ON opportunity_identifiers(legacy_opportunity_id, stable_lead_id);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_participant_opportunity
+        ON opportunity_participants(opportunity_profile_id, participant_role, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_participant_organisation
+        ON opportunity_participants(organisation_profile_id, participant_role, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_problem_target
+        ON opportunity_problem_relationships(problem_id, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_solution_target
+        ON opportunity_solution_relationships(technology_id, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_product_target
+        ON opportunity_product_relationships(product_id, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_api_target
+        ON opportunity_api_relationships(api_id, active);
+    CREATE INDEX IF NOT EXISTS idx_commercial_event_identity_type
+        ON commercial_event_identity_links(event_type, lifecycle_status, active);
+    CREATE INDEX IF NOT EXISTS idx_commercial_event_participant_org
+        ON commercial_event_participants(organisation_profile_id, participant_role, active);
+    CREATE INDEX IF NOT EXISTS idx_opportunity_commercial_event
+        ON opportunity_commercial_event_relationships(
+            commercial_event_identity_id, relationship_type, active
+        );
+    CREATE INDEX IF NOT EXISTS idx_opportunity_evidence_record
+        ON opportunity_evidence_links(evidence_id, source_table, source_record_id);
+    """)
+
+    evidence_parent_specs = (
+        ("opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+        ("opportunity_participant_id", "opportunity_participants", "opportunity_participant_id"),
+        (
+            "opportunity_problem_relationship_id",
+            "opportunity_problem_relationships",
+            "opportunity_problem_relationship_id",
+        ),
+        (
+            "opportunity_solution_relationship_id",
+            "opportunity_solution_relationships",
+            "opportunity_solution_relationship_id",
+        ),
+        (
+            "opportunity_product_relationship_id",
+            "opportunity_product_relationships",
+            "opportunity_product_relationship_id",
+        ),
+        (
+            "opportunity_api_relationship_id",
+            "opportunity_api_relationships",
+            "opportunity_api_relationship_id",
+        ),
+        (
+            "commercial_event_identity_id",
+            "commercial_event_identity_links",
+            "commercial_event_identity_id",
+        ),
+        (
+            "commercial_event_participant_id",
+            "commercial_event_participants",
+            "commercial_event_participant_id",
+        ),
+        (
+            "opportunity_commercial_event_relationship_id",
+            "opportunity_commercial_event_relationships",
+            "opportunity_commercial_event_relationship_id",
+        ),
+    )
+    for column, _, _ in evidence_parent_specs:
+        conn.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS uq_opportunity_evidence_{column} "
+            f"ON opportunity_evidence_links({column},source_table,source_record_id,link_type) "
+            f"WHERE {column} IS NOT NULL"
+        )
+
+    if conn.backend == "sqlite":
+        required_fk_specs = (
+            ("pr_d_identifier_opportunity", "opportunity_identifiers", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_participant_opportunity", "opportunity_participants", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_participant_organisation", "opportunity_participants", "organisation_profile_id", "organisation_profiles", "organisation_profile_id"),
+            ("pr_d_problem_opportunity", "opportunity_problem_relationships", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_problem_target", "opportunity_problem_relationships", "problem_id", "pharmaceutical_problems", "problem_id"),
+            ("pr_d_solution_opportunity", "opportunity_solution_relationships", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_solution_target", "opportunity_solution_relationships", "technology_id", "technology_solutions", "technology_id"),
+            ("pr_d_product_opportunity", "opportunity_product_relationships", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_product_target", "opportunity_product_relationships", "product_id", "product_profiles", "product_id"),
+            ("pr_d_api_opportunity", "opportunity_api_relationships", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_api_target", "opportunity_api_relationships", "api_id", "api_profiles", "api_id"),
+            ("pr_d_event_participant_event", "commercial_event_participants", "commercial_event_identity_id", "commercial_event_identity_links", "commercial_event_identity_id"),
+            ("pr_d_event_participant_org", "commercial_event_participants", "organisation_profile_id", "organisation_profiles", "organisation_profile_id"),
+            ("pr_d_opportunity_event_opportunity", "opportunity_commercial_event_relationships", "opportunity_profile_id", "opportunity_profiles", "opportunity_profile_id"),
+            ("pr_d_opportunity_event_event", "opportunity_commercial_event_relationships", "commercial_event_identity_id", "commercial_event_identity_links", "commercial_event_identity_id"),
+        )
+        optional_fk_specs = (
+            ("pr_d_identifier_legacy", "opportunity_identifiers", "legacy_opportunity_id", "opportunities", "id"),
+            ("pr_d_identifier_lead", "opportunity_identifiers", "stable_lead_id", "opportunity_index", "stable_lead_id"),
+            ("pr_d_event_legacy", "commercial_event_identity_links", "commercial_event_id", "commercial_events", "commercial_event_id"),
+            ("pr_d_event_funding", "commercial_event_identity_links", "funding_award_id", "funding_awards", "funding_award_id"),
+        )
+        for specs, required in ((required_fk_specs, True), (optional_fk_specs, False)):
+            for trigger_name, child_table, child_column, parent_table, parent_column in specs:
+                null_check = f"NEW.{child_column} IS NULL OR " if required else f"NEW.{child_column} IS NOT NULL AND "
+                for operation in ("INSERT", "UPDATE"):
+                    update_clause = f" OF {child_column}" if operation == "UPDATE" else ""
+                    conn.execute(f"""
+                        CREATE TRIGGER IF NOT EXISTS {trigger_name}_{operation.lower()}
+                        BEFORE {operation}{update_clause} ON {child_table}
+                        WHEN {null_check}NOT EXISTS (
+                            SELECT 1 FROM {parent_table}
+                            WHERE {parent_column}=NEW.{child_column}
+                        )
+                        BEGIN SELECT RAISE(
+                            ABORT,
+                            'Foundation PR-D relationship requires an existing parent record'
+                        ); END
+                    """)
+
+        missing_parent_checks = " OR ".join(
+            f"(NEW.{column} IS NOT NULL AND NOT EXISTS "
+            f"(SELECT 1 FROM {table} WHERE {primary_key}=NEW.{column}))"
+            for column, table, primary_key in evidence_parent_specs
+        )
+        evidence_columns = ",".join(column for column, _, _ in evidence_parent_specs)
+        for operation in ("INSERT", "UPDATE"):
+            update_clause = f" OF {evidence_columns},evidence_id" if operation == "UPDATE" else ""
+            conn.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS pr_d_evidence_fk_{operation.lower()}
+                BEFORE {operation}{update_clause} ON opportunity_evidence_links
+                WHEN {missing_parent_checks}
+                  OR (NEW.evidence_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM evidence WHERE id=NEW.evidence_id
+                     ))
+                BEGIN SELECT RAISE(
+                    ABORT,
+                    'opportunity evidence link requires existing evidence and parent records'
+                ); END
+            """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -2452,6 +2875,7 @@ MIGRATIONS = (
     Migration(16, "foundation_pr_a_domain_neutral_intelligence_schema", _foundation_pr_a_schema),
     Migration(17, "foundation_pr_b_product_api_identity_schema", _foundation_pr_b_identity_schema),
     Migration(18, "foundation_pr_c_organisation_provider_identity_schema", _foundation_pr_c_organisation_provider_schema),
+    Migration(19, "foundation_pr_d_opportunity_commercial_identity_schema", _foundation_pr_d_opportunity_commercial_schema),
 )
 
 
