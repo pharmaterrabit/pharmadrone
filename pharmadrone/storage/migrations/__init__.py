@@ -1731,6 +1731,239 @@ def _foundation_pr_a_schema(conn) -> None:
         )
 
 
+def _foundation_pr_b_identity_schema(conn) -> None:
+    """Additive canonical pharmaceutical product and API identity foundation."""
+    ts = _timestamp_default(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS product_profiles (
+        product_id TEXT PRIMARY KEY,
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL UNIQUE,
+        product_type TEXT NOT NULL CHECK (LENGTH(TRIM(product_type)) > 0),
+        identity_status TEXT NOT NULL CHECK (identity_status IN ('controlled','source-derived','human-verified','requires-review')),
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS api_profiles (
+        api_id TEXT PRIMARY KEY,
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL UNIQUE,
+        substance_type TEXT NOT NULL CHECK (LENGTH(TRIM(substance_type)) > 0),
+        identity_status TEXT NOT NULL CHECK (identity_status IN ('controlled','source-derived','human-verified','requires-review')),
+        evidence_status TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        first_seen_at TEXT NOT NULL DEFAULT {ts},
+        last_verified_at TEXT NOT NULL,
+        next_review_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}'
+    );
+    CREATE TABLE IF NOT EXISTS product_api_relationships (
+        product_api_relationship_id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL,
+        api_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN ('active-ingredient','active-moiety','combination-component','requires-review')),
+        source_type TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        evidence_basis TEXT NOT NULL,
+        verification_status TEXT NOT NULL CHECK (verification_status IN ('reported','source-derived','human-verified','requires-review')),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        UNIQUE(product_id, api_id, relationship_type, source_type, source_record_id),
+        FOREIGN KEY (product_id) REFERENCES product_profiles(product_id),
+        FOREIGN KEY (api_id) REFERENCES api_profiles(api_id)
+    );
+    CREATE TABLE IF NOT EXISTS pharmaceutical_entity_aliases (
+        entity_alias_id TEXT PRIMARY KEY,
+        product_id TEXT,
+        api_id TEXT,
+        alias_name TEXT NOT NULL,
+        normalized_alias TEXT NOT NULL,
+        alias_type TEXT NOT NULL CHECK (alias_type IN ('brand','generic','development-code','salt-form','transliteration','alternative','requires-review')),
+        language_code TEXT,
+        source_type TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        verification_status TEXT NOT NULL CHECK (verification_status IN ('reported','source-derived','human-verified','requires-review')),
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (product_id IS NOT NULL AND api_id IS NULL)
+            OR (product_id IS NULL AND api_id IS NOT NULL)
+        ),
+        FOREIGN KEY (product_id) REFERENCES product_profiles(product_id),
+        FOREIGN KEY (api_id) REFERENCES api_profiles(api_id)
+    );
+    CREATE TABLE IF NOT EXISTS pharmaceutical_entity_identifiers (
+        entity_identifier_id TEXT PRIMARY KEY,
+        product_id TEXT,
+        api_id TEXT,
+        identifier_namespace TEXT NOT NULL CHECK (LENGTH(TRIM(identifier_namespace)) > 0),
+        identifier_value TEXT NOT NULL,
+        normalized_identifier TEXT NOT NULL,
+        jurisdiction TEXT,
+        source_type TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        verification_status TEXT NOT NULL CHECK (verification_status IN ('reported','source-derived','human-verified','requires-review')),
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (product_id IS NOT NULL AND api_id IS NULL)
+            OR (product_id IS NULL AND api_id IS NOT NULL)
+        ),
+        FOREIGN KEY (product_id) REFERENCES product_profiles(product_id),
+        FOREIGN KEY (api_id) REFERENCES api_profiles(api_id)
+    );
+    CREATE TABLE IF NOT EXISTS pharmaceutical_evidence_links (
+        pharmaceutical_evidence_link_id TEXT PRIMARY KEY,
+        product_id TEXT,
+        api_id TEXT,
+        evidence_id INTEGER,
+        source_table TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        link_type TEXT NOT NULL CHECK (link_type IN ('identifies','names','supports-relationship','regulatory-context','patent-context','requires-review')),
+        evidence_url TEXT NOT NULL,
+        evidence_status TEXT NOT NULL,
+        evidence_basis TEXT NOT NULL,
+        verification_status TEXT NOT NULL CHECK (verification_status IN ('reported','source-derived','human-verified','requires-review')),
+        observed_at TEXT NOT NULL,
+        verified_at TEXT,
+        attributes_json TEXT NOT NULL DEFAULT '{{}}',
+        CHECK (
+            (product_id IS NOT NULL AND api_id IS NULL)
+            OR (product_id IS NULL AND api_id IS NOT NULL)
+        ),
+        FOREIGN KEY (product_id) REFERENCES product_profiles(product_id),
+        FOREIGN KEY (api_id) REFERENCES api_profiles(api_id),
+        FOREIGN KEY (evidence_id) REFERENCES evidence(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_profile_name ON product_profiles(normalized_name, active);
+    CREATE INDEX IF NOT EXISTS idx_api_profile_name ON api_profiles(normalized_name, active);
+    CREATE INDEX IF NOT EXISTS idx_product_api_product ON product_api_relationships(product_id, active);
+    CREATE INDEX IF NOT EXISTS idx_product_api_api ON product_api_relationships(api_id, active);
+    CREATE INDEX IF NOT EXISTS idx_entity_alias_product ON pharmaceutical_entity_aliases(product_id, normalized_alias);
+    CREATE INDEX IF NOT EXISTS idx_entity_alias_api ON pharmaceutical_entity_aliases(api_id, normalized_alias);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_product_alias_source
+        ON pharmaceutical_entity_aliases(product_id, normalized_alias, source_type, source_record_id)
+        WHERE product_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_api_alias_source
+        ON pharmaceutical_entity_aliases(api_id, normalized_alias, source_type, source_record_id)
+        WHERE api_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_product_identifier
+        ON pharmaceutical_entity_identifiers(identifier_namespace, normalized_identifier)
+        WHERE product_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_api_identifier
+        ON pharmaceutical_entity_identifiers(identifier_namespace, normalized_identifier)
+        WHERE api_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_entity_identifier_product
+        ON pharmaceutical_entity_identifiers(product_id, identifier_namespace);
+    CREATE INDEX IF NOT EXISTS idx_entity_identifier_api
+        ON pharmaceutical_entity_identifiers(api_id, identifier_namespace);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_product_evidence_source
+        ON pharmaceutical_evidence_links(product_id, source_table, source_record_id, link_type)
+        WHERE product_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_api_evidence_source
+        ON pharmaceutical_evidence_links(api_id, source_table, source_record_id, link_type)
+        WHERE api_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_pharmaceutical_evidence_record
+        ON pharmaceutical_evidence_links(evidence_id, source_table, source_record_id);
+    """)
+    if conn.backend == "sqlite":
+        for trigger_sql in """
+        CREATE TRIGGER IF NOT EXISTS pr_b_product_api_fk_insert
+        BEFORE INSERT ON product_api_relationships
+        WHEN NOT EXISTS (SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id)
+          OR NOT EXISTS (SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id)
+        BEGIN SELECT RAISE(ABORT, 'product API relationship requires existing canonical identities'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_product_api_fk_update
+        BEFORE UPDATE OF product_id,api_id ON product_api_relationships
+        WHEN NOT EXISTS (SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id)
+          OR NOT EXISTS (SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id)
+        BEGIN SELECT RAISE(ABORT, 'product API relationship requires existing canonical identities'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_alias_fk_insert
+        BEFORE INSERT ON pharmaceutical_entity_aliases
+        WHEN (NEW.product_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id
+             ))
+          OR (NEW.api_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id
+             ))
+        BEGIN SELECT RAISE(ABORT, 'alias requires an existing canonical identity'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_alias_fk_update
+        BEFORE UPDATE OF product_id,api_id ON pharmaceutical_entity_aliases
+        WHEN (NEW.product_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id
+             ))
+          OR (NEW.api_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id
+             ))
+        BEGIN SELECT RAISE(ABORT, 'alias requires an existing canonical identity'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_identifier_fk_insert
+        BEFORE INSERT ON pharmaceutical_entity_identifiers
+        WHEN (NEW.product_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id
+             ))
+          OR (NEW.api_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id
+             ))
+        BEGIN SELECT RAISE(ABORT, 'identifier requires an existing canonical identity'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_identifier_fk_update
+        BEFORE UPDATE OF product_id,api_id ON pharmaceutical_entity_identifiers
+        WHEN (NEW.product_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id
+             ))
+          OR (NEW.api_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id
+             ))
+        BEGIN SELECT RAISE(ABORT, 'identifier requires an existing canonical identity'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_evidence_fk_insert
+        BEFORE INSERT ON pharmaceutical_evidence_links
+        WHEN (NEW.product_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id
+             ))
+          OR (NEW.api_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id
+             ))
+          OR (NEW.evidence_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM evidence WHERE id=NEW.evidence_id
+             ))
+        BEGIN SELECT RAISE(ABORT, 'evidence link requires existing evidence and canonical identity records'); END;
+        -- PR_B_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS pr_b_evidence_fk_update
+        BEFORE UPDATE OF product_id,api_id,evidence_id ON pharmaceutical_evidence_links
+        WHEN (NEW.product_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM product_profiles WHERE product_id=NEW.product_id
+             ))
+          OR (NEW.api_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM api_profiles WHERE api_id=NEW.api_id
+             ))
+          OR (NEW.evidence_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM evidence WHERE id=NEW.evidence_id
+             ))
+        BEGIN SELECT RAISE(ABORT, 'evidence link requires existing evidence and canonical identity records'); END;
+        """.split("-- PR_B_TRIGGER_SEPARATOR"):
+            if trigger_sql.strip():
+                conn.execute(trigger_sql)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -1748,6 +1981,7 @@ MIGRATIONS = (
     Migration(14, "phase_9_global_patent_intelligence_schema", _global_patent_schema),
     Migration(15, "phase_9_canonical_patent_foundation_schema", _canonical_patent_foundation_schema),
     Migration(16, "foundation_pr_a_domain_neutral_intelligence_schema", _foundation_pr_a_schema),
+    Migration(17, "foundation_pr_b_product_api_identity_schema", _foundation_pr_b_identity_schema),
 )
 
 
