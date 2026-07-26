@@ -97,7 +97,7 @@ def run(principal: dict | None = None) -> None:
         "My Workspace":lambda:pages.customer_workspace(principal,_navigate),
         "Saved Lists":lambda:pages.saved_lists(principal,_navigate),
         "Alerts":lambda:pages.customer_alerts(principal,_navigate),
-        "Human Validation":pages.validation,
+        "Human Validation":lambda:pages.validation(principal),
         "Case Studies":lambda:pages.case_studies(principal,_navigate),
         "Pharmaceutical Memory":pages.pharmaceutical_memory,
         "Data Sources":pages.sources,
