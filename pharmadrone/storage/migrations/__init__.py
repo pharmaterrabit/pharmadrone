@@ -2856,6 +2856,302 @@ def _foundation_pr_d_opportunity_commercial_schema(conn) -> None:
             """)
 
 
+def _foundation_pr_g_canonicalisation_review_schema(conn) -> None:
+    """Additive governed canonicalisation candidates, decisions and accepted links."""
+    ts = _timestamp_default(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS canonicalisation_runs (
+        canonicalisation_run_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL CHECK (LENGTH(TRIM(scope_key)) > 0),
+        source_table TEXT NOT NULL CHECK (LENGTH(TRIM(source_table)) > 0),
+        permitted_rules_json TEXT NOT NULL DEFAULT '[]',
+        max_records INTEGER NOT NULL DEFAULT 25 CHECK (max_records BETWEEN 1 AND 100),
+        run_status TEXT NOT NULL CHECK (
+            run_status IN ('running','completed','failed','superseded')
+        ),
+        records_scanned INTEGER NOT NULL DEFAULT 0 CHECK (records_scanned >= 0),
+        candidates_created INTEGER NOT NULL DEFAULT 0 CHECK (candidates_created >= 0),
+        created_by_name TEXT NOT NULL,
+        created_by_role TEXT NOT NULL,
+        organisation_id TEXT,
+        workspace_id TEXT,
+        started_at TEXT NOT NULL DEFAULT {ts},
+        completed_at TEXT,
+        error_summary TEXT NOT NULL DEFAULT '',
+        supersedes_run_id TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (supersedes_run_id)
+            REFERENCES canonicalisation_runs(canonicalisation_run_id)
+    );
+    CREATE TABLE IF NOT EXISTS canonicalisation_candidates (
+        canonicalisation_candidate_id TEXT PRIMARY KEY,
+        canonicalisation_run_id TEXT NOT NULL,
+        scope_key TEXT NOT NULL CHECK (LENGTH(TRIM(scope_key)) > 0),
+        source_table TEXT NOT NULL CHECK (LENGTH(TRIM(source_table)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        source_display_value TEXT NOT NULL CHECK (
+            LENGTH(TRIM(source_display_value)) > 0
+        ),
+        source_field TEXT NOT NULL CHECK (LENGTH(TRIM(source_field)) > 0),
+        proposed_entity_type TEXT NOT NULL CHECK (
+            proposed_entity_type IN (
+                'pharmaceutical_problem','technology_solution','product','api',
+                'organisation','opportunity'
+            )
+        ),
+        proposed_canonical_id TEXT NOT NULL CHECK (
+            LENGTH(TRIM(proposed_canonical_id)) > 0
+        ),
+        match_rule TEXT NOT NULL CHECK (
+            match_rule IN (
+                'exact-normalized-name','exact-governed-alias',
+                'exact-governed-identifier','exact-stable-lead-id',
+                'exact-legacy-opportunity-id'
+            )
+        ),
+        identifier_namespace TEXT,
+        identifier_value TEXT,
+        evidence_url TEXT NOT NULL DEFAULT '',
+        evidence_status TEXT NOT NULL,
+        evidence_basis TEXT NOT NULL,
+        verification_status TEXT NOT NULL,
+        ambiguous INTEGER NOT NULL DEFAULT 0 CHECK (ambiguous IN (0,1)),
+        review_status TEXT NOT NULL DEFAULT 'pending-review' CHECK (
+            review_status IN (
+                'pending-review','accepted','rejected','superseded',
+                'requires-more-evidence'
+            )
+        ),
+        source_record_json TEXT NOT NULL DEFAULT '{{}}',
+        supporting_evidence_json TEXT NOT NULL DEFAULT '{{}}',
+        created_at TEXT NOT NULL DEFAULT {ts},
+        updated_at TEXT NOT NULL DEFAULT {ts},
+        superseded_by_candidate_id TEXT,
+        FOREIGN KEY (canonicalisation_run_id)
+            REFERENCES canonicalisation_runs(canonicalisation_run_id),
+        FOREIGN KEY (superseded_by_candidate_id)
+            REFERENCES canonicalisation_candidates(canonicalisation_candidate_id),
+        UNIQUE (
+            scope_key,source_table,source_record_id,source_field,
+            proposed_entity_type,proposed_canonical_id,match_rule
+        )
+    );
+    CREATE TABLE IF NOT EXISTS canonicalisation_decisions (
+        canonicalisation_decision_id TEXT PRIMARY KEY,
+        canonicalisation_candidate_id TEXT NOT NULL,
+        scope_key TEXT NOT NULL CHECK (LENGTH(TRIM(scope_key)) > 0),
+        decision_status TEXT NOT NULL CHECK (
+            decision_status IN (
+                'accepted','rejected','superseded','requires-more-evidence'
+            )
+        ),
+        previous_status TEXT NOT NULL CHECK (
+            previous_status IN (
+                'pending-review','accepted','rejected','superseded',
+                'requires-more-evidence'
+            )
+        ),
+        reviewer_name TEXT NOT NULL CHECK (LENGTH(TRIM(reviewer_name)) > 0),
+        reviewer_role TEXT NOT NULL CHECK (LENGTH(TRIM(reviewer_role)) > 0),
+        reviewer_organisation_id TEXT,
+        reviewer_workspace_id TEXT,
+        reviewer_notes TEXT NOT NULL DEFAULT '',
+        decided_at TEXT NOT NULL DEFAULT {ts},
+        supersedes_decision_id TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (canonicalisation_candidate_id)
+            REFERENCES canonicalisation_candidates(canonicalisation_candidate_id),
+        FOREIGN KEY (supersedes_decision_id)
+            REFERENCES canonicalisation_decisions(canonicalisation_decision_id),
+        UNIQUE (canonicalisation_candidate_id,canonicalisation_decision_id)
+    );
+    CREATE TABLE IF NOT EXISTS canonical_record_links (
+        canonical_record_link_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL CHECK (LENGTH(TRIM(scope_key)) > 0),
+        source_table TEXT NOT NULL CHECK (LENGTH(TRIM(source_table)) > 0),
+        source_record_id TEXT NOT NULL CHECK (LENGTH(TRIM(source_record_id)) > 0),
+        canonical_entity_type TEXT NOT NULL CHECK (
+            canonical_entity_type IN (
+                'pharmaceutical_problem','technology_solution','product','api',
+                'organisation','opportunity'
+            )
+        ),
+        canonical_id TEXT NOT NULL CHECK (LENGTH(TRIM(canonical_id)) > 0),
+        canonicalisation_candidate_id TEXT NOT NULL,
+        accepted_decision_id TEXT NOT NULL,
+        link_status TEXT NOT NULL DEFAULT 'accepted' CHECK (
+            link_status IN ('accepted','superseded','rolled-back')
+        ),
+        evidence_url TEXT NOT NULL DEFAULT '',
+        evidence_status TEXT NOT NULL,
+        evidence_basis TEXT NOT NULL,
+        verification_status TEXT NOT NULL DEFAULT 'human-verified' CHECK (
+            verification_status='human-verified'
+        ),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        created_at TEXT NOT NULL DEFAULT {ts},
+        superseded_at TEXT,
+        superseded_by_link_id TEXT,
+        rollback_reason TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT NOT NULL DEFAULT '{{}}',
+        FOREIGN KEY (canonicalisation_candidate_id)
+            REFERENCES canonicalisation_candidates(canonicalisation_candidate_id),
+        FOREIGN KEY (canonicalisation_candidate_id,accepted_decision_id)
+            REFERENCES canonicalisation_decisions(
+                canonicalisation_candidate_id,canonicalisation_decision_id
+            ),
+        FOREIGN KEY (superseded_by_link_id)
+            REFERENCES canonical_record_links(canonical_record_link_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_canonicalisation_run_scope
+        ON canonicalisation_runs(scope_key,started_at);
+    CREATE INDEX IF NOT EXISTS idx_canonicalisation_candidate_review
+        ON canonicalisation_candidates(
+            scope_key,review_status,source_table,proposed_entity_type,created_at
+        );
+    CREATE INDEX IF NOT EXISTS idx_canonicalisation_candidate_rule
+        ON canonicalisation_candidates(scope_key,match_rule,created_at);
+    CREATE INDEX IF NOT EXISTS idx_canonicalisation_decision_history
+        ON canonicalisation_decisions(canonicalisation_candidate_id,decided_at);
+    CREATE INDEX IF NOT EXISTS idx_canonical_record_link_target
+        ON canonical_record_links(canonical_entity_type,canonical_id,active);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_canonical_record_active_entity_link
+        ON canonical_record_links(
+            scope_key,source_table,source_record_id,canonical_entity_type
+        ) WHERE active=1;
+    """)
+
+    if conn.backend == "sqlite":
+        for trigger_sql in """
+        CREATE TRIGGER IF NOT EXISTS canonicalisation_candidate_decision_update
+        BEFORE UPDATE OF review_status ON canonicalisation_candidates
+        WHEN NEW.review_status<>OLD.review_status
+         AND NEW.review_status<>'pending-review'
+         AND NOT EXISTS (
+            SELECT 1 FROM canonicalisation_decisions decision
+            WHERE decision.canonicalisation_candidate_id=
+                    NEW.canonicalisation_candidate_id
+              AND decision.scope_key=NEW.scope_key
+              AND decision.decision_status=NEW.review_status
+         )
+        BEGIN SELECT RAISE(
+            ABORT,
+            'canonicalisation status change requires an explicit review decision'
+        ); END;
+        -- CANONICALISATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS canonical_record_link_acceptance_insert
+        BEFORE INSERT ON canonical_record_links
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM canonicalisation_candidates candidate
+            JOIN canonicalisation_decisions decision
+              ON decision.canonicalisation_candidate_id=
+                    candidate.canonicalisation_candidate_id
+            WHERE candidate.canonicalisation_candidate_id=
+                    NEW.canonicalisation_candidate_id
+              AND candidate.scope_key=NEW.scope_key
+              AND candidate.source_table=NEW.source_table
+              AND candidate.source_record_id=NEW.source_record_id
+              AND candidate.proposed_entity_type=NEW.canonical_entity_type
+              AND candidate.proposed_canonical_id=NEW.canonical_id
+              AND candidate.review_status='accepted'
+              AND decision.canonicalisation_decision_id=
+                    NEW.accepted_decision_id
+              AND decision.decision_status='accepted'
+         )
+        BEGIN SELECT RAISE(
+            ABORT,
+            'canonical link requires an accepted human-review decision'
+        ); END;
+        -- CANONICALISATION_TRIGGER_SEPARATOR
+        CREATE TRIGGER IF NOT EXISTS canonical_record_link_acceptance_update
+        BEFORE UPDATE OF canonicalisation_candidate_id,accepted_decision_id,scope_key
+        ON canonical_record_links
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM canonicalisation_candidates candidate
+            JOIN canonicalisation_decisions decision
+              ON decision.canonicalisation_candidate_id=
+                    candidate.canonicalisation_candidate_id
+            WHERE candidate.canonicalisation_candidate_id=
+                    NEW.canonicalisation_candidate_id
+              AND candidate.scope_key=NEW.scope_key
+              AND candidate.source_table=NEW.source_table
+              AND candidate.source_record_id=NEW.source_record_id
+              AND candidate.proposed_entity_type=NEW.canonical_entity_type
+              AND candidate.proposed_canonical_id=NEW.canonical_id
+              AND candidate.review_status='accepted'
+              AND decision.canonicalisation_decision_id=
+                    NEW.accepted_decision_id
+              AND decision.decision_status='accepted'
+         )
+        BEGIN SELECT RAISE(
+            ABORT,
+            'canonical link requires an accepted human-review decision'
+        ); END;
+        """.split("-- CANONICALISATION_TRIGGER_SEPARATOR"):
+            if trigger_sql.strip():
+                conn.execute(trigger_sql)
+    else:
+        conn.execute("""
+        CREATE OR REPLACE FUNCTION foundation_pr_g_validate_review() RETURNS trigger
+        AS $function$
+        BEGIN
+            IF TG_TABLE_NAME='canonicalisation_candidates' THEN
+                IF NEW.review_status<>OLD.review_status
+                   AND NEW.review_status<>'pending-review'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM canonicalisation_decisions decision
+                       WHERE decision.canonicalisation_candidate_id=
+                                NEW.canonicalisation_candidate_id
+                         AND decision.scope_key=NEW.scope_key
+                         AND decision.decision_status=NEW.review_status
+                   )
+                THEN RAISE EXCEPTION
+                    'canonicalisation status change requires an explicit review decision';
+                END IF;
+            ELSIF TG_TABLE_NAME='canonical_record_links' THEN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM canonicalisation_candidates candidate
+                    JOIN canonicalisation_decisions decision
+                      ON decision.canonicalisation_candidate_id=
+                            candidate.canonicalisation_candidate_id
+                    WHERE candidate.canonicalisation_candidate_id=
+                            NEW.canonicalisation_candidate_id
+                      AND candidate.scope_key=NEW.scope_key
+                      AND candidate.source_table=NEW.source_table
+                      AND candidate.source_record_id=NEW.source_record_id
+                      AND candidate.proposed_entity_type=NEW.canonical_entity_type
+                      AND candidate.proposed_canonical_id=NEW.canonical_id
+                      AND candidate.review_status='accepted'
+                      AND decision.canonicalisation_decision_id=
+                            NEW.accepted_decision_id
+                      AND decision.decision_status='accepted'
+                )
+                THEN RAISE EXCEPTION
+                    'canonical link requires an accepted human-review decision';
+                END IF;
+            END IF;
+            RETURN NEW;
+        END;
+        $function$ LANGUAGE plpgsql;
+        """)
+        for statement in (
+            "DROP TRIGGER IF EXISTS canonicalisation_candidate_decision_update "
+            "ON canonicalisation_candidates",
+            "CREATE TRIGGER canonicalisation_candidate_decision_update "
+            "BEFORE UPDATE OF review_status ON canonicalisation_candidates "
+            "FOR EACH ROW EXECUTE FUNCTION foundation_pr_g_validate_review()",
+            "DROP TRIGGER IF EXISTS canonical_record_link_acceptance "
+            "ON canonical_record_links",
+            "CREATE TRIGGER canonical_record_link_acceptance "
+            "BEFORE INSERT OR UPDATE ON canonical_record_links "
+            "FOR EACH ROW EXECUTE FUNCTION foundation_pr_g_validate_review()",
+        ):
+            conn.execute(statement)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -2876,6 +3172,7 @@ MIGRATIONS = (
     Migration(17, "foundation_pr_b_product_api_identity_schema", _foundation_pr_b_identity_schema),
     Migration(18, "foundation_pr_c_organisation_provider_identity_schema", _foundation_pr_c_organisation_provider_schema),
     Migration(19, "foundation_pr_d_opportunity_commercial_identity_schema", _foundation_pr_d_opportunity_commercial_schema),
+    Migration(20, "foundation_pr_g_governed_canonicalisation_review_schema", _foundation_pr_g_canonicalisation_review_schema),
 )
 
 
