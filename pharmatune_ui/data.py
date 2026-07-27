@@ -11,7 +11,7 @@ from pharmadrone import db
 from pharmadrone import production_readiness
 from pharmadrone.canonicalisation import CanonicalisationService
 from pharmadrone.intelligence import CanonicalIntelligenceService
-from pharmadrone.pipeline import account_intelligence, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
+from pharmadrone.pipeline import account_intelligence, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_discovery, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -431,6 +431,27 @@ def unified_patent_directory(search: str = "") -> dict[str, Any]:
         }
     finally:
         conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def patent_discovery_directory(query: str, mode: str) -> dict[str, Any]:
+    """Read retained patent/lifecycle records and generate external discovery links."""
+    conn = connection()
+    try:
+        return {
+            "metrics": patent_lifecycle.global_metrics(conn),
+            "lifecycle_metrics": patent_lifecycle.metrics(conn),
+            "fda_status": patent_lifecycle.orange_book_status(conn),
+            "stored_records": patent_discovery.stored_records(conn, query, mode),
+            "external_routes": patent_discovery.external_discovery_routes(query, mode),
+        }
+    finally:
+        conn.close()
+
+
+def live_patent_discovery(query: str) -> dict[str, Any]:
+    """Explicit user-requested discovery only; no result is persisted or imported."""
+    return patent_discovery.live_external_discovery(query)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
