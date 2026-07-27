@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from pharmadrone.canonicalisation import CANDIDATE_STATUSES, ENTITY_TYPES, MATCH_RULES, SOURCE_TYPES
-from pharmadrone.pipeline import customer_product, human_audit, seller_case_study
+from pharmadrone.pipeline import customer_product, human_audit, patent_discovery, seller_case_study
 from . import data, theme
 
 
@@ -488,19 +488,36 @@ def technology_profile() -> None:
     theme.empty("Persistent technology catalogue", "A genuine technology-ownership catalogue is planned for the Research & Innovation and Patents checkpoints. Current matching uses the approved service-provider profile.", "Planned")
 
 
+def _set_patent_discovery_example(query: str) -> None:
+    st.session_state["patent_discovery_query"] = query
+    st.session_state.pop("patent_discovery_live", None)
+
+
+def _patent_discovery_links(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "Google Patents": row.get("google_patents_url"),
+        "EPO / Espacenet": row.get("epo_url"),
+        "WIPO": row.get("wipo_url"),
+        "UK IPO": row.get("uk_ipo_url"),
+        "USPTO": row.get("uspto_url"),
+        "FDA / Orange Book": row.get("fda_url"),
+    }
+
+
 def patents(navigate: Callable[[str], None]) -> None:
     theme.page_header(
-        "Patent & Lifecycle Intelligence",
-        "US Orange Book lifecycle plus official EPO/EU and UK patent records, families, parties and legal events.",
+        "Patent & Innovation Discovery",
+        "Search retained global patent evidence and open trusted patent-discovery routes for pharmaceutical problems, technologies, products, ingredients and companies.",
         "Phase 9",
     )
     st.warning(
         "An Orange Book application holder is the FDA listing organisation—not proof of patent ownership. "
-        "Listings and expiry dates are regulatory lifecycle context, not a validity or freedom-to-operate opinion."
+        "Patent discovery results are not a validity or freedom-to-operate opinion, and do not establish enforceability."
     )
     st.info(
-        "EPO OPS and the UK register are official evidence routes. Google Patents is included for discovery and "
-        "cross-checking only; it is never treated as authority for ownership, legal status, expiry or enforceability."
+        "Google Patents is included for discovery and cross-checking only; it is never treated as authority for ownership, "
+        "legal status, expiry or enforceability. EPO, WIPO, UK IPO, USPTO and FDA pages are stronger official source routes "
+        "when a relevant record is available."
     )
     initial = data.unified_patent_directory()
     metrics = initial["metrics"]
@@ -512,50 +529,141 @@ def patents(navigate: Callable[[str], None]) -> None:
     m4.metric("UK / GB", f"{metrics.get('uk_documents', 0):,}")
     m5.metric("Listed patents", f"{lifecycle_metrics.get('patents', 0):,}")
     m6.metric("Exclusivities", f"{lifecycle_metrics.get('exclusivities', 0):,}")
-    st.info(
-        "Results are read from retained FDA Orange Book, EPO/EP and UK/GB records. "
-        "Google Patents is discovery/cross-check only and is never official evidence."
+    st.markdown("### Patent discovery search")
+    st.caption(
+        "Search a pharmaceutical problem or technology theme as well as a product, ingredient, company, "
+        "publication or application number. Stored records are searched first; external results are never imported automatically."
     )
+    example_columns = st.columns(4)
+    for index, example in enumerate(patent_discovery.EXAMPLE_QUERIES):
+        example_columns[index % 4].button(
+            example,
+            key=f"patent_discovery_example_{index}",
+            on_click=_set_patent_discovery_example,
+            args=(example,),
+            use_container_width=True,
+        )
+    mode = st.selectbox("Search mode", patent_discovery.SEARCH_MODES, key="patent_discovery_mode")
+    search = st.text_input(
+        "Search patent discovery",
+        placeholder="e.g. poor solubility formulation, API polymorph, Example Pharma or EP1234567",
+        key="patent_discovery_query",
+    )
+    result = data.patent_discovery_directory(search, mode)
     fda_status = initial.get("fda_status") or {}
     if "fallback" in str(fda_status.get("dataset_mode") or "").casefold():
         st.warning(
             "FDA currently has product-only Drugs@FDA fallback data. "
-            "Orange Book patent and exclusivity records are unavailable until the official archive refresh succeeds."
+            "Orange Book patent and exclusivity records are unavailable until the official archive refresh succeeds; "
+            "patent discovery remains available through retained non-FDA records and external discovery routes."
         )
         if fda_status.get("fallback_reason") or fda_status.get("archive_error"):
             st.caption(f"FDA source status: {fda_status.get('fallback_reason') or fda_status.get('archive_error')}")
-    search = st.text_input("Search patents", placeholder="Publication, product, ingredient, title, company or application")
-    result = data.unified_patent_directory(search)
-    st.link_button("Discover the same query in Google Patents ↗", result["google_discovery_url"])
-    st.caption("Google Patents discovery/cross-check only; results are not imported or treated as official evidence.")
-    rows = result["documents"]
-    if not rows:
-        theme.empty("No stored patent records found", "The page is database-first. Run the official Orange Book or EPO/UK refresh jobs to retain records.", "No matches")
+    if not search.strip():
+        theme.empty(
+            "Start a patent discovery search",
+            "Try a formulation problem, technology theme, product, ingredient, company, publication or application number.",
+            "Discovery ready",
+        )
+        st.markdown("### Lifecycle intelligence")
+        st.caption("FDA Orange Book and Drugs@FDA evidence remains available as product/application lifecycle context when relevant.")
         return
-    labels = {f"{row['publication_number']} · {row.get('title') or 'Title unavailable'}": row for row in rows}
-    selected = st.selectbox("Patent record", list(labels))
-    display_rows = []
-    for row in rows:
-        products = row.get("linked_products") or []
-        display_rows.append({
-            "Publication": row.get("publication_number"), "Office": row.get("jurisdiction"),
-            "Title": row.get("title"), "Product / ingredient": " · ".join(
-                f"{item.get('trade_name')} ({item.get('ingredient') or 'ingredient not recorded'})" for item in products
-            ), "Reported parties": row.get("reported_parties"), "Published": row.get("publication_date"),
-            "Legal-status evidence": row.get("legal_status_label") or row.get("legal_status_summary"),
-            "Expiry": row.get("expiry_date"), "Source": row.get("source_name"),
-            "Official evidence": row.get("official_source_url"),
-            "Google Patents discovery": row.get("google_patents_url"), "Last verified": row.get("last_verified_at"),
-        })
-    frame = pd.DataFrame(display_rows)
-    st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
-        "Official evidence": st.column_config.LinkColumn("Official evidence", display_text="Official source ↗"),
-        "Google Patents discovery": st.column_config.LinkColumn("Google Patents discovery", display_text="Cross-check ↗"),
-    })
-    if st.button("Open patent detail", type="primary"):
-        st.session_state["patent_document_id"] = labels[selected]["patent_document_id"]
-        st.session_state.pop("patent_lifecycle_id", None)
-        navigate("Patent Detail")
+
+    st.markdown("### Stored patent/lifecycle records")
+    rows = result["stored_records"]
+    if not rows:
+        st.info("No retained patent records match this query yet.")
+    else:
+        display_rows = []
+        for row in rows:
+            display_rows.append({
+                "Title": row.get("title"),
+                "Publication": row.get("publication_number"),
+                "Application": row.get("application_number"),
+                "Office": row.get("jurisdiction"),
+                "Assignee / applicant": row.get("assignee_applicant"),
+                "Date": row.get("date"),
+                "Snippet": row.get("snippet"),
+                "Matched terms": ", ".join(row.get("matched_query_terms") or []),
+                "Source label": row.get("source_label"),
+                "Source type": row.get("source_type"),
+                "Evidence status": row.get("evidence_status"),
+                **_patent_discovery_links(row),
+            })
+        st.dataframe(
+            pd.DataFrame(display_rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Google Patents": st.column_config.LinkColumn("Google Patents", display_text="Open ↗"),
+                "EPO / Espacenet": st.column_config.LinkColumn("EPO / Espacenet", display_text="Open ↗"),
+                "WIPO": st.column_config.LinkColumn("WIPO", display_text="Open ↗"),
+                "UK IPO": st.column_config.LinkColumn("UK IPO", display_text="Open ↗"),
+                "USPTO": st.column_config.LinkColumn("USPTO", display_text="Open ↗"),
+                "FDA / Orange Book": st.column_config.LinkColumn("FDA / Orange Book", display_text="Open ↗"),
+            },
+        )
+        documents = [row for row in rows if row.get("patent_document_id")]
+        if documents:
+            labels = {
+                f"{row.get('publication_number')} · {row.get('title') or 'Title unavailable'}": row
+                for row in documents
+            }
+            selected = st.selectbox("Stored patent record", list(labels), key="patent_discovery_document")
+            if st.button("Open patent detail", type="primary"):
+                st.session_state["patent_document_id"] = labels[selected]["patent_document_id"]
+                st.session_state.pop("patent_lifecycle_id", None)
+                navigate("Patent Detail")
+
+    st.markdown("### External patent discovery")
+    st.caption(
+        "Generated links preserve your query but do not fetch or import records. Google Patents is discovery/cross-check only; "
+        "official patent-office and FDA routes remain stronger source routes."
+    )
+    live_key = (search, mode)
+    if st.button("Search trusted patent routes live", key="patent_discovery_live_button"):
+        with st.spinner("Searching trusted patent discovery routes…"):
+            st.session_state["patent_discovery_live"] = {
+                "key": live_key,
+                "result": data.live_patent_discovery(search),
+            }
+    live = st.session_state.get("patent_discovery_live") or {}
+    if live.get("key") == live_key:
+        live_result = live.get("result") or {}
+        if not live_result.get("available"):
+            st.info("Live patent discovery is not configured; use the generated official search links below.")
+            if live_result.get("error"):
+                st.caption(str(live_result["error"]))
+        elif not live_result.get("results"):
+            st.info("No trusted live patent-discovery results were returned; use the generated official search links below.")
+        else:
+            live_frame = pd.DataFrame(live_result["results"])[[
+                "title", "source_label", "snippet", "matched_query_terms", "source_type", "evidence_status", "external_link"
+            ]].rename(columns={
+                "title": "Title", "source_label": "Source label", "snippet": "Snippet",
+                "matched_query_terms": "Matched terms", "source_type": "Source type",
+                "evidence_status": "Evidence status", "external_link": "Open discovery result",
+            })
+            st.dataframe(
+                live_frame,
+                use_container_width=True,
+                hide_index=True,
+                column_config={"Open discovery result": st.column_config.LinkColumn("Open discovery result", display_text="Open ↗")},
+            )
+    else:
+        st.caption("Live discovery runs only after you select the button above; no external search occurs during page loading.")
+    for route in result["external_routes"]:
+        st.link_button(
+            f"Open external discovery search · {route['source_label']} ↗",
+            route["external_link"],
+            use_container_width=True,
+        )
+    st.caption(
+        "External discovery results are not imported into PharmaTune. Orange Book application holder information is not proof of patent ownership. "
+        "No result is presented as a validity, enforceability or freedom-to-operate conclusion."
+    )
+    st.markdown("### Lifecycle intelligence")
+    st.caption("Orange Book and Drugs@FDA links appear only for product/ingredient and application-number searches, where US lifecycle context is relevant.")
 
 
 def patent_detail(navigate: Callable[[str], None]) -> None:
