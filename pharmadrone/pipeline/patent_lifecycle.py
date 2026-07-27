@@ -542,13 +542,14 @@ def global_documents(conn, *, search: str = "", jurisdiction: str = "All", sourc
     clauses = ["d.active=1"]; params: list[Any] = []
     if search.strip():
         q = f"%{search.strip().casefold()}%"
-        clauses.append("(LOWER(d.publication_number) LIKE ? OR LOWER(d.title) LIKE ? OR EXISTS "
+        clauses.append("(LOWER(d.publication_number) LIKE ? OR LOWER(d.application_number) LIKE ? "
+                       "OR LOWER(d.title) LIKE ? OR LOWER(d.abstract_text) LIKE ? OR EXISTS "
                        "(SELECT 1 FROM patent_parties pt WHERE pt.patent_document_id=d.patent_document_id "
                        "AND LOWER(pt.party_name) LIKE ?) OR EXISTS "
                        "(SELECT 1 FROM patent_product_links l JOIN lifecycle_products p ON p.lifecycle_id=l.lifecycle_id "
                        "WHERE l.patent_document_id=d.patent_document_id AND "
                        "(LOWER(p.trade_name) LIKE ? OR LOWER(p.ingredient) LIKE ? OR LOWER(p.application_number) LIKE ?)))")
-        params.extend([q, q, q, q, q, q])
+        params.extend([q, q, q, q, q, q, q, q])
     if jurisdiction != "All": clauses.append("d.jurisdiction=?"); params.append(jurisdiction)
     if source == "FDA Orange Book": clauses.append("d.source_name=?"); params.append(source)
     elif source == "EPO / EP": clauses.append("d.jurisdiction='EP'")
