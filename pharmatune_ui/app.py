@@ -10,7 +10,7 @@ from . import canonical_intelligence, pages, theme
 NAV = {
     "DISCOVER":["Overview","Opportunity Explorer","Companies","Products","Technologies"],
     "INTELLIGENCE":["Canonical Intelligence","Research & Innovation","Regulatory Signals","Deals & Funding","Patents"],
-    "WORKFLOW":["My Workspace","Saved Lists","Alerts","Human Validation","Case Studies","Pharmaceutical Memory"],
+    "WORKFLOW":["My Workspace","Saved Lists","Alerts","Human Validation","Case Study Builder","Case Studies","Pharmaceutical Memory"],
     "PLATFORM":["Data Sources","System Health","Settings"],
 }
 
@@ -20,6 +20,9 @@ HIDDEN_ROUTE_PARENT["Regulatory Detail"] = "Regulatory Signals"
 HIDDEN_ROUTE_PARENT["Patent Detail"] = "Patents"
 HIDDEN_ROUTE_PARENT["Research Detail"] = "Research & Innovation"
 HIDDEN_ROUTE_PARENT["Deal Detail"] = "Deals & Funding"
+HIDDEN_ROUTE_PARENT["Grant Detail"] = "Deals & Funding"
+HIDDEN_ROUTE_PARENT["Product Detail"] = "Products"
+HIDDEN_ROUTE_PARENT["Problem Detail"] = "Technologies"
 NAV_OPTIONS = [page for group in NAV.values() for page in group]
 NAVIGATION_KEY = "navigation_page"
 PENDING_NAVIGATION_KEY = "_pending_navigation_page"
@@ -91,14 +94,17 @@ def run(principal: dict | None = None) -> None:
         "Opportunity Detail":lambda:pages.opportunity_detail(_navigate),
         "Companies":lambda:pages.entity_page("Companies","Evidence-governed organisations, linked products and signals, and weekly-reviewed contact routes.","company",_navigate),
         "Company Detail":lambda:pages.company_detail(_navigate),
-        "Products":lambda:pages.entity_page("Products","Products represented in the current live opportunity index.","product"),
-        "Technologies":pages.technology_profile,
+        "Products":lambda:pages.products(_navigate),
+        "Product Detail":lambda:pages.product_detail(_navigate),
+        "Technologies":lambda:pages.technology_profile(_navigate),
+        "Problem Detail":lambda:pages.problem_detail(_navigate),
         "Canonical Intelligence":canonical_intelligence.render_page,
         "My Workspace":lambda:pages.customer_workspace(principal,_navigate),
         "Saved Lists":lambda:pages.saved_lists(principal,_navigate),
         "Alerts":lambda:pages.customer_alerts(principal,_navigate),
         "Human Validation":lambda:pages.validation(principal),
         "Case Studies":lambda:pages.case_studies(principal,_navigate),
+        "Case Study Builder":lambda:pages.case_study_builder(principal,_navigate),
         "Pharmaceutical Memory":pages.pharmaceutical_memory,
         "Data Sources":pages.sources,
         "System Health":pages.health,
@@ -108,6 +114,7 @@ def run(principal: dict | None = None) -> None:
         "Regulatory Detail":lambda:pages.regulatory_detail(_navigate),
         "Deals & Funding":lambda:pages.deals_funding(_navigate),
         "Deal Detail":lambda:pages.deal_detail(_navigate),
+        "Grant Detail":lambda:pages.grant_detail(_navigate),
         "Patents":lambda:pages.patents(_navigate),
         "Patent Detail":lambda:pages.patent_detail(_navigate),
         "Settings":lambda:pages.customer_settings(principal),

@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from pharmadrone.canonicalisation import CANDIDATE_STATUSES, ENTITY_TYPES, MATCH_RULES, SOURCE_TYPES
-from pharmadrone.pipeline import customer_product, human_audit, patent_discovery, seller_case_study
+from pharmadrone.pipeline import case_study_mvp, customer_product, human_audit, patent_discovery, seller_case_study
 from . import data, theme
 
 
@@ -478,14 +478,131 @@ def company_detail(navigate: Callable[[str], None]) -> None:
             st.dataframe(pd.DataFrame(changes)[["observed_at", "snapshot_json"]], hide_index=True, use_container_width=True)
 
 
-def technology_profile() -> None:
-    theme.page_header("Technology Profile", "Match real service-provider capabilities to indexed pharmaceutical problem signals.", "Discover")
+def products(navigate: Callable[[str], None]) -> None:
+    theme.page_header("Products", "Read-only product intelligence from retained opportunity, API and lifecycle evidence.", "Discover")
+    search = st.text_input("Search products", placeholder="Product or active ingredient")
+    rows = data.product_directory(search)
+    st.caption("This catalogue is read-only and does not infer product ownership, validity or commercial fit.")
+    if not rows:
+        theme.empty("No products found", "Broaden the search or wait for retained source refreshes.", "No matches")
+        return
+    frame = pd.DataFrame(rows).rename(columns={
+        "name": "Product", "opportunities": "Indexed signals",
+        "highest_score": "Highest opportunity score", "latest_signal": "Latest signal",
+    })
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+    selected = st.selectbox("Product profile", [row["name"] for row in rows])
+    if st.button("View product", type="primary"):
+        st.session_state["product_name"] = selected
+        navigate("Product Detail")
+
+
+def product_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Products"):
+        navigate("Products")
+    product_name = str(st.session_state.get("product_name") or "")
+    profile = data.product_detail(product_name) if product_name else None
+    if not profile:
+        theme.empty("Product not found", "Return to Products and select a retained product.", "Missing")
+        return
+    theme.page_header(profile["name"], "Retained product, API, opportunity and lifecycle context.", "Products")
+    a, b, c = st.columns(3)
+    a.metric("Indexed signals", len(profile["opportunities"]))
+    b.metric("Highest score", profile["highest_score"])
+    c.metric("Linked APIs", len(profile["apis"]))
+    canonical = profile.get("canonical") or {}
+    st.caption(
+        f"Canonical identity: {_safe(canonical.get('identity_status'), 'No canonical product record')} · "
+        f"Evidence: {_safe(canonical.get('evidence_status'), 'Not established')}"
+    )
+    st.markdown("### Active ingredients")
+    if profile["apis"]:
+        st.dataframe(pd.DataFrame(profile["apis"]), use_container_width=True, hide_index=True, column_config={
+            "evidence_url": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    else:
+        st.caption("No evidence-governed canonical product-to-API relationship is retained.")
+    st.markdown("### Opportunity signals")
+    if profile["opportunities"]:
+        st.dataframe(pd.DataFrame(profile["opportunities"])[[
+            "company", "molecule", "problem_category", "score", "grade", "source_type", "evidence_url",
+        ]], use_container_width=True, hide_index=True, column_config={
+            "evidence_url": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    st.markdown("### Patent and lifecycle context")
+    if profile["lifecycle"]:
+        st.dataframe(pd.DataFrame(profile["lifecycle"]), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No retained patent or lifecycle product record matches this product.")
+
+
+def technology_profile(navigate: Callable[[str], None]) -> None:
+    theme.page_header("Technologies", "Explore pharmaceutical problem signals and their evidence-linked technology approaches.", "Discover")
     st.info("Technology fit is expressed qualitatively. It does not imply commercial readiness or buying intent.")
-    rows = data.entity_summary("problem_category",50)
+    f1, f2, f3 = st.columns([2, 2, 1])
+    search = f1.text_input("Search problem categories", placeholder="Solubility, stability, manufacturing…")
+    score_range = f2.slider("Opportunity score", 0, 100, (0, 100))
+    recency = f3.selectbox("Recency", ["All", "Last 30 days", "Last 90 days"])
+    rows = data.problem_directory(
+        search,
+        minimum_score=score_range[0],
+        maximum_score=score_range[1],
+        recency=recency,
+    )
     if rows:
         st.markdown("### Indexed problem landscape")
         st.dataframe(pd.DataFrame(rows).rename(columns={"name":"Problem category","opportunities":"Indexed signals","highest_score":"Highest opportunity score","latest_signal":"Latest signal"}),use_container_width=True,hide_index=True)
-    theme.empty("Persistent technology catalogue", "A genuine technology-ownership catalogue is planned for the Research & Innovation and Patents checkpoints. Current matching uses the approved service-provider profile.", "Planned")
+        selected = st.selectbox("Problem profile", [row["name"] for row in rows])
+        if st.button("View problem category", type="primary"):
+            st.session_state["problem_category"] = selected
+            navigate("Problem Detail")
+    else:
+        theme.empty("No problem categories found", "Broaden the filters or wait for retained source refreshes.", "No matches")
+    st.caption("The persistent technology catalogue contains governed canonical relationships only; no fit is inferred from keywords.")
+
+
+def problem_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Technologies"):
+        navigate("Technologies")
+    problem_name = str(st.session_state.get("problem_category") or "")
+    profile = data.problem_detail(problem_name) if problem_name else None
+    if not profile:
+        theme.empty("Problem category not found", "Return to Technologies and select a retained problem category.", "Missing")
+        return
+    canonical = profile.get("canonical") or {}
+    theme.page_header(profile["name"], _safe(canonical.get("definition"), "Retained pharmaceutical problem signal."), "Technologies")
+    st.caption(
+        f"Canonical identity: {_safe(canonical.get('identity_status'), 'No exact canonical record')} · "
+        f"Evidence: {_safe(canonical.get('evidence_status'), 'Not established')}"
+    )
+    st.markdown("### Evidence-linked technology approaches")
+    if profile["technologies"]:
+        st.dataframe(pd.DataFrame(profile["technologies"]), use_container_width=True, hide_index=True, column_config={
+            "evidence_url": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    else:
+        st.info("No reviewed canonical link exists yet. Use Human Validation to approve exact candidates.")
+    a, b, c = st.columns(3)
+    if a.button("Explore patent discovery"):
+        st.session_state["patent_discovery_query"] = profile["name"]
+        navigate("Patents")
+    if b.button("Explore research"):
+        st.session_state["research_intelligence_query"] = profile["name"]
+        navigate("Research & Innovation")
+    if c.button("Build case study"):
+        st.session_state["case_study_query"] = profile["name"]
+        st.session_state.pop("case_study_report", None)
+        navigate("Case Study Builder")
+    st.markdown("### Products and APIs")
+    st.write("Products: " + (", ".join(profile["products"]) if profile["products"] else "No retained products."))
+    st.write("APIs: " + (", ".join(profile["apis"]) if profile["apis"] else "No retained APIs."))
+    st.markdown("### Opportunity signals")
+    if profile["opportunities"]:
+        st.dataframe(pd.DataFrame(profile["opportunities"]), use_container_width=True, hide_index=True, column_config={
+            "evidence_url": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    else:
+        st.caption("No retained opportunity signals match this category.")
 
 
 def _set_patent_discovery_example(query: str) -> None:
@@ -877,7 +994,11 @@ def research_innovation(navigate: Callable[[str], None]) -> None:
     )
     initial = data.research_innovation_directory()
     f1, f2 = st.columns([3, 1])
-    search = f1.text_input("Search research intelligence", placeholder="Organisation, publication, DOI, programme or technology")
+    search = f1.text_input(
+        "Search research intelligence",
+        placeholder="Organisation, publication, DOI, programme or technology",
+        key="research_intelligence_query",
+    )
     country = f2.selectbox("Country", ["All"] + list(initial["facets"].get("country") or []))
     result = data.research_innovation_directory(search, country)
     metrics = result["metrics"]
@@ -1127,6 +1248,15 @@ def deals_funding(navigate: Callable[[str], None]) -> None:
     with grants_tab:
         rows = result["funding"]
         if rows:
+            page_size = 25
+            total_pages = max(1, math.ceil(len(rows) / page_size))
+            grant_page = min(max(1, int(st.session_state.get("grant_table_page", 1))), total_pages)
+            page_rows = rows[(grant_page - 1) * page_size:grant_page * page_size]
+            labels = {
+                f"{row.get('funder_name') or 'Unknown funder'} · {row.get('award_id') or row['funding_award_id']}": row
+                for row in page_rows
+            }
+            selected = st.selectbox("Research grant", list(labels))
             frame = pd.DataFrame([{
                 "Funding type": row.get("funding_type"), "Funder": row.get("funder_name") or "Not stated",
                 "Recipient": row.get("recipient_name") or "Not established", "Award ID": row.get("award_id"),
@@ -1134,10 +1264,21 @@ def deals_funding(navigate: Callable[[str], None]) -> None:
                 "Amount": row.get("value_text") or (f"{row.get('currency')} {row.get('amount_value'):,.0f}" if row.get("amount_value") is not None and row.get("currency") else "Not stated"),
                 "Evidence status": row.get("evidence_status"), "Boundary": row.get("validation_status"),
                 "Evidence": row.get("evidence_url"), "Last reviewed": row.get("last_verified_at"),
-            } for row in rows])
+            } for row in page_rows])
             st.dataframe(frame, use_container_width=True, hide_index=True, column_config={
                 "Evidence": st.column_config.LinkColumn("Evidence", display_text="Open publication evidence ↗")
             })
+            previous, indicator, next_page = st.columns([1, 2, 1])
+            if previous.button("Previous grants", disabled=grant_page <= 1):
+                st.session_state["grant_table_page"] = grant_page - 1
+                st.rerun()
+            indicator.caption(f"Page {grant_page} of {total_pages} · {len(rows)} bounded results")
+            if next_page.button("Next grants", disabled=grant_page >= total_pages):
+                st.session_state["grant_table_page"] = grant_page + 1
+                st.rerun()
+            if st.button("Open grant detail", type="primary"):
+                st.session_state["funding_award_id"] = labels[selected]["funding_award_id"]
+                navigate("Grant Detail")
             if _can_export(): st.download_button("Export research grants (.csv)", frame.to_csv(index=False).encode("utf-8"), "pharmatune_research_grants.csv", "text/csv")
         else:
             st.caption("No retained scholarly funding metadata matches these filters.")
@@ -1193,6 +1334,45 @@ def deal_detail(navigate: Callable[[str], None]) -> None:
     with st.expander("Append-only event history"):
         history = profile.get("history") or []
         st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True) if history else st.caption("No observations yet.")
+
+
+def grant_detail(navigate: Callable[[str], None]) -> None:
+    if st.button("← Deals & Funding Intelligence"):
+        navigate("Deals & Funding")
+    award_id = str(st.session_state.get("funding_award_id") or "")
+    profile = data.funding_award_profile(award_id) if award_id else None
+    if not profile:
+        theme.empty("Research grant not found", "Return to Deals & Funding and select a retained award.", "Missing")
+        return
+    theme.page_header(
+        _safe(profile.get("programme_name"), profile.get("award_id") or "Research grant"),
+        f"{_safe(profile.get('funder_name'), 'Funder not stated')} → {_safe(profile.get('recipient_name'), 'Recipient not established')}",
+        "Deals & Funding",
+    )
+    value = profile.get("value_text") or (
+        f"{profile.get('currency')} {profile.get('amount_value'):,.0f}"
+        if profile.get("amount_value") is not None and profile.get("currency") else "Not stated"
+    )
+    a, b, c = st.columns(3)
+    a.metric("Award ID", _safe(profile.get("award_id")))
+    b.metric("Published amount", value)
+    c.metric("Evidence", _safe(profile.get("evidence_status")))
+    st.write(f"**Funding type:** {_safe(profile.get('funding_type'))}")
+    st.write(f"**Validation boundary:** {_safe(profile.get('validation_status'))}")
+    st.caption(
+        f"Source {_safe(profile.get('source_name'))} · ID {_safe(profile.get('source_id'))} · "
+        f"Last reviewed {_safe(profile.get('last_verified_at'))}"
+    )
+    if str(profile.get("evidence_url") or "").startswith("http"):
+        st.link_button("Open publication evidence ↗", profile["evidence_url"])
+    links = profile.get("canonical_links") or []
+    st.markdown("### Reviewed canonical links")
+    if links:
+        st.dataframe(pd.DataFrame(links), use_container_width=True, hide_index=True, column_config={
+            "evidence_url": st.column_config.LinkColumn("Evidence", display_text="Open source ↗")
+        })
+    else:
+        st.info("No reviewed canonical link exists yet. Use Human Validation to approve exact candidates.")
 
 
 def _set_canonicalisation_page(page: int) -> None:
@@ -1448,6 +1628,81 @@ def validation(principal: dict[str, Any] | None = None) -> None:
         history, corrections = data.audit_histories(record["audit_key"])
         st.dataframe(pd.DataFrame(history),use_container_width=True,hide_index=True) if history else st.caption("No audit versions yet.")
         if corrections: st.dataframe(pd.DataFrame(corrections),use_container_width=True,hide_index=True)
+
+
+def _set_case_study_example(query: str) -> None:
+    st.session_state["case_study_query"] = query
+    st.session_state.pop("case_study_report", None)
+    st.session_state.pop("case_study_patent_result", None)
+
+
+def case_study_builder(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:
+    theme.page_header(
+        "Case Study Builder",
+        "Build a source-linked, evidence-grounded report from retained PharmaTune intelligence.",
+        "Workflow",
+    )
+    st.warning(
+        "This report supports analyst discovery and validation. It is not legal, patent-validity, "
+        "freedom-to-operate, regulatory, investment or commercial advice."
+    )
+    columns = st.columns(5)
+    for index, example in enumerate(case_study_mvp.EXAMPLE_CASES):
+        columns[index].button(
+            example,
+            key=f"case_study_example_{index}",
+            on_click=_set_case_study_example,
+            args=(example,),
+        )
+    query = st.text_input(
+        "Pharmaceutical problem, technology, product, API or company",
+        key="case_study_query",
+        placeholder="e.g. poor solubility",
+    )
+    case_type = st.selectbox("Case-study type", case_study_mvp.CASE_TYPES)
+    st.caption("Stored evidence is searched first. Live patent discovery runs only when explicitly requested.")
+    if st.button("Run patent source discovery for this case", disabled=not query.strip()):
+        with st.spinner("Requesting configured patent discovery sources…"):
+            st.session_state["case_study_patent_result"] = {
+                "query": query,
+                "result": data.live_patent_discovery(query),
+            }
+    live_state = st.session_state.get("case_study_patent_result") or {}
+    live_result = live_state.get("result") if live_state.get("query") == query else None
+    if live_result:
+        st.caption(
+            f"Explicit live discovery result available: {len(live_result.get('results') or [])} records "
+            f"and {len(live_result.get('providers') or {})} provider statuses."
+        )
+    if st.button("Generate case study report", type="primary", disabled=not query.strip()):
+        with st.spinner("Collecting bounded retained evidence…"):
+            st.session_state["case_study_report"] = data.build_case_study(
+                query,
+                case_type,
+                direct_patent_result=live_result,
+            )
+    report = st.session_state.get("case_study_report")
+    if not report:
+        st.info("Choose an example or enter a case theme, then generate the report.")
+        return
+    st.markdown(report["markdown"])
+    if not report.get("reviewed_canonical_links"):
+        st.info("No reviewed canonical link exists yet. Use Human Validation to approve exact candidates.")
+    reviewed, review_required = st.tabs(["Human-reviewed canonical links", "Requires review"])
+    with reviewed:
+        rows = report.get("reviewed_canonical_links") or []
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True) if rows else st.caption("No human-reviewed canonical links.")
+    with review_required:
+        rows = report.get("requires_review_links") or []
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True) if rows else st.caption("No candidate links require review.")
+    st.markdown("### Download and copy")
+    filename = "pharmatune_case_study_" + "_".join(query.casefold().split())[:50]
+    a, b = st.columns(2)
+    a.download_button("Download Markdown", report["markdown"].encode("utf-8"), f"{filename}.md", "text/markdown")
+    b.download_button("Download plain text", report["markdown"].encode("utf-8"), f"{filename}.txt", "text/plain")
+    with st.expander("Copy-ready report text"):
+        st.code(report["markdown"], language="markdown")
+    st.caption(f"{len(report.get('sources') or [])} bounded source-table rows included.")
 
 
 def case_studies(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:

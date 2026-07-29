@@ -237,3 +237,29 @@ def profile(conn, event_id: str) -> dict[str, Any] | None:
         (event_id,),
     ).fetchall()]
     return result
+
+
+def funding_profile(conn, funding_award_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """SELECT funding_award_id,funding_type,funder_name,recipient_name,award_id,
+        programme_name,amount_value,currency,value_text,source_name,source_id,
+        evidence_url,evidence_status,validation_status,last_verified_at,active
+        FROM funding_awards WHERE funding_award_id=? LIMIT 1""",
+        (funding_award_id,),
+    ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["canonical_links"] = [
+        dict(link)
+        for link in conn.execute(
+            """SELECT canonical_entity_type,canonical_id,evidence_url,evidence_status,
+            evidence_basis,verification_status
+            FROM canonical_record_links
+            WHERE source_table='funding_awards' AND source_record_id=?
+              AND active=1 AND link_status='accepted'
+            ORDER BY canonical_entity_type,canonical_id LIMIT 20""",
+            (funding_award_id,),
+        ).fetchall()
+    ]
+    return result
