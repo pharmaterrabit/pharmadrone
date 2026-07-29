@@ -1685,7 +1685,34 @@ def case_study_builder(principal: dict[str, Any], navigate: Callable[[str], None
     if not report:
         st.info("Choose an example or enter a case theme, then generate the report.")
         return
+    readiness = report.get("case_readiness")
+    if readiness == "Ready for analyst review":
+        st.success(f"Case readiness: {readiness}")
+    elif readiness == "Partial evidence only":
+        st.warning(f"Case readiness: {readiness}")
+    else:
+        st.error("Case readiness: Not enough retained evidence yet")
+        st.warning("This report currently has insufficient retained evidence and should not be used as a case study yet.")
+    with st.expander("Search strategy"):
+        st.write(f"**Original query:** {report.get('query')}")
+        st.write("**Expanded terms:** " + " · ".join(report.get("expanded_terms") or []))
+        st.write("**Evidence buckets searched:** " + " · ".join(report.get("search_buckets") or []))
     st.markdown(report["markdown"])
+    if readiness == "Not enough retained evidence yet":
+        st.markdown("### Continue evidence discovery")
+        c1, c2, c3, c4 = st.columns(4)
+        if c1.button("Open Opportunity Explorer"):
+            st.session_state["opp_search"] = report.get("query") or query
+            st.session_state["opp_page"] = 1
+            navigate("Opportunity Explorer")
+        if c2.button("Open Patent Discovery"):
+            st.session_state["patent_discovery_query"] = report.get("query") or query
+            navigate("Patents")
+        if c3.button("Open Research & Innovation"):
+            st.session_state["research_intelligence_query"] = report.get("query") or query
+            navigate("Research & Innovation")
+        if c4.button("Open Human Validation"):
+            navigate("Human Validation")
     if not report.get("reviewed_canonical_links"):
         st.info("No reviewed canonical link exists yet. Use Human Validation to approve exact candidates.")
     reviewed, review_required = st.tabs(["Human-reviewed canonical links", "Requires review"])
