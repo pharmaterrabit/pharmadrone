@@ -11,7 +11,7 @@ from pharmadrone import db
 from pharmadrone import production_readiness
 from pharmadrone.canonicalisation import CanonicalisationService
 from pharmadrone.intelligence import CanonicalIntelligenceService
-from pharmadrone.pipeline import account_intelligence, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_discovery, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
+from pharmadrone.pipeline import account_intelligence, case_study_mvp, commercial_intelligence, customer_product, human_audit, opportunity_index, patent_discovery, patent_lifecycle, pharmaceutical_memory as memory, regulatory_intelligence, research_innovation, seller_case_study
 from pharmadrone.scheduler import repository as scheduler_repository
 
 
@@ -359,6 +359,152 @@ def entity_summary(field: str, limit: int = 100) -> list[dict[str, Any]]:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def product_directory(search: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    conn = connection()
+    try:
+        clauses = ["COALESCE(product,'')<>''", _active_where(False)]
+        params: list[Any] = []
+        if search.strip():
+            clauses.append("(LOWER(product) LIKE ? OR LOWER(COALESCE(molecule,'')) LIKE ?)")
+            pattern = f"%{search.strip().casefold()}%"
+            params.extend([pattern, pattern])
+        params.append(max(1, min(int(limit), 250)))
+        return [dict(row) for row in conn.execute(
+            f"""SELECT product AS name,COUNT(*) AS opportunities,
+            MAX(COALESCE(score,0)) AS highest_score,
+            MAX(COALESCE(last_updated_at,last_checked_at)) AS latest_signal
+            FROM opportunity_index WHERE {' AND '.join(clauses)}
+            GROUP BY product ORDER BY opportunities DESC,product LIMIT ?""",
+            tuple(params),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def product_detail(product_name: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        rows = [dict(row) for row in conn.execute(
+            f"""SELECT stable_lead_id,company,product,molecule,problem_category,source_type,source_id,
+            score,grade,evidence_links_json,last_updated_at,last_checked_at
+            FROM opportunity_index WHERE LOWER(product)=? AND {_active_where(False)}
+            ORDER BY COALESCE(score,0) DESC,COALESCE(last_updated_at,last_checked_at) DESC LIMIT 100""",
+            (product_name.casefold(),),
+        ).fetchall()]
+        if not rows:
+            return None
+        for row in rows:
+            row["evidence_url"] = _first_official_url(row.get("evidence_links_json"))
+        lifecycle = patent_lifecycle.products(conn, search=product_name, limit=50)
+        canonical = dict(conn.execute(
+            """SELECT product_id,canonical_name,identity_status,evidence_status
+            FROM product_profiles WHERE active=1 AND LOWER(canonical_name)=? LIMIT 1""",
+            (product_name.casefold(),),
+        ).fetchone() or {})
+        apis = []
+        if canonical:
+            apis = [dict(row) for row in conn.execute(
+                """SELECT a.api_id,a.canonical_name,r.relationship_type,r.evidence_status,
+                r.verification_status,r.evidence_url
+                FROM product_api_relationships r JOIN api_profiles a ON a.api_id=r.api_id
+                WHERE r.product_id=? AND r.active=1 ORDER BY a.canonical_name LIMIT 50""",
+                (canonical["product_id"],),
+            ).fetchall()]
+        return {
+            "name": product_name,
+            "opportunities": rows,
+            "apis": apis,
+            "canonical": canonical,
+            "lifecycle": lifecycle,
+            "highest_score": max(int(row.get("score") or 0) for row in rows),
+            "latest_signal": max(str(row.get("last_updated_at") or row.get("last_checked_at") or "") for row in rows),
+            "problem_categories": sorted({_safe for _safe in (str(row.get("problem_category") or "").strip() for row in rows) if _safe}),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def problem_directory(
+    search: str = "",
+    *,
+    minimum_score: int = 0,
+    maximum_score: int = 100,
+    recency: str = "All",
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    conn = connection()
+    try:
+        clauses = ["COALESCE(problem_category,'')<>''", _active_where(False), "COALESCE(score,0) BETWEEN ? AND ?"]
+        params: list[Any] = [minimum_score, maximum_score]
+        if search.strip():
+            clauses.append("LOWER(problem_category) LIKE ?")
+            params.append(f"%{search.strip().casefold()}%")
+        if recency == "Last 30 days":
+            clauses.append("COALESCE(last_updated_at,last_checked_at)>?")
+            params.append((datetime.now(timezone.utc) - timedelta(days=30)).isoformat())
+        elif recency == "Last 90 days":
+            clauses.append("COALESCE(last_updated_at,last_checked_at)>?")
+            params.append((datetime.now(timezone.utc) - timedelta(days=90)).isoformat())
+        params.append(max(1, min(int(limit), 250)))
+        return [dict(row) for row in conn.execute(
+            f"""SELECT problem_category AS name,COUNT(*) AS opportunities,
+            MAX(COALESCE(score,0)) AS highest_score,
+            MAX(COALESCE(last_updated_at,last_checked_at)) AS latest_signal
+            FROM opportunity_index WHERE {' AND '.join(clauses)}
+            GROUP BY problem_category ORDER BY opportunities DESC,problem_category LIMIT ?""",
+            tuple(params),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def problem_detail(problem_name: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        opportunities = [dict(row) for row in conn.execute(
+            f"""SELECT stable_lead_id,company,product,molecule,problem_category,source_type,source_id,
+            score,grade,evidence_links_json,last_updated_at,last_checked_at
+            FROM opportunity_index WHERE LOWER(problem_category)=? AND {_active_where(False)}
+            ORDER BY COALESCE(score,0) DESC LIMIT 100""",
+            (problem_name.casefold(),),
+        ).fetchall()]
+        canonical = dict(conn.execute(
+            """SELECT problem_id,display_name,definition,identity_status,evidence_status
+            FROM pharmaceutical_problems WHERE active=1 AND LOWER(display_name)=? LIMIT 1""",
+            (problem_name.casefold(),),
+        ).fetchone() or {})
+        technologies = []
+        if canonical:
+            technologies = [dict(row) for row in conn.execute(
+                """SELECT s.technology_id,s.display_name,s.mechanism_summary,r.relationship_type,
+                r.relationship_statement,r.evidence_url,r.evidence_status,r.inference_status,
+                r.confidence_score
+                FROM technology_problem_relationships r
+                JOIN technology_solutions s ON s.technology_id=r.technology_id
+                WHERE r.problem_id=? AND r.active=1 AND s.active=1
+                ORDER BY r.confidence_score DESC,s.display_name LIMIT 50""",
+                (canonical["problem_id"],),
+            ).fetchall()]
+        if not opportunities and not canonical:
+            return None
+        for row in opportunities:
+            row["evidence_url"] = _first_official_url(row.get("evidence_links_json"))
+        return {
+            "name": problem_name,
+            "opportunities": opportunities,
+            "canonical": canonical,
+            "technologies": technologies,
+            "products": sorted({str(row.get("product") or "").strip() for row in opportunities if str(row.get("product") or "").strip()}),
+            "apis": sorted({str(row.get("molecule") or "").strip() for row in opportunities if str(row.get("molecule") or "").strip()}),
+        }
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def account_directory(search: str = "") -> dict[str, Any]:
     """Read the weekly-built organisation projection without slowing page navigation."""
     conn = connection()
@@ -516,6 +662,34 @@ def commercial_event_profile(event_id: str) -> dict[str, Any] | None:
     conn = connection()
     try:
         return commercial_intelligence.profile(conn, event_id)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def funding_award_profile(funding_award_id: str) -> dict[str, Any] | None:
+    conn = connection()
+    try:
+        return commercial_intelligence.funding_profile(conn, funding_award_id)
+    finally:
+        conn.close()
+
+
+def build_case_study(
+    query: str,
+    case_type: str,
+    *,
+    direct_patent_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a bounded report from retained data and an optional explicit live result."""
+    conn = connection()
+    try:
+        return case_study_mvp.build(
+            conn,
+            query,
+            case_type,
+            direct_patent_result=direct_patent_result,
+        )
     finally:
         conn.close()
 
