@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import quote_plus, urldefrag, urlparse
 
 from .. import settings
+from ..pipeline.query_safety import normalise_query
 from ..connectors import tavily_search
 from . import patent_lifecycle
 
@@ -115,19 +116,45 @@ def live_discovery_health() -> dict[str, Any]:
     }
 
 
+_PATENT_QUERY_SEEDS = {
+    "dissolution innovation": (
+        "dissolution patent",
+        "dissolution formulation",
+        "drug dissolution patent",
+    ),
+    "poor solubility": (
+        "poor solubility patent",
+        "solubility formulation",
+        "bioavailability patent",
+    ),
+    "amorphous solid dispersion": (
+        "amorphous solid dispersion patent",
+        "solid dispersion formulation",
+        "bioavailability solid dispersion",
+    ),
+}
+
+
+def _safe_patent_terms(query: str) -> str:
+    text = normalise_query(query)
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:site|inurl|intitle):\S+", " ", text, flags=re.I)
+    text = re.sub(r"\b[\w.-]+\.(?:com|org|int|gov|uk)(?:/\S*)?\b", " ", text, flags=re.I)
+    text = text.replace('"', " ").replace("'", " ")
+    text = re.sub(r"[^\w\s-]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:55]
+
+
 def patent_focused_queries(query: str) -> list[str]:
-    """Build a small, deterministic Tavily query set for broad patent discovery."""
-    text = _text(query)
+    """Build at most three short Tavily-safe patent discovery queries."""
+    text = _safe_patent_terms(query)
     if not text:
         return []
-    return [
-        f"{text} pharmaceutical patent",
-        f"{text} formulation patent",
-        f"{text} drug delivery patent",
-        f"{text} site:patents.google.com",
-        f"{text} site:worldwide.espacenet.com",
-        f"{text} site:patentscope.wipo.int",
-    ]
+    seeded = _PATENT_QUERY_SEEDS.get(text.casefold())
+    if seeded:
+        return list(seeded)
+    variants = (f"{text} patent", f"{text} formulation", f"{text} drug delivery")
+    return list(dict.fromkeys(item[:80].strip() for item in variants))
 
 
 def _canonical_url(url: str) -> str:
@@ -304,7 +331,7 @@ def live_external_discovery(query: str, *, max_results: int = 12) -> dict[str, A
         return {
             "provider": "Tavily",
             "configured": live_discovery_health()["configured"],
-            "status": "empty_query",
+            "status": "no_results",
             "message": "Enter a patent discovery query first.",
             "error": "",
             "results": [],
@@ -324,6 +351,8 @@ def live_external_discovery(query: str, *, max_results: int = 12) -> dict[str, A
     per_query = max(2, min(5, (limit + len(queries) - 1) // len(queries)))
     records: list[dict[str, Any]] = []
     errors: list[str] = []
+    rejected_queries: list[str] = []
+    failed_queries: list[str] = []
     successful_queries = 0
     for focused_query in queries:
         result = tavily_search.search(
@@ -333,16 +362,30 @@ def live_external_discovery(query: str, *, max_results: int = 12) -> dict[str, A
         )
         if not result.ok:
             errors.append(f"{focused_query}: {_text(result.error) or 'provider error'}")
+            if result.stats.get("rejected"):
+                rejected_queries.append(focused_query)
+            else:
+                failed_queries.append(focused_query)
             continue
         successful_queries += 1
         records.extend(result.records)
 
+    if not successful_queries and rejected_queries and not failed_queries:
+        return {
+            "provider": "Tavily",
+            "configured": True,
+            "status": "provider_rejected_query",
+            "message": "Live discovery could not run this query. PharmaTune has simplified the search and kept official patent-search links below.",
+            "error": "; ".join(errors),
+            "results": [],
+            "queries": queries,
+        }
     if not successful_queries:
         return {
             "provider": "Tavily",
             "configured": True,
-            "status": "error",
-            "message": "Live patent discovery could not run because Tavily returned an error.",
+            "status": "provider_error",
+            "message": "Live discovery is currently unavailable for this query. Use the official search routes below.",
             "error": "; ".join(errors),
             "results": [],
             "queries": queries,
@@ -376,10 +419,11 @@ def live_external_discovery(query: str, *, max_results: int = 12) -> dict[str, A
         deduplicated.values(),
         key=lambda row: (-int(row["ranking_score"]), row["title"].casefold(), row["external_link"]),
     )[:limit]
+    status = "partial_results" if errors else ("available" if rows else "no_results")
     return {
         "provider": "Tavily",
         "configured": True,
-        "status": "available" if rows else "no_results",
+        "status": status,
         "message": (
             "Live trusted patent discovery results are available."
             if rows
@@ -388,4 +432,6 @@ def live_external_discovery(query: str, *, max_results: int = 12) -> dict[str, A
         "error": "; ".join(errors),
         "results": rows,
         "queries": queries,
+        "rejected_queries": rejected_queries,
+        "failed_queries": failed_queries,
     }

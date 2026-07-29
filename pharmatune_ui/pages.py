@@ -639,15 +639,22 @@ def patents(navigate: Callable[[str], None]) -> None:
     live = st.session_state.get("patent_discovery_live") or {}
     if live.get("key") == live_key:
         live_result = live.get("result") or {}
-        if live_result.get("status") == "error":
-            st.error("Live patent discovery is unavailable because Tavily returned an error.")
-            st.caption(str(live_result.get("error") or "No provider detail was returned."))
+        if live_result.get("status") == "provider_rejected_query":
+            st.warning(
+                "Live discovery could not run this query. PharmaTune has simplified the search "
+                "and kept official patent-search links below."
+            )
+        elif live_result.get("status") == "provider_error":
+            st.error(
+                "Live discovery is currently unavailable for this query. "
+                "Use the official search routes below."
+            )
         elif live_result.get("status") == "no_results":
             st.info(
                 "Tavily is configured but returned no trusted patent-discovery results. "
                 "Generated official patent-search links are shown below."
             )
-        elif live_result.get("status") == "available" and live_result.get("results"):
+        elif live_result.get("status") in {"available", "partial_results"} and live_result.get("results"):
             live_frame = pd.DataFrame(live_result["results"])[[
                 "title", "source_label", "source_domain", "snippet", "matched_query_terms",
                 "publication_number", "assignee_applicant", "date", "evidence_status", "external_link"
@@ -664,14 +671,20 @@ def patents(navigate: Callable[[str], None]) -> None:
                 hide_index=True,
                 column_config={"Open source": st.column_config.LinkColumn("Open source", display_text="Open ↗")},
             )
-            if live_result.get("error"):
+            if live_result.get("status") == "partial_results":
                 st.warning(
-                    "Some Tavily patent-discovery queries returned an error; "
-                    "the trusted results shown above came from successful queries."
+                    "Live discovery returned partial results after simplifying the query. "
+                    "Official search routes remain below."
                 )
-                st.caption(str(live_result["error"]))
+        elif live_result.get("status") == "partial_results":
+            st.warning(
+                "Live discovery returned no trusted results after simplifying the query. "
+                "Official search routes remain below."
+            )
         elif live_result.get("status") == "unconfigured":
             st.info(str(live_result.get("message") or live_health.get("message")))
+        if live_result.get("queries"):
+            st.caption("Simplified queries tried: " + " · ".join(live_result["queries"]))
     else:
         st.caption("Live discovery runs only after you select the button above; no external search occurs during page loading.")
     st.markdown("### Official search routes")
