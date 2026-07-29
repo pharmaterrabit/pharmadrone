@@ -49,6 +49,7 @@ def test_case_study_report_has_complete_structure_and_retained_evidence(tmp_path
     assert "Research Council" in report["markdown"]
     assert report["direct_patents"] == []
     assert report["patent_routes"]
+    assert report["case_readiness"] == "Ready for analyst review"
     conn.close()
 
 
@@ -63,6 +64,147 @@ def test_case_study_is_resilient_when_patent_and_stored_sources_are_empty(tmp_pa
     assert "Tavily fallback:" in report["markdown"]
     assert "No matching product/API evidence was found" in report["markdown"]
     assert any(item.startswith("No reviewed canonical link exists yet") for item in report["limitations"])
+    assert report["case_readiness"] == "Not enough retained evidence yet"
+    conn.close()
+
+
+def test_approved_case_themes_expand_deterministically():
+    poor = case_study_mvp.expand_query_terms("Poor solubility")
+    assert {
+        "dissolution", "bioavailability", "ASD", "nanosuspension",
+        "cocrystal", "lipid formulation",
+    }.issubset(set(poor))
+    dissolution = case_study_mvp.expand_query_terms("Dissolution innovation")
+    assert {
+        "dissolution", "drug release", "amorphous solid dispersion",
+        "modified release",
+    }.issubset(set(dissolution))
+    assert case_study_mvp.expand_query_terms("Unmapped theme") == ["Unmapped theme"]
+
+
+def test_expanded_terms_retrieve_and_rank_related_retained_evidence(tmp_path):
+    conn = db.connect(tmp_path / "expanded.db")
+    conn.execute(
+        """INSERT INTO opportunity_index
+        (stable_lead_id,company,product,molecule,problem_category,source_type,source_id,
+         region,evidence_links_json,score,grade,last_updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "lead-expanded", "Formulation Co", "Candidate X", "API X",
+            "Dissolution rate and bioavailability limitation", "research", "EXP-1",
+            "Global", '["https://example.org/expanded"]', 76, "B",
+            "2026-07-30T10:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    report = case_study_mvp.build(conn, "Poor solubility", "Formulation innovation")
+    assert report["evidence_counts"]["opportunities"] == 1
+    assert report["evidence_counts"]["products_apis"] == 2
+    assert {"dissolution", "dissolution rate", "bioavailability"}.issubset(
+        set(report["opportunities"][0]["matched_terms"])
+    )
+    assert "Expanded search terms used" in report["markdown"]
+    assert "Evidence was retrieved using the case theme and related formulation/problem terms." in report["markdown"]
+    assert report["case_readiness"] == "Ready for analyst review"
+    conn.close()
+
+
+def test_one_retained_bucket_is_partial_evidence(tmp_path):
+    conn = db.connect(tmp_path / "partial.db")
+    conn.execute(
+        """INSERT INTO funding_awards
+        (funding_award_id,funding_type,funder_name,recipient_name,award_id,programme_name,
+         source_type,source_name,source_id,evidence_url,evidence_status,validation_status,
+         last_verified_at,next_review_at,active)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+        (
+            "grant-partial", "Research grant", "Research Council", "University",
+            "GRANT-ASD", "Amorphous solid dispersion research", "paper", "OpenAlex",
+            "WORK-ASD", "https://example.org/asd-grant", "Published funding metadata",
+            "Requires review", "2026-07-30T10:00:00+00:00",
+            "2026-10-30T10:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    report = case_study_mvp.build(conn, "Poor solubility", "Formulation innovation")
+    assert report["evidence_counts"]["research_grants"] == 1
+    assert report["case_readiness"] == "Partial evidence only"
+    conn.close()
+
+
+def test_expanded_terms_search_problem_solution_and_relationship_fields(tmp_path):
+    conn = db.connect(tmp_path / "technology-expanded.db")
+    now = "2026-07-30T10:00:00+00:00"
+    conn.execute(
+        """INSERT INTO pharmaceutical_problems
+        (problem_id,canonical_key,display_name,taxonomy_term_id,definition,identity_status,
+         evidence_status,last_verified_at,next_review_at)
+        VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            "problem-absorption", "absorption-limitation", "Absorption limitation",
+            "problem-poor-solubility", "A bioavailability and dissolution rate limitation.",
+            "controlled", "curated evidence", now, now,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO technology_solutions
+        (technology_id,canonical_key,display_name,taxonomy_term_id,solution_type_term_id,
+         mechanism_summary,scope_note,maturity_status,identity_status,evidence_status,
+         last_verified_at,next_review_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "solution-nanocrystal", "nanocrystal-platform", "Nanocrystal platform",
+            "solution-domain-formulation", "solution-type-technology",
+            "Particle size reduction may increase dissolution.", "Retained test evidence.",
+            "development", "controlled", "curated evidence", now, now,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO technology_problem_relationships
+        (relationship_id,technology_id,problem_id,relationship_type,relationship_statement,
+         source_type,source_id,evidence_url,evidence_status,inference_status,confidence_score,
+         confidence_basis,verified_at,next_review_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "relationship-nanocrystal-absorption", "solution-nanocrystal",
+            "problem-absorption", "addresses",
+            "Reported nanocrystal use for bioavailability enhancement.", "publication",
+            "PUB-1", "https://example.org/nanocrystal", "published evidence",
+            "reported", 0.8, "Source-reported relationship", now, now,
+        ),
+    )
+    conn.commit()
+    report = case_study_mvp.build(conn, "Poor solubility", "Formulation innovation")
+    assert report["evidence_counts"]["pharmaceutical_problems"] == 1
+    assert report["evidence_counts"]["technology_relationships"] == 1
+    assert {"nanocrystal", "dissolution", "bioavailability"}.intersection(
+        set(report["technologies"][0]["matched_terms"])
+    )
+    assert report["case_readiness"] == "Ready for analyst review"
+    conn.close()
+
+
+def test_exact_theme_ranks_first_and_bucket_is_capped(tmp_path):
+    conn = db.connect(tmp_path / "ranking.db")
+    for index in range(12):
+        exact = index == 11
+        conn.execute(
+            """INSERT INTO opportunity_index
+            (stable_lead_id,company,product,molecule,problem_category,source_type,source_id,
+             region,evidence_links_json,score,grade,last_updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                f"lead-rank-{index}", f"Company {index}", f"Product {index}", f"API {index}",
+                "Poor solubility" if exact else "Dissolution rate limitation",
+                "research", f"RANK-{index}", "Global",
+                f'["https://example.org/rank-{index}"]',
+                1 if exact else 99, "A", f"2026-07-{index + 1:02d}T10:00:00+00:00",
+            ),
+        )
+    conn.commit()
+    report = case_study_mvp.build(conn, "Poor solubility", "Formulation innovation")
+    assert len(report["opportunities"]) == case_study_mvp.BUCKET_LIMIT
+    assert report["opportunities"][0]["stable_lead_id"] == "lead-rank-11"
     conn.close()
 
 
@@ -108,6 +250,12 @@ def test_ui_registers_drilldowns_and_explicit_only_live_discovery():
     assert "Download Markdown" in pages
     assert "Download plain text" in pages
     assert "No reviewed canonical link exists yet" in pages
+    assert 'with st.expander("Search strategy")' in pages
+    assert "This report currently has insufficient retained evidence and should not be used as a case study yet." in pages
+    assert "Open Opportunity Explorer" in pages
+    assert "Open Patent Discovery" in pages
+    assert "Open Research & Innovation" in pages
+    assert "Open Human Validation" in pages
 
 
 def test_case_study_change_has_no_migration_or_direct_ui_sql():
