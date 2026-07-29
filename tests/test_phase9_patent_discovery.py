@@ -342,7 +342,7 @@ def test_page_explains_live_and_fallback_discovery_without_automatic_import_or_p
     page = Path("pharmatune_ui/pages.py").read_text()
     discovery = Path("pharmadrone/pipeline/patent_discovery.py").read_text()
     assert "Open external discovery search" in page
-    assert "### Live patent discovery results" in page
+    assert "### Patent source results" in page
     assert "### Official search routes" in page
     assert "Run live patent discovery" in page
     assert '"Open source"' in page
@@ -350,10 +350,100 @@ def test_page_explains_live_and_fallback_discovery_without_automatic_import_or_p
     assert '"Likely assignee / applicant"' in page
     assert "Live patent discovery requires a configured Tavily API key." in discovery
     assert "Generated official patent-search links are shown below." in discovery
-    assert "data.patent_discovery_health()" in page
+    assert "data.patent_source_health()" in page
     assert "Live discovery could not run this query." in page
-    assert "Live discovery is currently unavailable for this query." in page
+    assert "Direct patent-source discovery is currently unavailable for this query." in page
     assert 'live_result.get("error")' not in page
     assert "tavily_search" not in page
     assert "INSERT INTO" not in discovery
     assert "UPDATE " not in discovery
+
+
+def _direct_record(number: str, title: str, *, source: str = "USPTO / PatentsView") -> dict:
+    return {
+        "title": title,
+        "url": f"https://official.example/{number}",
+        "raw_text": f"{title} abstract",
+        "source_name": source,
+        "entities": {
+            "publication_number": number,
+            "title": title,
+            "abstract": f"{title} abstract",
+            "publication_date": "2024-01-01",
+            "applicant": "Example Pharma",
+            "official_source_url": f"https://official.example/{number}",
+        },
+    }
+
+
+def test_epo_ops_not_configured_status_is_explicit(monkeypatch):
+    monkeypatch.delenv("EPO_OPS_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EPO_OPS_CLIENT_SECRET", raising=False)
+    health = patent_discovery.patent_source_health()
+    assert health["epo_ops"]["status"] == "not_configured"
+    assert "EPO_OPS_CLIENT_ID" in health["epo_ops"]["message"]
+    assert "EPO_OPS_CLIENT_SECRET" in health["epo_ops"]["message"]
+
+
+def test_direct_epo_and_uspto_results_are_merged_without_tavily(monkeypatch):
+    monkeypatch.setenv("EPO_OPS_CLIENT_ID", "client")
+    monkeypatch.setenv("EPO_OPS_CLIENT_SECRET", "secret")
+    epo = ConnectorResult("EPO Open Patent Services", "q", ok=True, records=[
+        _direct_record("EP1234567A1", "Dissolution formulation patent", source="EPO Open Patent Services"),
+    ])
+    uspto = ConnectorResult("USPTO / PatentsView", "q", ok=True, records=[
+        _direct_record("US1234567", "Dissolution formulation patent"),
+    ])
+    monkeypatch.setattr(patent_discovery.epo_ops, "search", lambda *args, **kwargs: epo)
+    monkeypatch.setattr(patent_discovery.patentsview, "search", lambda *args, **kwargs: uspto)
+    monkeypatch.setattr(
+        patent_discovery,
+        "live_external_discovery",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Tavily must be fallback only")),
+    )
+    result = patent_discovery.patent_source_discovery("dissolution innovation")
+    assert result["status"] == "available"
+    assert {row["source_label"] for row in result["results"]} == {"EPO OPS", "USPTO / PatentsView"}
+    assert result["providers"]["epo_ops"]["status"] == "available"
+    assert result["providers"]["patentsview"]["status"] == "available"
+
+
+def test_uspto_results_are_ranked_deduplicated_and_tavily_failure_does_not_block_them(monkeypatch, tmp_path):
+    monkeypatch.delenv("EPO_OPS_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EPO_OPS_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(patent_discovery.patentsview, "search", lambda *args, **kwargs: ConnectorResult(
+        "USPTO / PatentsView", "q", ok=True, records=[
+            _direct_record("US1234567", "Poor solubility formulation patent"),
+            _direct_record("US1234567", "Duplicate poor solubility patent"),
+        ]
+    ))
+    monkeypatch.setattr(
+        patent_discovery,
+        "live_external_discovery",
+        lambda *args, **kwargs: {"status": "provider_error", "results": [], "queries": []},
+    )
+    conn = db.connect(tmp_path / "direct-discovery.db")
+    before = conn.execute("SELECT COUNT(*) AS n FROM patent_documents").fetchone()["n"]
+    result = patent_discovery.patent_source_discovery("poor solubility")
+    after = conn.execute("SELECT COUNT(*) AS n FROM patent_documents").fetchone()["n"]
+    assert result["status"] == "available"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["title"] == "Poor solubility formulation patent"
+    assert after == before
+
+
+def test_direct_provider_failure_returns_safe_status_and_official_routes_remain(monkeypatch):
+    monkeypatch.setattr(patent_discovery.patentsview, "search", lambda *args, **kwargs: ConnectorResult(
+        "USPTO / PatentsView", "q", ok=False, error="provider unavailable"
+    ))
+    monkeypatch.setattr(patent_discovery.epo_ops, "search", lambda *args, **kwargs: ConnectorResult(
+        "EPO Open Patent Services", "q", ok=False, error="provider unavailable"
+    ))
+    monkeypatch.setattr(patent_discovery, "live_external_discovery", lambda *args, **kwargs: {
+        "status": "provider_error", "results": [], "queries": []
+    })
+    result = patent_discovery.patent_source_discovery("modified release")
+    assert result["status"] == "no_results"
+    routes = _routes("modified release", "Innovation / problem theme")
+    assert "Google Patents discovery" in routes
+    assert "EPO official route" in routes

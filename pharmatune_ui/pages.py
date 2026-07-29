@@ -615,23 +615,24 @@ def patents(navigate: Callable[[str], None]) -> None:
                 st.session_state.pop("patent_lifecycle_id", None)
                 navigate("Patent Detail")
 
-    st.markdown("### Live patent discovery results")
+    st.markdown("### Patent source results")
     st.caption(
-        "Live results are fetched only after you request them, filtered to trusted patent and regulatory domains, "
-        "and are never imported automatically."
+        "Direct official patent sources are queried only after you request them. Results are filtered, ranked, "
+        "and never imported automatically."
     )
-    live_health = data.patent_discovery_health()
-    if live_health.get("configured"):
-        st.success("Live patent discovery is configured and available on request.")
-    else:
-        st.info(str(live_health.get("message") or "Live patent discovery is not configured."))
+    source_health = data.patent_source_health()
+    health_columns = st.columns(5)
+    for column, key in zip(health_columns, ("internal", "epo_ops", "patentsview", "tavily", "official_routes")):
+        provider = source_health[key]
+        label = "Not configured" if provider.get("status") == "not_configured" else str(provider.get("status") or "ready").replace("_", " ").title()
+        column.metric(provider["label"], label)
+        column.caption(provider["message"])
     live_key = (search, mode)
     if st.button(
         "Run live patent discovery",
         key="patent_discovery_live_button",
-        disabled=not live_health.get("configured"),
     ):
-        with st.spinner("Searching trusted patent discovery routes…"):
+        with st.spinner("Searching direct patent sources…"):
             st.session_state["patent_discovery_live"] = {
                 "key": live_key,
                 "result": data.live_patent_discovery(search),
@@ -646,22 +647,20 @@ def patents(navigate: Callable[[str], None]) -> None:
             )
         elif live_result.get("status") == "provider_error":
             st.error(
-                "Live discovery is currently unavailable for this query. "
+                "Direct patent-source discovery is currently unavailable for this query. "
                 "Use the official search routes below."
             )
         elif live_result.get("status") == "no_results":
-            st.info(
-                "Tavily is configured but returned no trusted patent-discovery results. "
-                "Generated official patent-search links are shown below."
-            )
+            st.info(str(live_result.get("message") or "No direct patent-source results were returned. Use the official search routes below."))
         elif live_result.get("status") in {"available", "partial_results"} and live_result.get("results"):
             live_frame = pd.DataFrame(live_result["results"])[[
                 "title", "source_label", "source_domain", "snippet", "matched_query_terms",
-                "publication_number", "assignee_applicant", "date", "evidence_status", "external_link"
+                "publication_number", "application_number", "assignee_applicant", "date", "evidence_status", "external_link"
             ]].rename(columns={
                 "title": "Title", "source_label": "Source label", "source_domain": "Source domain",
                 "snippet": "Snippet", "matched_query_terms": "Matched terms",
-                "publication_number": "Likely publication", "assignee_applicant": "Likely assignee / applicant",
+                "publication_number": "Likely publication", "application_number": "Application",
+                "assignee_applicant": "Likely assignee / applicant",
                 "date": "Detected date", "evidence_status": "Evidence / discovery status",
                 "external_link": "Open source",
             })
@@ -682,11 +681,14 @@ def patents(navigate: Callable[[str], None]) -> None:
                 "Official search routes remain below."
             )
         elif live_result.get("status") == "unconfigured":
-            st.info(str(live_result.get("message") or live_health.get("message")))
+            st.info(str(live_result.get("message") or "No direct patent-source results were returned."))
+        for key, provider in (live_result.get("providers") or {}).items():
+            if provider.get("status") == "not_configured":
+                st.caption(f"{provider.get('label')}: not configured")
         if live_result.get("queries"):
-            st.caption("Simplified queries tried: " + " · ".join(live_result["queries"]))
+            st.caption("Source-safe queries tried: " + " · ".join(live_result["queries"]))
     else:
-        st.caption("Live discovery runs only after you select the button above; no external search occurs during page loading.")
+        st.caption("Patent sources run only after you select the button above; no external search occurs during page loading.")
     st.markdown("### Official search routes")
     st.caption(
         "Generated links preserve your query as a fallback and do not fetch or import records. "
