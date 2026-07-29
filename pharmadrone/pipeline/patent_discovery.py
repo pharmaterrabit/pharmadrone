@@ -8,6 +8,7 @@ from urllib.parse import quote_plus, urldefrag, urlparse
 from .. import settings
 from ..pipeline.query_safety import normalise_query
 from ..connectors import tavily_search
+from ..connectors import epo_ops, patentsview
 from . import patent_lifecycle
 
 
@@ -132,6 +133,16 @@ _PATENT_QUERY_SEEDS = {
         "solid dispersion formulation",
         "bioavailability solid dispersion",
     ),
+    "modified release": (
+        "modified release",
+        "modified release formulation",
+        "drug release",
+    ),
+    "bioavailability enhancement": (
+        "bioavailability enhancement",
+        "bioavailability formulation",
+        "drug absorption patent",
+    ),
 }
 
 
@@ -155,6 +166,168 @@ def patent_focused_queries(query: str) -> list[str]:
         return list(seeded)
     variants = (f"{text} patent", f"{text} formulation", f"{text} drug delivery")
     return list(dict.fromkeys(item[:80].strip() for item in variants))
+
+
+def patent_source_health() -> dict[str, dict[str, Any]]:
+    epo_configured = bool(
+        settings.env("EPO_OPS_CLIENT_ID") and settings.env("EPO_OPS_CLIENT_SECRET")
+    )
+    tavily_configured = bool(settings.env("TAVILY_API_KEY"))
+    return {
+        "internal": {
+            "label": "Internal retained records", "status": "ready",
+            "message": "Stored records are searched first; no external call is needed.",
+        },
+        "epo_ops": {
+            "label": "EPO OPS",
+            "status": "configured" if epo_configured else "not_configured",
+            "message": (
+                "EPO OPS is configured and available on request."
+                if epo_configured else
+                "EPO OPS is not configured. Add EPO_OPS_CLIENT_ID and EPO_OPS_CLIENT_SECRET to enable direct EPO patent search."
+            ),
+        },
+        "patentsview": {
+            "label": "USPTO / PatentsView", "status": "available",
+            "message": "Public USPTO / PatentsView search route is available on request.",
+        },
+        "tavily": {
+            "label": "Tavily fallback",
+            "status": "configured" if tavily_configured else "not_configured",
+            "message": (
+                "Optional fallback; direct patent providers are tried first."
+                if tavily_configured else "Optional Tavily fallback is not configured."
+            ),
+        },
+        "official_routes": {
+            "label": "Official search routes", "status": "available",
+            "message": "Generated EPO, WIPO, UK IPO, USPTO and Google discovery links remain available.",
+        },
+    }
+
+
+def _direct_record_row(item: dict[str, Any], *, provider: str, query: str) -> dict[str, Any]:
+    entities = item.get("entities") if isinstance(item.get("entities"), dict) else {}
+    publication = _text(entities.get("publication_number"))
+    official = _text(item.get("url") or entities.get("official_source_url"))
+    label = "EPO OPS" if provider == "epo_ops" else "USPTO / PatentsView"
+    domain = urlparse(official).netloc.casefold().removeprefix("www.")
+    title = _text(item.get("title") or entities.get("title")) or publication
+    snippet = _snippet(item.get("raw_text") or entities.get("abstract"))
+    applicant = _text(entities.get("applicant") or entities.get("assignee"))
+    if not applicant and isinstance(entities.get("parties"), list):
+        applicant = "; ".join(_text(row.get("party_name")) for row in entities["parties"] if isinstance(row, dict) and _text(row.get("party_name")))
+    return {
+        "title": title,
+        "source_label": label,
+        "source_domain": domain,
+        "snippet": snippet,
+        "matched_query_terms": _matched_terms(query, title, snippet),
+        "publication_number": publication,
+        "application_number": _text(entities.get("application_number")),
+        "assignee_applicant": applicant,
+        "date": _text(entities.get("publication_date") or entities.get("patent_date")),
+        "source_type": "Direct official patent discovery",
+        "evidence_status": (
+            "Official EPO OPS bibliographic discovery; not imported or a legal conclusion"
+            if provider == "epo_ops" else
+            "Official USPTO / PatentsView discovery; not imported or a legal conclusion"
+        ),
+        "external_link": official,
+        "ranking_score": _rank_result(query, title, snippet, 65 if provider == "epo_ops" else 60),
+    }
+
+
+def _merge_discovery_rows(rows: list[dict[str, Any]], *, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        publication = re.sub(r"[^A-Z0-9]", "", _text(row.get("publication_number")).upper())
+        url = _canonical_url(row.get("external_link"))
+        key = f"publication:{publication}" if publication else f"url:{url}"
+        if key == "url:" or key in unique:
+            continue
+        row = dict(row)
+        row["external_link"] = url
+        row["ranking_score"] = _rank_result(
+            query, _text(row.get("title")), _text(row.get("snippet")), int(row.get("ranking_score") or 0)
+        )
+        unique[key] = row
+    return sorted(
+        unique.values(),
+        key=lambda row: (-int(row.get("ranking_score") or 0), _text(row.get("title")).casefold(), row["external_link"]),
+    )[:max(1, min(int(limit), 20))]
+
+
+def patent_source_discovery(query: str, *, max_results: int = 20) -> dict[str, Any]:
+    """Search direct patent sources first, then optionally use Tavily as fallback."""
+    text = _text(query)
+    health = patent_source_health()
+    queries = patent_focused_queries(text)
+    rows: list[dict[str, Any]] = []
+    provider_results = {key: dict(value) for key, value in health.items()}
+    direct_errors = False
+
+    if health["epo_ops"]["status"] == "configured":
+        epo_rows = []
+        for focused_query in queries:
+            result = epo_ops.search(
+                focused_query,
+                range_begin=1,
+                range_end=20,
+                key=settings.env("EPO_OPS_CLIENT_ID"),
+                secret=settings.env("EPO_OPS_CLIENT_SECRET"),
+            )
+            if not result.ok:
+                direct_errors = True
+                continue
+            epo_rows.extend(_direct_record_row(item, provider="epo_ops", query=text) for item in result.records)
+        rows.extend(epo_rows)
+        provider_results["epo_ops"].update(status="available" if epo_rows else "no_results", count=len(epo_rows))
+    else:
+        provider_results["epo_ops"].update(count=0)
+
+    uspto_rows = []
+    for focused_query in queries:
+        result = patentsview.search(focused_query, limit=20)
+        if not result.ok:
+            direct_errors = True
+            continue
+        uspto_rows.extend(_direct_record_row(item, provider="patentsview", query=text) for item in result.records)
+    rows.extend(uspto_rows)
+    provider_results["patentsview"].update(
+        status="available" if uspto_rows else ("provider_error" if direct_errors else "no_results"),
+        count=len(uspto_rows),
+    )
+
+    direct_rows = _merge_discovery_rows(rows, query=text, limit=max_results)
+    if health["tavily"]["status"] == "configured":
+        provider_results["tavily"].update(status="not_run", message="Direct patent providers were tried first.", count=0)
+    if not direct_rows and health["tavily"]["status"] == "configured":
+        tavily_result = live_external_discovery(text, max_results=max_results)
+        tavily_rows = tavily_result.get("results") or []
+        direct_rows = _merge_discovery_rows(tavily_rows, query=text, limit=max_results)
+        provider_results["tavily"].update(
+            status=tavily_result.get("status") or "provider_error",
+            count=len(tavily_rows),
+            message="Optional Tavily fallback was attempted after direct providers returned no results.",
+        )
+
+    if direct_rows:
+        status = "partial_results" if direct_errors else "available"
+        message = "Direct patent-source results are available."
+    else:
+        status = "no_results"
+        message = "No direct patent-source results were returned. Use the official search routes below."
+    return {
+        "provider": "Direct patent sources",
+        "configured": True,
+        "status": status,
+        "message": message,
+        "error": "",
+        "results": direct_rows,
+        "queries": queries,
+        "providers": provider_results,
+    }
 
 
 def _canonical_url(url: str) -> str:

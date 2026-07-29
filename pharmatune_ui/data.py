@@ -451,12 +451,17 @@ def patent_discovery_directory(query: str, mode: str) -> dict[str, Any]:
 
 def live_patent_discovery(query: str) -> dict[str, Any]:
     """Explicit user-requested discovery only; no result is persisted or imported."""
-    return patent_discovery.live_external_discovery(query)
+    return patent_discovery.patent_source_discovery(query)
 
 
 def patent_discovery_health() -> dict[str, Any]:
     """Read live patent-search configuration without making a provider call."""
     return patent_discovery.live_discovery_health()
+
+
+def patent_source_health() -> dict[str, dict[str, Any]]:
+    """Read direct-provider configuration without making network calls."""
+    return patent_discovery.patent_source_health()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
