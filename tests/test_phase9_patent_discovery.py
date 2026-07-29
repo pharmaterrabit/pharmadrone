@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pharmadrone import db
+from pharmadrone.connectors import tavily_search
 from pharmadrone.connectors.base import ConnectorResult
 from pharmadrone.pipeline import patent_discovery
 
@@ -116,10 +117,12 @@ def test_orange_book_fallback_does_not_block_discovery_or_fabricate_records(tmp_
     assert "No retained patent records match this query yet." in page
 
 
-def test_live_discovery_filters_to_trusted_domains_and_never_imports(monkeypatch, tmp_path):
-    def fake_search(query: str, max_results: int):
-        assert query == "particle size reduction patent"
-        assert max_results == 12
+def test_live_discovery_filters_ranks_deduplicates_and_never_imports(monkeypatch, tmp_path):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    calls = []
+
+    def fake_search(query: str, max_results: int, *, include_domains: list[str]):
+        calls.append((query, max_results, include_domains))
         return ConnectorResult(
             "Web (Tavily)",
             query,
@@ -127,8 +130,18 @@ def test_live_discovery_filters_to_trusted_domains_and_never_imports(monkeypatch
             records=[
                 {
                     "title": "Particle size patent",
-                    "url": "https://patents.google.com/patent/US123",
-                    "raw_text": "A patent result for particle size reduction.",
+                    "url": "https://patents.google.com/patent/US1234567B2",
+                    "raw_text": "Applicant: Example Pharma. A patent result for particle size reduction dated 2025-01-20.",
+                },
+                {
+                    "title": "Particle size patent duplicate",
+                    "url": "https://patents.google.com/patent/US1234567B2#claims",
+                    "raw_text": "Duplicate URL for the same result.",
+                },
+                {
+                    "title": "Official particle size publication",
+                    "url": "https://register.epo.org/espacenet/application?number=EP1234567",
+                    "raw_text": "EP1234567A1 formulation patent for particle size reduction.",
                 },
                 {
                     "title": "Untrusted SEO page",
@@ -143,17 +156,152 @@ def test_live_discovery_filters_to_trusted_domains_and_never_imports(monkeypatch
     before = conn.execute("SELECT COUNT(*) AS n FROM patent_documents").fetchone()["n"]
     result = patent_discovery.live_external_discovery("particle size reduction")
     after = conn.execute("SELECT COUNT(*) AS n FROM patent_documents").fetchone()["n"]
-    assert result["available"] is True
-    assert [row["source_label"] for row in result["results"]] == ["Google Patents discovery"]
+    assert result["status"] == "available"
+    assert len(result["results"]) == 2
+    assert result["results"][0]["source_label"] == "EPO Register"
+    assert result["results"][0]["publication_number"] == "EP1234567A1"
+    google = next(row for row in result["results"] if row["source_label"] == "Google Patents discovery")
+    assert google["assignee_applicant"] == "Example Pharma"
+    assert google["date"] == "2025-01-20"
+    assert "discovery/cross-check only" in google["evidence_status"]
+    assert all(call[2] for call in calls)
+    assert [call[0] for call in calls] == patent_discovery.patent_focused_queries(
+        "particle size reduction"
+    )
     assert after == before
 
 
-def test_page_explains_external_discovery_and_no_automatic_import_or_page_load_fetch():
+def test_live_discovery_configuration_and_provider_errors_are_explicit(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    health = patent_discovery.live_discovery_health()
+    assert health["status"] == "unconfigured"
+    assert health["message"] == (
+        "Live patent discovery requires a configured Tavily API key. "
+        "Generated official patent-search links are shown below."
+    )
+
+    def must_not_search(*args, **kwargs):
+        raise AssertionError("Tavily must not be called without configuration")
+
+    monkeypatch.setattr(patent_discovery.tavily_search, "search", must_not_search)
+    missing = patent_discovery.live_external_discovery("poor solubility")
+    assert missing["status"] == "unconfigured"
+
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        patent_discovery.tavily_search,
+        "search",
+        lambda query, max_results, *, include_domains: ConnectorResult(
+            "Web (Tavily)", query, ok=False, error="HTTP 503: provider unavailable"
+        ),
+    )
+    failed = patent_discovery.live_external_discovery("poor solubility")
+    assert failed["status"] == "error"
+    assert "Tavily returned an error" in failed["message"]
+    assert "HTTP 503" in failed["error"]
+
+    monkeypatch.setattr(
+        patent_discovery.tavily_search,
+        "search",
+        lambda query, max_results, *, include_domains: ConnectorResult(
+            "Web (Tavily)",
+            query,
+            ok=True,
+            records=[{
+                "title": "Untrusted result",
+                "url": "https://example.invalid/patent",
+                "raw_text": "Filtered after retrieval.",
+            }],
+        ),
+    )
+    no_results = patent_discovery.live_external_discovery("poor solubility")
+    assert no_results["status"] == "no_results"
+    assert no_results["results"] == []
+
+
+def test_tavily_connector_sends_trusted_domain_restrictions(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    captured = {}
+
+    def fake_post(payload: dict):
+        captured.update(payload)
+        return {"results": []}
+
+    monkeypatch.setattr(tavily_search, "_post_tavily", fake_post)
+    result = tavily_search.search(
+        "formulation patent",
+        max_results=3,
+        include_domains=["patents.google.com", "epo.org", "epo.org"],
+    )
+    assert result.ok is True
+    assert captured["include_domains"] == ["patents.google.com", "epo.org"]
+
+
+def test_live_discovery_labels_supported_trusted_routes(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    records = [
+        {"title": "Google", "url": "https://patents.google.com/patent/EP1", "raw_text": ""},
+        {"title": "Espacenet", "url": "https://worldwide.espacenet.com/patent/search/family/1", "raw_text": ""},
+        {"title": "EPO", "url": "https://www.epo.org/en/legal", "raw_text": ""},
+        {"title": "WIPO", "url": "https://patentscope.wipo.int/search/en/detail.jsf", "raw_text": ""},
+        {"title": "USPTO", "url": "https://ppubs.uspto.gov/pubwebapp/static/pages/landing.html", "raw_text": ""},
+        {"title": "UK", "url": "https://www.gov.uk/search-for-patent", "raw_text": ""},
+        {"title": "FDA", "url": "https://www.accessdata.fda.gov/scripts/cder/daf/", "raw_text": ""},
+        {"title": "Wrong GOV.UK page", "url": "https://www.gov.uk/random-page", "raw_text": ""},
+    ]
+    call_number = 0
+
+    def fake_search(query: str, max_results: int, *, include_domains: list[str]):
+        nonlocal call_number
+        call_number += 1
+        return ConnectorResult(
+            "Web (Tavily)",
+            query,
+            ok=True,
+            records=records if call_number == 1 else [],
+        )
+
+    monkeypatch.setattr(patent_discovery.tavily_search, "search", fake_search)
+    result = patent_discovery.live_external_discovery("dissolution innovation", max_results=20)
+    labels = {row["source_label"] for row in result["results"]}
+    assert labels == {
+        "Google Patents discovery",
+        "EPO / Espacenet",
+        "EPO",
+        "WIPO Patentscope",
+        "USPTO Patent Public Search",
+        "UK IPO",
+        "FDA / Drugs@FDA lifecycle",
+    }
+
+
+def test_broad_innovation_query_builds_patent_focused_tavily_queries():
+    queries = patent_discovery.patent_focused_queries("dissolution innovation")
+    assert queries[:3] == [
+        "dissolution innovation pharmaceutical patent",
+        "dissolution innovation formulation patent",
+        "dissolution innovation drug delivery patent",
+    ]
+    assert queries[3:] == [
+        "dissolution innovation site:patents.google.com",
+        "dissolution innovation site:worldwide.espacenet.com",
+        "dissolution innovation site:patentscope.wipo.int",
+    ]
+
+
+def test_page_explains_live_and_fallback_discovery_without_automatic_import_or_page_load_fetch():
     page = Path("pharmatune_ui/pages.py").read_text()
     discovery = Path("pharmadrone/pipeline/patent_discovery.py").read_text()
     assert "Open external discovery search" in page
-    assert "Generated links preserve your query but do not fetch or import records." in page
-    assert "Live patent discovery is not configured; use the generated official search links below." in page
+    assert "### Live patent discovery results" in page
+    assert "### Official search routes" in page
+    assert "Run live patent discovery" in page
+    assert '"Open source"' in page
+    assert '"Likely publication"' in page
+    assert '"Likely assignee / applicant"' in page
+    assert "Live patent discovery requires a configured Tavily API key." in discovery
+    assert "Generated official patent-search links are shown below." in discovery
+    assert "data.patent_discovery_health()" in page
     assert "tavily_search" not in page
     assert "INSERT INTO" not in discovery
     assert "UPDATE " not in discovery

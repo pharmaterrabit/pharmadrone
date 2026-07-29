@@ -615,13 +615,22 @@ def patents(navigate: Callable[[str], None]) -> None:
                 st.session_state.pop("patent_lifecycle_id", None)
                 navigate("Patent Detail")
 
-    st.markdown("### External patent discovery")
+    st.markdown("### Live patent discovery results")
     st.caption(
-        "Generated links preserve your query but do not fetch or import records. Google Patents is discovery/cross-check only; "
-        "official patent-office and FDA routes remain stronger source routes."
+        "Live results are fetched only after you request them, filtered to trusted patent and regulatory domains, "
+        "and are never imported automatically."
     )
+    live_health = data.patent_discovery_health()
+    if live_health.get("configured"):
+        st.success("Live patent discovery is configured and available on request.")
+    else:
+        st.info(str(live_health.get("message") or "Live patent discovery is not configured."))
     live_key = (search, mode)
-    if st.button("Search trusted patent routes live", key="patent_discovery_live_button"):
+    if st.button(
+        "Run live patent discovery",
+        key="patent_discovery_live_button",
+        disabled=not live_health.get("configured"),
+    ):
         with st.spinner("Searching trusted patent discovery routes…"):
             st.session_state["patent_discovery_live"] = {
                 "key": live_key,
@@ -630,28 +639,46 @@ def patents(navigate: Callable[[str], None]) -> None:
     live = st.session_state.get("patent_discovery_live") or {}
     if live.get("key") == live_key:
         live_result = live.get("result") or {}
-        if not live_result.get("available"):
-            st.info("Live patent discovery is not configured; use the generated official search links below.")
-            if live_result.get("error"):
-                st.caption(str(live_result["error"]))
-        elif not live_result.get("results"):
-            st.info("No trusted live patent-discovery results were returned; use the generated official search links below.")
-        else:
+        if live_result.get("status") == "error":
+            st.error("Live patent discovery is unavailable because Tavily returned an error.")
+            st.caption(str(live_result.get("error") or "No provider detail was returned."))
+        elif live_result.get("status") == "no_results":
+            st.info(
+                "Tavily is configured but returned no trusted patent-discovery results. "
+                "Generated official patent-search links are shown below."
+            )
+        elif live_result.get("status") == "available" and live_result.get("results"):
             live_frame = pd.DataFrame(live_result["results"])[[
-                "title", "source_label", "snippet", "matched_query_terms", "source_type", "evidence_status", "external_link"
+                "title", "source_label", "source_domain", "snippet", "matched_query_terms",
+                "publication_number", "assignee_applicant", "date", "evidence_status", "external_link"
             ]].rename(columns={
-                "title": "Title", "source_label": "Source label", "snippet": "Snippet",
-                "matched_query_terms": "Matched terms", "source_type": "Source type",
-                "evidence_status": "Evidence status", "external_link": "Open discovery result",
+                "title": "Title", "source_label": "Source label", "source_domain": "Source domain",
+                "snippet": "Snippet", "matched_query_terms": "Matched terms",
+                "publication_number": "Likely publication", "assignee_applicant": "Likely assignee / applicant",
+                "date": "Detected date", "evidence_status": "Evidence / discovery status",
+                "external_link": "Open source",
             })
             st.dataframe(
                 live_frame,
                 use_container_width=True,
                 hide_index=True,
-                column_config={"Open discovery result": st.column_config.LinkColumn("Open discovery result", display_text="Open ↗")},
+                column_config={"Open source": st.column_config.LinkColumn("Open source", display_text="Open ↗")},
             )
+            if live_result.get("error"):
+                st.warning(
+                    "Some Tavily patent-discovery queries returned an error; "
+                    "the trusted results shown above came from successful queries."
+                )
+                st.caption(str(live_result["error"]))
+        elif live_result.get("status") == "unconfigured":
+            st.info(str(live_result.get("message") or live_health.get("message")))
     else:
         st.caption("Live discovery runs only after you select the button above; no external search occurs during page loading.")
+    st.markdown("### Official search routes")
+    st.caption(
+        "Generated links preserve your query as a fallback and do not fetch or import records. "
+        "Google Patents is discovery/cross-check only; official patent-office and FDA routes are stronger source routes."
+    )
     for route in result["external_routes"]:
         st.link_button(
             f"Open external discovery search · {route['source_label']} ↗",

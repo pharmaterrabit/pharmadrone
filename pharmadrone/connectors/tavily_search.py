@@ -43,7 +43,13 @@ def _is_query_rejection(exc: Exception) -> bool:
     return False
 
 
-def search(query: str, max_results: int = 6, cost=None) -> ConnectorResult:
+def search(
+    query: str,
+    max_results: int = 6,
+    cost=None,
+    *,
+    include_domains: list[str] | None = None,
+) -> ConnectorResult:
     key = settings.env("TAVILY_API_KEY")
     if not key:
         return ConnectorResult(NAME, query, ok=False,
@@ -54,13 +60,16 @@ def search(query: str, max_results: int = 6, cost=None) -> ConnectorResult:
     warnings: list[str] = []
 
     def payload_for(q: str) -> dict:
-        return {
+        payload = {
             "api_key": key,
             "query": q,
             "max_results": max_results,
             "search_depth": "advanced",
             "include_answer": False,
         }
+        if include_domains:
+            payload["include_domains"] = list(dict.fromkeys(include_domains))
+        return payload
 
     try:
         data = _post_tavily(payload_for(original_query))

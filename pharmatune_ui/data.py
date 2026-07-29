@@ -454,6 +454,11 @@ def live_patent_discovery(query: str) -> dict[str, Any]:
     return patent_discovery.live_external_discovery(query)
 
 
+def patent_discovery_health() -> dict[str, Any]:
+    """Read live patent-search configuration without making a provider call."""
+    return patent_discovery.live_discovery_health()
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def global_patent_profile(patent_document_id: str) -> dict[str, Any] | None:
     conn = connection()
