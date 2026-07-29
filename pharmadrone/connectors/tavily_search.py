@@ -11,6 +11,7 @@ in Source Coverage.
 from __future__ import annotations
 
 import httpx
+import re
 
 from ..pipeline.query_safety import sanitize_tavily_query
 from .base import record, ConnectorResult, describe_error, USER_AGENT
@@ -22,7 +23,12 @@ TIMEOUT_SECONDS = float(settings.env("TAVILY_TIMEOUT_SECONDS", "25") or "25")
 
 
 def _sanitize_query(query: str) -> str:
-    return sanitize_tavily_query(query, max_chars=220)
+    q = sanitize_tavily_query(query, max_chars=80)
+    q = re.sub(r"https?://\S+|www\.\S+", " ", q, flags=re.I)
+    q = re.sub(r"\b[\w.-]+\.(?:com|org|int|gov|uk)(?:/\S*)?\b", " ", q, flags=re.I)
+    q = re.sub(r"\b(?:site|inurl|intitle):\S+", " ", q, flags=re.I)
+    q = re.sub(r"[^\w\s-]", " ", q)
+    return re.sub(r"\s+", " ", q).strip()[:80]
 
 
 def _post_tavily(payload: dict) -> dict:
@@ -71,36 +77,42 @@ def search(
             payload["include_domains"] = list(dict.fromkeys(include_domains))
         return payload
 
-    try:
-        data = _post_tavily(payload_for(original_query))
-        used_query = original_query
-    except Exception as first_error:
-        first_reason = describe_error(first_error)
-        # Tavily sometimes rejects search-engine operators such as `site:`. For
-        # that specific class of failure, retry once with a shorter/sanitised
-        # query. Do not retry arbitrary 4xx indefinitely.
-        if sanitized_query and sanitized_query != original_query and _is_query_rejection(first_error):
-            warnings.append(
-                f"Tavily rejected original query {original_query!r}: {first_reason}. "
-                f"Retried with sanitised query {sanitized_query!r}."
-            )
-            try:
-                data = _post_tavily(payload_for(sanitized_query))
-                used_query = sanitized_query
-            except Exception as second_error:
-                second_reason = describe_error(second_error)
-                return ConnectorResult(
-                    NAME,
-                    original_query,
-                    ok=False,
-                    error=(
-                        f"Tavily rejected/failed query. Original {original_query!r}: {first_reason}; "
-                        f"sanitised {sanitized_query!r}: {second_reason}"
-                    ),
-                    warnings=warnings,
-                )
-        else:
-            return ConnectorResult(NAME, original_query, ok=False, error=first_reason)
+    attempts: list[tuple[str, list[str] | None]] = [(original_query, include_domains)]
+    if include_domains:
+        attempts.append((original_query, None))
+    if sanitized_query and sanitized_query != original_query:
+        attempts.append((sanitized_query, None))
+
+    data = None
+    used_query = original_query
+    last_error = ""
+    rejected = False
+    for attempt_index, (attempt_query, attempt_domains) in enumerate(attempts):
+        try:
+            request_payload = payload_for(attempt_query)
+            if not attempt_domains:
+                request_payload.pop("include_domains", None)
+            data = _post_tavily(request_payload)
+            if data is not None:
+                if attempt_index:
+                    warnings.append("Tavily query was simplified after provider rejection.")
+                used_query = attempt_query
+                break
+        except Exception as exc:
+            last_error = describe_error(exc)
+            rejected = _is_query_rejection(exc)
+            if not rejected or attempt_index == len(attempts) - 1:
+                break
+
+    if data is None:
+        return ConnectorResult(
+            NAME,
+            original_query,
+            ok=False,
+            error=last_error,
+            warnings=warnings,
+            stats={"rejected": rejected, "attempts": len(attempts)},
+        )
 
     if cost is not None:
         cost.add_search(1, note=used_query[:60])
@@ -121,4 +133,5 @@ def search(
         count=len(out),
         records=out,
         warnings=warnings,
+        stats={"rejected": False, "attempts": len(attempts)},
     )

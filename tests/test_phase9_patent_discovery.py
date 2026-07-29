@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+
 from pharmadrone import db
 from pharmadrone.connectors import tavily_search
 from pharmadrone.connectors.base import ConnectorResult
@@ -196,9 +198,10 @@ def test_live_discovery_configuration_and_provider_errors_are_explicit(monkeypat
         ),
     )
     failed = patent_discovery.live_external_discovery("poor solubility")
-    assert failed["status"] == "error"
-    assert "Tavily returned an error" in failed["message"]
+    assert failed["status"] == "provider_error"
+    assert "official search routes below" in failed["message"]
     assert "HTTP 503" in failed["error"]
+    assert _routes("poor solubility", "Innovation / problem theme")
 
     monkeypatch.setattr(
         patent_discovery.tavily_search,
@@ -235,6 +238,38 @@ def test_tavily_connector_sends_trusted_domain_restrictions(monkeypatch):
     )
     assert result.ok is True
     assert captured["include_domains"] == ["patents.google.com", "epo.org"]
+
+
+def test_tavily_rejection_retries_without_domains_then_with_short_query(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    payloads = []
+
+    def rejected_response():
+        response = httpx.Response(
+            432,
+            request=httpx.Request("POST", tavily_search.URL),
+        )
+        return httpx.HTTPStatusError("rejected", request=response.request, response=response)
+
+    def fake_post(payload: dict):
+        payloads.append(payload)
+        if len(payloads) < 3:
+            raise rejected_response()
+        return {"results": [{"url": "https://patents.google.com/patent/US1234567", "title": "Patent", "content": ""}]}
+
+    monkeypatch.setattr(tavily_search, "_post_tavily", fake_post)
+    result = tavily_search.search(
+        'dissolution site:patents.google.com "innovation"',
+        max_results=2,
+        include_domains=["patents.google.com"],
+    )
+    assert result.ok is True
+    assert result.stats["attempts"] == 3
+    assert "include_domains" in payloads[0]
+    assert "include_domains" not in payloads[1]
+    assert "include_domains" not in payloads[2]
+    assert "patents.google.com" not in payloads[2]["query"]
+    assert "site:" not in payloads[2]["query"]
 
 
 def test_live_discovery_labels_supported_trusted_routes(monkeypatch):
@@ -277,15 +312,29 @@ def test_live_discovery_labels_supported_trusted_routes(monkeypatch):
 
 def test_broad_innovation_query_builds_patent_focused_tavily_queries():
     queries = patent_discovery.patent_focused_queries("dissolution innovation")
-    assert queries[:3] == [
-        "dissolution innovation pharmaceutical patent",
-        "dissolution innovation formulation patent",
-        "dissolution innovation drug delivery patent",
+    assert queries == [
+        "dissolution patent",
+        "dissolution formulation",
+        "drug dissolution patent",
     ]
-    assert queries[3:] == [
-        "dissolution innovation site:patents.google.com",
-        "dissolution innovation site:worldwide.espacenet.com",
-        "dissolution innovation site:patentscope.wipo.int",
+    assert len(queries) == 3
+    assert all(len(item) < 80 for item in queries)
+    assert all("site:" not in item for item in queries)
+    assert all("patents.google.com" not in item for item in queries)
+    assert all("worldwide.espacenet.com" not in item for item in queries)
+    assert all("patentscope.wipo.int" not in item for item in queries)
+
+
+def test_representative_innovation_queries_use_short_safe_variants():
+    assert patent_discovery.patent_focused_queries("poor solubility") == [
+        "poor solubility patent",
+        "solubility formulation",
+        "bioavailability patent",
+    ]
+    assert patent_discovery.patent_focused_queries("amorphous solid dispersion") == [
+        "amorphous solid dispersion patent",
+        "solid dispersion formulation",
+        "bioavailability solid dispersion",
     ]
 
 
@@ -302,6 +351,9 @@ def test_page_explains_live_and_fallback_discovery_without_automatic_import_or_p
     assert "Live patent discovery requires a configured Tavily API key." in discovery
     assert "Generated official patent-search links are shown below." in discovery
     assert "data.patent_discovery_health()" in page
+    assert "Live discovery could not run this query." in page
+    assert "Live discovery is currently unavailable for this query." in page
+    assert 'live_result.get("error")' not in page
     assert "tavily_search" not in page
     assert "INSERT INTO" not in discovery
     assert "UPDATE " not in discovery
