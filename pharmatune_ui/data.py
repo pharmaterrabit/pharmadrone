@@ -675,10 +675,21 @@ def funding_award_profile(funding_award_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def case_study_company_options(search: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    conn = connection()
+    try:
+        return case_study_mvp.company_options(conn, search=search, limit=limit)
+    finally:
+        conn.close()
+
+
 def build_case_study(
     query: str,
     case_type: str,
     *,
+    company: str = "",
+    mode: str = "Company-specific pitch",
     direct_patent_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded report from retained data and an optional explicit live result."""
@@ -688,6 +699,8 @@ def build_case_study(
             conn,
             query,
             case_type,
+            company=company,
+            mode=mode,
             direct_patent_result=direct_patent_result,
         )
     finally:

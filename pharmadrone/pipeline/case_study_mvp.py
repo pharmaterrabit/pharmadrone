@@ -8,37 +8,55 @@ from . import patent_discovery
 
 
 CASE_TYPES = (
-    "Formulation innovation",
-    "Product rescue",
+    "Company opportunity pitch",
+    "Product rescue scan",
+    "Formulation technology fit",
     "Lifecycle/patent landscape",
-    "Company opportunity scan",
+    "Partner/BD outreach brief",
 )
 
-EXAMPLE_CASES = (
+THEMES = (
+    "Particle properties",
     "Poor solubility",
     "Dissolution innovation",
     "Amorphous solid dispersion",
     "Modified release",
     "Bioavailability enhancement",
+    "Particle size reduction",
+    "Nanocrystals / nanosuspensions",
+    "Cocrystals / salt forms",
+    "Lipid-based formulations",
+    "Spray drying",
+    "Hot-melt extrusion",
 )
 
-REPORT_SECTIONS = (
+EXAMPLE_CASES = (
+    ("Pfizer", "Poor solubility"),
+    ("Novartis", "Particle properties"),
+    ("AstraZeneca", "Dissolution innovation"),
+    ("Roche", "Amorphous solid dispersion"),
+    ("Sanofi", "Modified release"),
+)
+
+COMPANY_REPORT_SECTIONS = (
     "Executive summary",
-    "Case readiness",
-    "Problem definition",
-    "Why this matters commercially",
+    "Target company",
+    "Strategic opportunity hypothesis",
+    "Why this matters for the company",
     "Evidence snapshot",
+    "Company-specific signals",
+    "Relevant products/APIs",
+    "Technology/problem fit",
     "Patent and innovation landscape",
-    "Product/API landscape",
-    "Technology approaches",
-    "Companies/organisations involved",
-    "Research/grant signals",
+    "Research/grant and collaboration signals",
     "Regulatory/lifecycle context",
-    "Opportunity interpretation",
+    "Potential pitch angle",
     "Risks and limitations",
-    "Recommended next validation steps",
+    "Recommended outreach/validation steps",
     "Source table",
 )
+
+REPORT_SECTIONS = COMPANY_REPORT_SECTIONS
 
 BUCKET_LIMIT = 10
 CANDIDATE_LIMIT = 100
@@ -52,6 +70,14 @@ EVIDENCE_BUCKETS = (
 )
 
 QUERY_EXPANSIONS = {
+    "particle properties": (
+        "particle properties", "particle size", "particle morphology",
+        "particle engineering", "crystal habit", "polymorph", "solid state",
+        "micronization", "nanomilling", "wet milling", "dry milling",
+        "nanocrystal", "nanosuspension", "spray drying", "hot-melt extrusion",
+        "flowability", "powder properties", "compressibility", "dissolution",
+        "solubility", "bioavailability",
+    ),
     "poor solubility": (
         "poor solubility", "low solubility", "solubility", "dissolution",
         "dissolution rate", "bioavailability", "absorption", "BCS II",
@@ -83,6 +109,37 @@ QUERY_EXPANSIONS = {
         "solubility", "dissolution", "permeability", "lipid formulation",
         "SEDDS", "SMEDDS", "nanocrystal", "solid dispersion", "salt form",
         "cocrystal",
+    ),
+    "particle size reduction": (
+        "particle size reduction", "particle size", "particle engineering",
+        "micronization", "nanomilling", "wet milling", "dry milling",
+        "milling", "nanocrystal", "nanosuspension", "dissolution",
+        "solubility", "bioavailability",
+    ),
+    "nanocrystals / nanosuspensions": (
+        "nanocrystal", "nanocrystals", "nanosuspension", "nanosuspensions",
+        "nanomilling", "wet milling", "particle size reduction",
+        "particle engineering", "dissolution", "solubility", "bioavailability",
+    ),
+    "cocrystals / salt forms": (
+        "cocrystal", "cocrystals", "salt form", "salt forms",
+        "crystal engineering", "crystal habit", "solid state", "polymorph",
+        "dissolution", "solubility", "bioavailability",
+    ),
+    "lipid-based formulations": (
+        "lipid-based formulation", "lipid formulation", "lipid delivery",
+        "self-emulsifying", "SEDDS", "SMEDDS", "absorption", "dissolution",
+        "solubility", "bioavailability",
+    ),
+    "spray drying": (
+        "spray drying", "spray-dried dispersion", "amorphous solid dispersion",
+        "solid dispersion", "particle engineering", "polymer carrier",
+        "dissolution", "solubility", "bioavailability",
+    ),
+    "hot-melt extrusion": (
+        "hot-melt extrusion", "HME", "amorphous solid dispersion",
+        "solid dispersion", "polymer carrier", "supersaturation",
+        "dissolution", "solubility", "bioavailability",
     ),
 }
 
@@ -269,7 +326,7 @@ def _canonical_links(conn, source_table: str, source_ids: list[str], limit: int)
     ]
 
 
-def collect(
+def _collect_theme_evidence(
     conn,
     query: str,
     case_type: str,
@@ -701,6 +758,654 @@ def collect(
     return result
 
 
+def validate_case_inputs(company: str, theme: str, mode: str) -> str:
+    if mode == "Company-specific pitch" and not _text(company):
+        return "Target company is required for a company-specific pitch."
+    if not _text(theme):
+        return "Technology/opportunity theme is required."
+    return ""
+
+
+def company_options(conn, search: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    """Return bounded retained company choices without external discovery."""
+    bounded = max(1, min(int(limit), 100))
+    pattern = f"%{_text(search).casefold()}%"
+    candidates: list[dict[str, Any]] = []
+    queries = (
+        (
+            """SELECT canonical_name AS company_name,'canonical organisation' AS source,
+            organisation_profile_id,'' AS account_organisation_id
+            FROM organisation_profiles WHERE active=1 AND LOWER(canonical_name) LIKE ?
+            ORDER BY canonical_name LIMIT ?""",
+            (pattern, bounded),
+        ),
+        (
+            """SELECT o.canonical_name AS company_name,'canonical organisation alias' AS source,
+            o.organisation_profile_id,'' AS account_organisation_id
+            FROM organisation_aliases a JOIN organisation_profiles o
+              ON o.organisation_profile_id=a.organisation_profile_id
+            WHERE o.active=1 AND LOWER(a.alias_name) LIKE ?
+            ORDER BY o.canonical_name LIMIT ?""",
+            (pattern, bounded),
+        ),
+        (
+            """SELECT canonical_name AS company_name,'account intelligence' AS source,
+            '' AS organisation_profile_id,organisation_id AS account_organisation_id
+            FROM account_organisations WHERE active=1 AND LOWER(canonical_name) LIKE ?
+            ORDER BY canonical_name LIMIT ?""",
+            (pattern, bounded),
+        ),
+        (
+            """SELECT o.canonical_name AS company_name,'account alias' AS source,
+            '' AS organisation_profile_id,o.organisation_id AS account_organisation_id
+            FROM account_aliases a JOIN account_organisations o
+              ON o.organisation_id=a.organisation_id
+            WHERE o.active=1 AND LOWER(a.alias_name) LIKE ?
+            ORDER BY o.canonical_name LIMIT ?""",
+            (pattern, bounded),
+        ),
+        (
+            """SELECT company AS company_name,'opportunity index' AS source,
+            '' AS organisation_profile_id,'' AS account_organisation_id
+            FROM opportunity_index
+            WHERE COALESCE(company,'')<>'' AND LOWER(company) LIKE ?
+              AND COALESCE(novelty_status,'') NOT IN ('archived','rejected / hidden')
+              AND COALESCE(queue_status,'') NOT IN ('archived','rejected')
+            GROUP BY company ORDER BY company LIMIT ?""",
+            (pattern, bounded),
+        ),
+        (
+            """SELECT application_holder AS company_name,'lifecycle records' AS source,
+            '' AS organisation_profile_id,'' AS account_organisation_id
+            FROM lifecycle_products
+            WHERE active=1 AND COALESCE(application_holder,'')<>''
+              AND LOWER(application_holder) LIKE ?
+            GROUP BY application_holder ORDER BY application_holder LIMIT ?""",
+            (pattern, bounded),
+        ),
+    )
+    for sql, params in queries:
+        candidates.extend(dict(row) for row in conn.execute(sql, params).fetchall())
+    unique: dict[str, dict[str, Any]] = {}
+    for row in candidates:
+        name = _text(row.get("company_name"))
+        key = name.casefold()
+        if not key:
+            continue
+        if key not in unique:
+            unique[key] = row
+        else:
+            current = unique[key]
+            current["organisation_profile_id"] = (
+                current.get("organisation_profile_id")
+                or row.get("organisation_profile_id")
+                or ""
+            )
+            current["account_organisation_id"] = (
+                current.get("account_organisation_id")
+                or row.get("account_organisation_id")
+                or ""
+            )
+    return sorted(unique.values(), key=lambda row: _text(row["company_name"]).casefold())[:bounded]
+
+
+def _company_identity(conn, company: str) -> dict[str, Any]:
+    requested = _text(company)
+    key = requested.casefold()
+    profile = conn.execute(
+        """SELECT organisation_profile_id,canonical_name,organisation_type,country_code,
+        official_website_url,identity_status,evidence_status
+        FROM organisation_profiles o WHERE o.active=1 AND
+          (LOWER(o.canonical_name)=? OR EXISTS (
+            SELECT 1 FROM organisation_aliases a
+            WHERE a.organisation_profile_id=o.organisation_profile_id
+              AND LOWER(a.alias_name)=?
+          ))
+        ORDER BY CASE WHEN LOWER(o.canonical_name)=? THEN 0 ELSE 1 END,
+        o.canonical_name LIMIT 1""",
+        (key, key, key),
+    ).fetchone()
+    profile_row = dict(profile or {})
+    profile_id = _text(profile_row.get("organisation_profile_id"))
+    profile_aliases = [
+        _text(row["alias_name"])
+        for row in conn.execute(
+            """SELECT alias_name FROM organisation_aliases
+            WHERE organisation_profile_id=? ORDER BY alias_name LIMIT 20""",
+            (profile_id,),
+        ).fetchall()
+    ] if profile_id else []
+    account = conn.execute(
+        """SELECT organisation_id,canonical_name,organisation_type,country,
+        official_website_url,identity_status
+        FROM account_organisations o WHERE o.active=1 AND
+          (LOWER(o.canonical_name)=? OR EXISTS (
+            SELECT 1 FROM account_aliases a
+            WHERE a.organisation_id=o.organisation_id AND LOWER(a.alias_name)=?
+          ))
+        ORDER BY CASE WHEN LOWER(o.canonical_name)=? THEN 0 ELSE 1 END,
+        o.canonical_name LIMIT 1""",
+        (key, key, key),
+    ).fetchone()
+    account_row = dict(account or {})
+    account_id = _text(account_row.get("organisation_id"))
+    account_aliases = [
+        _text(row["alias_name"])
+        for row in conn.execute(
+            """SELECT alias_name FROM account_aliases
+            WHERE organisation_id=? ORDER BY alias_name LIMIT 20""",
+            (account_id,),
+        ).fetchall()
+    ] if account_id else []
+    canonical_name = _text(
+        profile_row.get("canonical_name")
+        or account_row.get("canonical_name")
+        or requested
+    )
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in (requested, canonical_name, *profile_aliases, *account_aliases):
+        value = _text(value)
+        if value and value.casefold() not in seen:
+            seen.add(value.casefold())
+            terms.append(value)
+    return {
+        "requested_name": requested,
+        "canonical_name": canonical_name,
+        "company_terms": terms,
+        "organisation_profile_id": profile_id,
+        "account_organisation_id": account_id,
+        "organisation_type": (
+            profile_row.get("organisation_type")
+            or account_row.get("organisation_type")
+            or "Not established"
+        ),
+        "country": profile_row.get("country_code") or account_row.get("country") or "",
+        "official_website_url": (
+            profile_row.get("official_website_url")
+            or account_row.get("official_website_url")
+            or ""
+        ),
+        "identity_status": (
+            profile_row.get("identity_status")
+            or account_row.get("identity_status")
+            or "manual company entry; requires review"
+        ),
+        "evidence_status": profile_row.get("evidence_status") or "",
+        "known_company": bool(profile_id or account_id),
+    }
+
+
+def _company_specific_evidence(
+    conn,
+    company_identity: dict[str, Any],
+    theme: str,
+    theme_evidence: dict[str, Any],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    bounded = max(1, min(int(limit), BUCKET_LIMIT))
+    company_terms = list(company_identity.get("company_terms") or [])
+    theme_terms = list(theme_evidence.get("expanded_terms") or [theme])
+    company_where, company_params = _or_like(("company",), company_terms)
+    opportunity_fields = (
+        "product", "molecule", "problem_category", "source_type", "evidence_links_json",
+    )
+    theme_where, theme_params = _or_like(opportunity_fields, theme_terms)
+    opportunity_candidates = [
+        dict(row)
+        for row in conn.execute(
+            """SELECT stable_lead_id,company,product,molecule,problem_category,source_type,
+            source_id,region,evidence_links_json,score,grade,last_updated_at,last_checked_at
+            FROM opportunity_index WHERE """ + company_where + " AND " + theme_where + """
+              AND COALESCE(novelty_status,'') NOT IN ('archived','rejected / hidden')
+              AND COALESCE(queue_status,'') NOT IN ('archived','rejected')
+            ORDER BY COALESCE(score,0) DESC,COALESCE(last_updated_at,last_checked_at) DESC
+            LIMIT ?""",
+            (*company_params, *theme_params, CANDIDATE_LIMIT),
+        ).fetchall()
+    ]
+    opportunities = _rank_rows(
+        opportunity_candidates,
+        theme,
+        theme_terms,
+        opportunity_fields,
+        score_field="score",
+        evidence_field="grade",
+        date_field="last_updated_at",
+        source_field="source_type",
+        limit=bounded,
+    )
+    for row in opportunities:
+        row["source_url"] = _first_url(row.get("evidence_links_json"))
+        row["company_specific"] = True
+
+    products: list[dict[str, Any]] = []
+    for row in opportunities:
+        for entity_type, name in (("product", row.get("product")), ("api", row.get("molecule"))):
+            if _text(name):
+                products.append({
+                    "entity_type": entity_type,
+                    "name": _text(name),
+                    "identity_status": "retained company opportunity record",
+                    "evidence_status": "company-specific opportunity evidence",
+                    "source_url": row.get("source_url") or "",
+                    "source_id": row.get("stable_lead_id") or "",
+                    "matched_terms": list(row.get("matched_terms") or []),
+                    "matched_terms_text": row.get("matched_terms_text") or "",
+                    "company_specific": True,
+                })
+
+    organisation_id = _text(company_identity.get("organisation_profile_id"))
+    technologies: list[dict[str, Any]] = []
+    capabilities: list[dict[str, Any]] = []
+    if organisation_id:
+        for row in conn.execute(
+            """SELECT 'product' AS entity_type,p.product_id AS entity_id,
+            p.canonical_name AS name,p.identity_status,r.evidence_status,
+            r.evidence_url AS source_url,r.source_record_id AS source_id,
+            r.relationship_type,r.verification_status
+            FROM organisation_product_relationships r
+            JOIN product_profiles p ON p.product_id=r.product_id
+            WHERE r.organisation_profile_id=? AND r.active=1 AND p.active=1
+            ORDER BY p.canonical_name LIMIT ?""",
+            (organisation_id, bounded),
+        ).fetchall():
+            products.append({**dict(row), "company_specific": True})
+        for row in conn.execute(
+            """SELECT 'api' AS entity_type,a.api_id AS entity_id,
+            a.canonical_name AS name,a.identity_status,r.evidence_status,
+            r.evidence_url AS source_url,r.source_record_id AS source_id,
+            r.relationship_type,r.verification_status
+            FROM organisation_api_relationships r
+            JOIN api_profiles a ON a.api_id=r.api_id
+            WHERE r.organisation_profile_id=? AND r.active=1 AND a.active=1
+            ORDER BY a.canonical_name LIMIT ?""",
+            (organisation_id, bounded),
+        ).fetchall():
+            products.append({**dict(row), "company_specific": True})
+
+        solution_fields = ("s.display_name", "s.mechanism_summary", "tpr.relationship_statement")
+        solution_where, solution_params = _or_like(solution_fields, theme_terms)
+        technology_candidates = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT s.technology_id,s.display_name,s.mechanism_summary,
+                r.relationship_type,r.evidence_url,r.evidence_status,
+                r.verification_status,r.source_record_id AS source_id,
+                COALESCE(tpr.relationship_statement,'') AS relationship_statement,
+                COALESCE(tpr.confidence_score,0) AS confidence_score
+                FROM organisation_solution_relationships r
+                JOIN technology_solutions s ON s.technology_id=r.technology_id
+                LEFT JOIN technology_problem_relationships tpr
+                  ON tpr.technology_id=s.technology_id AND tpr.active=1
+                WHERE r.organisation_profile_id=? AND r.active=1 AND s.active=1
+                  AND """ + solution_where + """
+                ORDER BY s.display_name LIMIT ?""",
+                (organisation_id, *solution_params, CANDIDATE_LIMIT),
+            ).fetchall()
+        ]
+        technologies = _rank_rows(
+            technology_candidates,
+            theme,
+            theme_terms,
+            ("display_name", "mechanism_summary", "relationship_statement"),
+            score_field="confidence_score",
+            evidence_field="evidence_status",
+            source_field="verification_status",
+            limit=bounded,
+        )
+        for row in technologies:
+            row["canonical_status"] = row.get("verification_status") or "requires review"
+            row["company_specific"] = True
+
+        capability_fields = ("c.canonical_name", "c.description")
+        capability_where, capability_params = _or_like(capability_fields, theme_terms)
+        capability_candidates = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT c.capability_profile_id,c.canonical_name,c.description,
+                c.capability_type,r.relationship_type,r.evidence_url,r.evidence_status,
+                r.verification_status,r.source_record_id AS source_id
+                FROM organisation_capability_relationships r
+                JOIN capability_profiles c ON c.capability_profile_id=r.capability_profile_id
+                WHERE r.organisation_profile_id=? AND r.active=1 AND c.active=1
+                  AND """ + capability_where + """
+                ORDER BY c.canonical_name LIMIT ?""",
+                (organisation_id, *capability_params, CANDIDATE_LIMIT),
+            ).fetchall()
+        ]
+        capabilities = _rank_rows(
+            capability_candidates,
+            theme,
+            theme_terms,
+            ("canonical_name", "description"),
+            evidence_field="evidence_status",
+            source_field="verification_status",
+            limit=bounded,
+        )
+        for row in capabilities:
+            row["company_specific"] = True
+
+    deduped_products: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in products:
+        key = (_text(row.get("entity_type")), _text(row.get("name")).casefold())
+        if key[1] and key not in deduped_products:
+            deduped_products[key] = row
+    products = _rank_rows(
+        list(deduped_products.values()),
+        theme,
+        theme_terms,
+        ("name",),
+        evidence_field="evidence_status",
+        limit=bounded,
+    )
+
+    grant_company_fields = ("funder_name", "recipient_name")
+    grant_theme_fields = ("programme_name", "award_id")
+    grant_company_where, grant_company_params = _or_like(grant_company_fields, company_terms)
+    grant_theme_where, grant_theme_params = _or_like(grant_theme_fields, theme_terms)
+    grant_candidates = [
+        dict(row)
+        for row in conn.execute(
+            """SELECT funding_award_id,funder_name,recipient_name,award_id,programme_name,
+            source_name,source_id,evidence_url,evidence_status,validation_status,last_verified_at
+            FROM funding_awards WHERE active=1 AND """ + grant_company_where + """
+              AND """ + grant_theme_where + """
+            ORDER BY last_verified_at DESC LIMIT ?""",
+            (*grant_company_params, *grant_theme_params, CANDIDATE_LIMIT),
+        ).fetchall()
+    ]
+    grants = _rank_rows(
+        grant_candidates,
+        theme,
+        theme_terms,
+        grant_theme_fields,
+        evidence_field="evidence_status",
+        date_field="last_verified_at",
+        source_field="source_name",
+        limit=bounded,
+    )
+    for row in grants:
+        row["company_specific"] = True
+
+    patent_candidates: dict[str, dict[str, Any]] = {}
+    for company_term in company_terms[:10]:
+        for row in patent_discovery.stored_records(conn, company_term, "Company / assignee"):
+            theme_matches = _matched_terms(
+                row,
+                ("title", "snippet", "assignee_applicant"),
+                theme_terms,
+            )
+            company_matches = _matched_terms(row, ("assignee_applicant",), company_terms)
+            if not theme_matches or not company_matches:
+                continue
+            key = _text(
+                row.get("patent_document_id")
+                or row.get("publication_number")
+                or row.get("external_link")
+            ).casefold()
+            if key and key not in patent_candidates:
+                patent_candidates[key] = {
+                    **dict(row),
+                    "matched_terms": theme_matches,
+                    "company_specific": True,
+                }
+    patents = _rank_rows(
+        list(patent_candidates.values()),
+        theme,
+        theme_terms,
+        ("title", "snippet", "assignee_applicant"),
+        evidence_field="evidence_status",
+        date_field="date",
+        source_field="source_type",
+        limit=bounded,
+    )
+
+    holder_where, holder_params = _or_like(("application_holder",), company_terms)
+    lifecycle_candidates = [
+        dict(row)
+        for row in conn.execute(
+            """SELECT lifecycle_id,trade_name,ingredient,application_number,
+            application_holder,dosage_form_route,market_category,lifecycle_status,
+            dataset_mode,official_source_url,evidence_status,next_expiry_date,last_verified_at
+            FROM lifecycle_products WHERE active=1 AND """ + holder_where + """
+            ORDER BY last_verified_at DESC LIMIT ?""",
+            (*holder_params, CANDIDATE_LIMIT),
+        ).fetchall()
+    ]
+    lifecycle = _rank_rows(
+        lifecycle_candidates,
+        theme,
+        theme_terms,
+        (
+            "trade_name", "ingredient", "dosage_form_route", "market_category",
+            "lifecycle_status",
+        ),
+        evidence_field="evidence_status",
+        date_field="last_verified_at",
+        source_field="dataset_mode",
+        limit=bounded,
+    )
+    lifecycle = [row for row in lifecycle if row.get("matched_terms")]
+    for row in lifecycle:
+        row["company_specific"] = True
+
+    regulatory = [
+        {
+            "title": _text(row.get("product") or row.get("molecule") or row.get("source_id")),
+            "regulator": _text(row.get("source_type")),
+            "problem_category": _text(row.get("problem_category")),
+            "source_id": _text(row.get("source_id")),
+            "source_url": row.get("source_url") or "",
+            "source_status": "retained company-specific evidence",
+            "matched_terms": list(row.get("matched_terms") or []),
+            "matched_terms_text": row.get("matched_terms_text") or "",
+            "company_specific": True,
+        }
+        for row in opportunities
+        if any(token in _text(row.get("source_type")).casefold() for token in ("fda", "ema", "mhra", "regulator"))
+    ][:bounded]
+
+    sources: list[dict[str, str]] = []
+    for row in opportunities:
+        sources.append(_source(
+            "Company-specific signals",
+            row.get("product") or row.get("company") or row.get("problem_category"),
+            "retained company-specific evidence",
+            row.get("source_url"),
+            row.get("source_id"),
+            row.get("matched_terms"),
+        ))
+    for row in products:
+        sources.append(_source(
+            "Relevant products/APIs", row.get("name"),
+            "retained company-specific evidence", row.get("source_url"),
+            row.get("source_id"), row.get("matched_terms"),
+        ))
+    for row in technologies:
+        sources.append(_source(
+            "Technology/problem fit", row.get("display_name"),
+            "retained company-specific evidence", row.get("evidence_url"),
+            row.get("source_id"), row.get("matched_terms"),
+        ))
+    for row in capabilities:
+        sources.append(_source(
+            "Technology/problem fit", row.get("canonical_name"),
+            "retained company-specific evidence", row.get("evidence_url"),
+            row.get("source_id"), row.get("matched_terms"),
+        ))
+    for row in grants:
+        sources.append(_source(
+            "Research/grant and collaboration signals",
+            row.get("programme_name") or row.get("award_id"),
+            "retained company-specific evidence", row.get("evidence_url"),
+            row.get("source_id"), row.get("matched_terms"),
+        ))
+    for row in patents:
+        sources.append(_source(
+            "Patent and innovation landscape", row.get("title"),
+            "retained company-specific evidence", row.get("external_link"),
+            row.get("publication_number"), row.get("matched_terms"),
+        ))
+    for row in regulatory:
+        sources.append(_source(
+            "Regulatory/lifecycle context", row.get("title"),
+            "retained company-specific evidence", row.get("source_url"),
+            row.get("source_id"), row.get("matched_terms"),
+        ))
+    for row in lifecycle:
+        sources.append(_source(
+            "Regulatory/lifecycle context", row.get("trade_name"),
+            "retained company-specific evidence", row.get("official_source_url"),
+            row.get("application_number"), row.get("matched_terms"),
+        ))
+
+    company_source_ids = {
+        (_text(row.get("source_id")), _text(row.get("source_url")))
+        for row in sources
+    }
+    theme_sources = []
+    for row in theme_evidence.get("sources") or []:
+        key = (_text(row.get("source_id")), _text(row.get("source_url")))
+        if key in company_source_ids:
+            continue
+        theme_sources.append({
+            **row,
+            "source_status": "Theme-level evidence only — not company-specific.",
+        })
+
+    specific_items = [
+        *opportunities, *products, *technologies, *capabilities, *grants,
+        *patents, *regulatory, *lifecycle,
+    ]
+    source_link = any(_text(row.get("source_url")) for row in sources)
+    qualifying = bool(
+        opportunities
+        or technologies
+        or lifecycle
+        or any(row.get("matched_terms") for row in products)
+    )
+    generic_useful = any(
+        theme_evidence.get(key)
+        for key in (
+            "opportunities", "products", "problems", "technologies", "grants",
+            "patents", "direct_patents", "regulatory", "lifecycle",
+        )
+    )
+    if specific_items and source_link and qualifying:
+        readiness = "Pitch-ready draft"
+    elif specific_items:
+        readiness = "Partial company evidence"
+    elif generic_useful:
+        readiness = "Prospecting shell only"
+    else:
+        readiness = "Not enough evidence"
+
+    if not specific_items:
+        company_limitation = (
+            "No retained company-specific evidence was found for this target. "
+            "The report is a prospecting shell only."
+        )
+    else:
+        company_limitation = (
+            "Company-specific retained evidence is incomplete and requires analyst validation."
+        )
+    return {
+        "company": company_identity,
+        "company_terms": company_terms,
+        "theme": theme,
+        "expanded_terms": theme_terms,
+        "opportunities": opportunities,
+        "products": products,
+        "technologies": technologies,
+        "capabilities": capabilities,
+        "grants": grants,
+        "patents": patents,
+        "regulatory": regulatory,
+        "lifecycle": lifecycle,
+        "sources": [*sources, *theme_sources][:100],
+        "company_sources": sources,
+        "theme_sources": theme_sources,
+        "theme_evidence": theme_evidence,
+        "company_specific_count": len(specific_items),
+        "case_readiness": readiness,
+        "limitations": [company_limitation],
+        "reviewed_canonical_links": [
+            row for row in [*technologies, *capabilities, *products]
+            if row.get("verification_status") == "human-verified"
+        ],
+        "requires_review_links": [
+            row for row in [*technologies, *capabilities, *products]
+            if row.get("verification_status") == "requires-review"
+        ],
+        "evidence_counts": {
+            "company_opportunities": len(opportunities),
+            "company_products_apis": len(products),
+            "company_technology_capabilities": len(technologies) + len(capabilities),
+            "company_patents": len(patents),
+            "company_grants": len(grants),
+            "company_regulatory_lifecycle": len(regulatory) + len(lifecycle),
+            "theme_level_records": sum(
+                len(theme_evidence.get(key) or [])
+                for key in (
+                    "opportunities", "products", "problems", "technologies",
+                    "grants", "patents", "direct_patents", "regulatory", "lifecycle",
+                )
+            ),
+        },
+    }
+
+
+def collect(
+    conn,
+    query: str,
+    case_type: str,
+    *,
+    company: str = "",
+    mode: str = "Company-specific pitch",
+    direct_patent_result: dict[str, Any] | None = None,
+    limit: int = BUCKET_LIMIT,
+) -> dict[str, Any]:
+    theme_evidence = _collect_theme_evidence(
+        conn,
+        query,
+        case_type,
+        direct_patent_result=direct_patent_result,
+        limit=limit,
+    )
+    if mode != "Company-specific pitch":
+        theme_evidence["mode"] = "Theme-only exploration"
+        theme_evidence["exploration_warning"] = "Exploration only — not suitable for company pitch."
+        return theme_evidence
+    error = validate_case_inputs(company, query, mode)
+    if error:
+        raise ValueError(error)
+    result = _company_specific_evidence(
+        conn,
+        _company_identity(conn, company),
+        query,
+        theme_evidence,
+        limit=limit,
+    )
+    result.update({
+        "mode": mode,
+        "case_type": case_type if case_type in CASE_TYPES else CASE_TYPES[0],
+        "query": query,
+        "patent_routes": patent_discovery.external_discovery_routes(
+            f"{company} {query}",
+            "Innovation / problem theme",
+        )[:BUCKET_LIMIT],
+        "patent_provider_statuses": (
+            (direct_patent_result or {}).get("providers")
+            or patent_discovery.patent_source_health()
+        ),
+        "direct_patents": list((direct_patent_result or {}).get("results") or [])[:BUCKET_LIMIT],
+        "search_buckets": EVIDENCE_BUCKETS,
+    })
+    return result
+
+
 def _bullet_rows(rows: list[dict[str, Any]], fields: tuple[str, ...], empty: str) -> list[str]:
     if not rows:
         return [f"- {empty}"]
@@ -711,7 +1416,218 @@ def _bullet_rows(rows: list[dict[str, Any]], fields: tuple[str, ...], empty: str
     return output
 
 
+def _render_company_markdown(evidence: dict[str, Any]) -> str:
+    company = evidence.get("company") or {}
+    company_name = _text(company.get("canonical_name") or company.get("requested_name"))
+    theme = _text(evidence.get("theme") or evidence.get("query"))
+    case_type = _text(evidence.get("case_type"))
+    readiness = _text(evidence.get("case_readiness"))
+    counts = evidence.get("evidence_counts") or {}
+    theme_evidence = evidence.get("theme_evidence") or {}
+    opportunities = evidence.get("opportunities") or []
+    products = evidence.get("products") or []
+    technologies = evidence.get("technologies") or []
+    capabilities = evidence.get("capabilities") or []
+    patents = evidence.get("patents") or []
+    direct_patents = evidence.get("direct_patents") or []
+    grants = evidence.get("grants") or []
+    regulatory = [*(evidence.get("regulatory") or []), *(evidence.get("lifecycle") or [])]
+    if opportunities:
+        summary = (
+            f"Retained company-specific opportunity signals were found for {company_name}. "
+            f"The {theme} opportunity may justify review, but every pitch claim requires analyst validation."
+        )
+    elif evidence.get("company_specific_count"):
+        summary = (
+            f"PharmaTune found limited retained company-specific context for {company_name}, "
+            f"but no confirmed {theme} problem is established. This is a potential-fit draft only."
+        )
+    else:
+        summary = (
+            f"No retained company-specific evidence was found for {company_name}. "
+            "The report is a prospecting shell only and must not be presented as evidence that the company has this problem."
+        )
+    lines = [
+        f"# {company_name} — {theme} opportunity case study",
+        "",
+        f"**Case-study type:** {case_type}",
+        "",
+        f"**Readiness:** {readiness}",
+        "",
+        "## Executive summary",
+        "",
+        summary,
+        "",
+        "## Target company",
+        "",
+        f"- **Company:** {company_name}",
+        f"- **Identity status:** {_text(company.get('identity_status'))}",
+        f"- **Organisation type:** {_text(company.get('organisation_type'))}",
+        f"- **Country:** {_text(company.get('country')) or 'Not established'}",
+        f"- **Aliases/search terms:** {', '.join(evidence.get('company_terms') or [company_name])}",
+        "",
+        "## Strategic opportunity hypothesis",
+        "",
+        f"{theme} is a possible opportunity area for {company_name}. Retained records may indicate potential fit, "
+        "but PharmaTune does not claim that the company has a formulation, particle-property or product-development problem unless a displayed source states it.",
+        "",
+        "## Why this matters for the company",
+        "",
+        "A validated fit could support formulation troubleshooting, product rescue, lifecycle planning or partner discovery. "
+        "The commercial relevance and responsible business function require analyst validation before outreach.",
+        "",
+        "## Evidence snapshot",
+        "",
+        "| Evidence area | Company-specific records |",
+        "|---|---:|",
+        f"| Opportunities | {counts.get('company_opportunities', 0)} |",
+        f"| Products/APIs | {counts.get('company_products_apis', 0)} |",
+        f"| Technology/capability links | {counts.get('company_technology_capabilities', 0)} |",
+        f"| Patent records | {counts.get('company_patents', 0)} |",
+        f"| Research grants | {counts.get('company_grants', 0)} |",
+        f"| Regulatory/lifecycle | {counts.get('company_regulatory_lifecycle', 0)} |",
+        f"| Theme-level records | {counts.get('theme_level_records', 0)} |",
+        "",
+        "## Company-specific signals",
+        "",
+        *_bullet_rows(
+            opportunities,
+            ("company", "product", "molecule", "problem_category", "source_type", "matched_terms_text"),
+            "No retained company-specific opportunity signal was found.",
+        ),
+        "",
+        "## Relevant products/APIs",
+        "",
+        *_bullet_rows(
+            products,
+            ("entity_type", "name", "relationship_type", "evidence_status", "matched_terms_text"),
+            "No retained company-specific product/API record was found.",
+        ),
+        "",
+        "## Technology/problem fit",
+        "",
+        "Company-specific technology and capability links:",
+        "",
+        *_bullet_rows(
+            [*technologies, *capabilities],
+            (
+                "display_name", "canonical_name", "relationship_type",
+                "relationship_statement", "description", "evidence_status",
+                "matched_terms_text",
+            ),
+            "No retained company-specific technology or capability link was found.",
+        ),
+        "",
+        "**Theme-level evidence only — not company-specific.**",
+        "",
+        *_bullet_rows(
+            [
+                *(theme_evidence.get("problems") or []),
+                *(theme_evidence.get("technologies") or []),
+            ],
+            (
+                "display_name", "definition", "relationship_statement",
+                "evidence_status", "matched_terms_text",
+            ),
+            "No retained theme-level problem or technology evidence was found.",
+        ),
+        "",
+        "## Patent and innovation landscape",
+        "",
+        *_bullet_rows(
+            [*patents, *direct_patents],
+            (
+                "publication_number", "title", "assignee_applicant",
+                "source_label", "evidence_status", "matched_terms_text",
+            ),
+            "No company-specific retained or explicitly requested direct patent result was found.",
+        ),
+    ]
+    if not patents and not direct_patents:
+        lines.extend([
+            "",
+            "Generated official search routes:",
+            *_bullet_rows(
+                evidence.get("patent_routes") or [],
+                ("source_label", "external_link", "evidence_status"),
+                "No generated route is available.",
+            ),
+        ])
+    lines.extend([
+        "",
+        "Patent discovery is a discovery/cross-check activity and is not a legal, validity, enforceability or freedom-to-operate opinion.",
+        "",
+        "## Research/grant and collaboration signals",
+        "",
+        *_bullet_rows(
+            grants,
+            (
+                "funder_name", "recipient_name", "programme_name",
+                "award_id", "evidence_status", "matched_terms_text",
+            ),
+            "No retained company-specific grant or collaboration signal was found.",
+        ),
+        "",
+        "**Theme-level evidence only — not company-specific.**",
+        "",
+        *_bullet_rows(
+            theme_evidence.get("grants") or [],
+            ("funder_name", "recipient_name", "programme_name", "award_id", "evidence_status"),
+            "No retained theme-level grant evidence was found.",
+        ),
+        "",
+        "## Regulatory/lifecycle context",
+        "",
+        *_bullet_rows(
+            regulatory,
+            (
+                "title", "trade_name", "ingredient", "regulator",
+                "lifecycle_status", "evidence_status", "matched_terms_text",
+            ),
+            "No retained company-specific regulatory/lifecycle context was found.",
+        ),
+        "",
+        "## Potential pitch angle",
+        "",
+        f"Position {theme} as a **potential fit** for analyst discussion with {company_name}. "
+        "The retained signals may justify review as a possible opportunity area; they do not prove technical need, budget, ownership or buying intent.",
+        "",
+        "## Risks and limitations",
+        "",
+        *[f"- {item}" for item in evidence.get("limitations") or []],
+        "- Generic formulation evidence is not evidence about the target company.",
+        "- Company identity, product relevance, technical fit and commercial availability require analyst validation.",
+        "- No canonical link, external discovery result or opportunity is automatically accepted or imported.",
+        "",
+        "## Recommended outreach/validation steps",
+        "",
+        "- Open every company-specific source and confirm the stated company, product and problem context.",
+        "- Use Human Validation before treating any canonical candidate or technology fit as reviewed.",
+        "- Confirm the responsible formulation, CMC, product-development or business-development function.",
+        "- Convert the hypothesis into outreach language only after evidence and company identity are verified.",
+        "",
+        "## Source table",
+        "",
+        "| Section | Evidence | Status | Matched terms | Source ID | Link |",
+        "|---|---|---|---|---|---|",
+    ])
+    for row in evidence.get("sources") or []:
+        lines.append("| " + " | ".join([
+            _text(row.get("section")).replace("|", "\\|"),
+            _text(row.get("title")).replace("|", "\\|"),
+            _text(row.get("source_status")).replace("|", "\\|"),
+            _text(row.get("matched_terms")).replace("|", "\\|"),
+            _text(row.get("source_id")).replace("|", "\\|"),
+            _text(row.get("source_url")),
+        ]) + " |")
+    if not evidence.get("sources"):
+        lines.append("| Case study | No matching evidence | no matching evidence |  |  |  |")
+    return "\n".join(lines).strip() + "\n"
+
+
 def render_markdown(evidence: dict[str, Any]) -> str:
+    if evidence.get("mode") == "Company-specific pitch":
+        return _render_company_markdown(evidence)
     query = _text(evidence.get("query"))
     case_type = _text(evidence.get("case_type"))
     opportunities = evidence.get("opportunities") or []
@@ -875,14 +1791,22 @@ def build(
     query: str,
     case_type: str,
     *,
+    company: str = "",
+    mode: str = "Company-specific pitch",
     direct_patent_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evidence = collect(
         conn,
         query,
         case_type,
+        company=company,
+        mode=mode,
         direct_patent_result=direct_patent_result,
     )
     evidence["markdown"] = render_markdown(evidence)
-    evidence["title"] = f"PharmaTune case study: {_text(query)}"
+    if evidence.get("mode") == "Company-specific pitch":
+        company_name = _text((evidence.get("company") or {}).get("canonical_name") or company)
+        evidence["title"] = f"{company_name} — {_text(query)} opportunity case study"
+    else:
+        evidence["title"] = f"PharmaTune exploration: {_text(query)}"
     return evidence
