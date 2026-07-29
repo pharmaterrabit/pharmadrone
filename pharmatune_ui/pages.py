@@ -1630,8 +1630,11 @@ def validation(principal: dict[str, Any] | None = None) -> None:
         if corrections: st.dataframe(pd.DataFrame(corrections),use_container_width=True,hide_index=True)
 
 
-def _set_case_study_example(query: str) -> None:
-    st.session_state["case_study_query"] = query
+def _set_case_study_example(company: str, theme_name: str) -> None:
+    st.session_state["case_study_mode"] = "Company-specific pitch"
+    st.session_state["case_study_company_choice"] = "Enter manually"
+    st.session_state["case_study_company_manual"] = company
+    st.session_state["case_study_query"] = theme_name
     st.session_state.pop("case_study_report", None)
     st.session_state.pop("case_study_patent_result", None)
 
@@ -1639,78 +1642,141 @@ def _set_case_study_example(query: str) -> None:
 def case_study_builder(principal: dict[str, Any], navigate: Callable[[str], None]) -> None:
     theme.page_header(
         "Case Study Builder",
-        "Build a source-linked, evidence-grounded report from retained PharmaTune intelligence.",
+        "Build a company-specific opportunity pitch from retained, source-linked PharmaTune intelligence.",
         "Workflow",
     )
     st.warning(
-        "This report supports analyst discovery and validation. It is not legal, patent-validity, "
-        "freedom-to-operate, regulatory, investment or commercial advice."
+        "This report is intended for company-specific outreach. Generic theme-only evidence is not enough for a pitch."
     )
     columns = st.columns(5)
-    for index, example in enumerate(case_study_mvp.EXAMPLE_CASES):
+    for index, (example_company, example_theme) in enumerate(case_study_mvp.EXAMPLE_CASES):
         columns[index].button(
-            example,
+            f"{example_company} + {example_theme}",
             key=f"case_study_example_{index}",
             on_click=_set_case_study_example,
-            args=(example,),
+            args=(example_company, example_theme),
         )
-    query = st.text_input(
-        "Pharmaceutical problem, technology, product, API or company",
+    mode = st.radio(
+        "Report mode",
+        ["Company-specific pitch", "Theme-only exploration"],
+        key="case_study_mode",
+        horizontal=True,
+    )
+    company = ""
+    if mode == "Company-specific pitch":
+        retained_companies = data.case_study_company_options()
+        company_lookup = {
+            row["company_name"]: row
+            for row in retained_companies
+        }
+        company_choice = st.selectbox(
+            "Select a retained target company",
+            ["Enter manually", *company_lookup],
+            key="case_study_company_choice",
+        )
+        manual_company = st.text_input(
+            "Or enter a target company",
+            key="case_study_company_manual",
+            placeholder="e.g. Pfizer",
+        )
+        company = manual_company.strip() or (
+            company_choice if company_choice != "Enter manually" else ""
+        )
+        if not company:
+            st.info("A target company is required before a company-specific report can be generated.")
+    else:
+        st.info("Exploration only — not suitable for company pitch.")
+    query = st.selectbox(
+        "Technology/opportunity theme",
+        case_study_mvp.THEMES,
         key="case_study_query",
-        placeholder="e.g. poor solubility",
     )
     case_type = st.selectbox("Case-study type", case_study_mvp.CASE_TYPES)
     st.caption("Stored evidence is searched first. Live patent discovery runs only when explicitly requested.")
-    if st.button("Run patent source discovery for this case", disabled=not query.strip()):
+    required_missing = mode == "Company-specific pitch" and not company
+    discovery_query = f"{company} {query}".strip() if company else query
+    if st.button("Run patent source discovery for this case", disabled=required_missing):
         with st.spinner("Requesting configured patent discovery sources…"):
             st.session_state["case_study_patent_result"] = {
-                "query": query,
-                "result": data.live_patent_discovery(query),
+                "query": discovery_query,
+                "result": data.live_patent_discovery(discovery_query),
             }
     live_state = st.session_state.get("case_study_patent_result") or {}
-    live_result = live_state.get("result") if live_state.get("query") == query else None
+    live_result = live_state.get("result") if live_state.get("query") == discovery_query else None
     if live_result:
         st.caption(
             f"Explicit live discovery result available: {len(live_result.get('results') or [])} records "
             f"and {len(live_result.get('providers') or {})} provider statuses."
         )
-    if st.button("Generate case study report", type="primary", disabled=not query.strip()):
+    generate_label = (
+        "Generate company opportunity report"
+        if mode == "Company-specific pitch"
+        else "Generate theme-only exploration"
+    )
+    if st.button(generate_label, type="primary", disabled=required_missing):
         with st.spinner("Collecting bounded retained evidence…"):
             st.session_state["case_study_report"] = data.build_case_study(
                 query,
                 case_type,
+                company=company,
+                mode=mode,
                 direct_patent_result=live_result,
             )
     report = st.session_state.get("case_study_report")
+    report_company = (report or {}).get("company") or {}
+    if report and (
+        report.get("mode") != mode
+        or report.get("case_type") != case_type
+        or (report.get("query") or "") != query
+        or (
+            mode == "Company-specific pitch"
+            and (report_company.get("requested_name") or "").casefold()
+            != company.casefold()
+        )
+    ):
+        report = None
     if not report:
-        st.info("Choose an example or enter a case theme, then generate the report.")
+        st.info("Choose a target company and theme, or select theme-only exploration, then generate the report.")
         return
     readiness = report.get("case_readiness")
-    if readiness == "Ready for analyst review":
+    if readiness == "Pitch-ready draft":
         st.success(f"Case readiness: {readiness}")
-    elif readiness == "Partial evidence only":
+    elif readiness in {"Partial company evidence", "Prospecting shell only"}:
         st.warning(f"Case readiness: {readiness}")
     else:
-        st.error("Case readiness: Not enough retained evidence yet")
-        st.warning("This report currently has insufficient retained evidence and should not be used as a case study yet.")
+        st.error(f"Case readiness: {readiness}")
+    if readiness == "Prospecting shell only":
+        st.warning(
+            "No retained company-specific evidence was found for this target. "
+            "The report is a prospecting shell only."
+        )
     with st.expander("Search strategy"):
-        st.write(f"**Original query:** {report.get('query')}")
-        st.write("**Expanded terms:** " + " · ".join(report.get("expanded_terms") or []))
+        st.write(f"**Target company:** {(report.get('company') or {}).get('canonical_name') or company or 'Theme-only'}")
+        st.write("**Company terms and aliases:** " + " · ".join(report.get("company_terms") or []))
+        st.write(f"**Theme:** {report.get('theme') or report.get('query')}")
+        st.write("**Expanded theme terms:** " + " · ".join(report.get("expanded_terms") or []))
         st.write("**Evidence buckets searched:** " + " · ".join(report.get("search_buckets") or []))
     st.markdown(report["markdown"])
-    if readiness == "Not enough retained evidence yet":
-        st.markdown("### Continue evidence discovery")
+    if mode == "Company-specific pitch":
+        st.markdown("### Continue company validation")
         c1, c2, c3, c4 = st.columns(4)
-        if c1.button("Open Opportunity Explorer"):
-            st.session_state["opp_search"] = report.get("query") or query
-            st.session_state["opp_page"] = 1
-            navigate("Opportunity Explorer")
-        if c2.button("Open Patent Discovery"):
-            st.session_state["patent_discovery_query"] = report.get("query") or query
+        company_record = report.get("company") or {}
+        if c1.button("Open company"):
+            if company_record.get("account_organisation_id"):
+                st.session_state["account_organisation_id"] = company_record["account_organisation_id"]
+                navigate("Company Detail")
+            else:
+                navigate("Companies")
+        if c2.button("Open related Products"):
+            related_products = report.get("products") or []
+            if related_products and related_products[0].get("entity_type") == "product":
+                st.session_state["product_name"] = related_products[0]["name"]
+                navigate("Product Detail")
+            else:
+                navigate("Products")
+        if c3.button("Open Patent & Innovation Discovery"):
+            st.session_state["patent_discovery_query"] = discovery_query
             navigate("Patents")
-        if c3.button("Open Research & Innovation"):
-            st.session_state["research_intelligence_query"] = report.get("query") or query
-            navigate("Research & Innovation")
         if c4.button("Open Human Validation"):
             navigate("Human Validation")
     if not report.get("reviewed_canonical_links"):
@@ -1723,7 +1789,10 @@ def case_study_builder(principal: dict[str, Any], navigate: Callable[[str], None
         rows = report.get("requires_review_links") or []
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True) if rows else st.caption("No candidate links require review.")
     st.markdown("### Download and copy")
-    filename = "pharmatune_case_study_" + "_".join(query.casefold().split())[:50]
+    filename_parts = [company, query] if company else ["exploration", query]
+    filename = "pharmatune_case_study_" + "_".join(
+        "_".join(filename_parts).casefold().split()
+    )[:70]
     a, b = st.columns(2)
     a.download_button("Download Markdown", report["markdown"].encode("utf-8"), f"{filename}.md", "text/markdown")
     b.download_button("Download plain text", report["markdown"].encode("utf-8"), f"{filename}.txt", "text/plain")
