@@ -31,6 +31,7 @@ on:
       - "pharmadrone_ai/**"
       - "apps/pharmadrone-ai/**"
       - "tests/test_pharmadrone_ai.py"
+      - "tests/test_pharmadrone_ai_deployment.py"
       - "tests/test_pharmadrone_ai_postgres.py"
       - ".github/workflows/migration-16-postgresql.yml"
 
@@ -73,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          output="$(python -m pytest -q tests/test_pharmadrone_ai_postgres.py tests/test_pharmadrone_ai.py tests/test_foundation_pr_g_postgres.py tests/test_foundation_pr_g.py tests/test_foundation_pr_f.py tests/test_foundation_pr_e_postgres.py tests/test_foundation_pr_e.py tests/test_foundation_pr_d_postgres.py tests/test_foundation_pr_d.py tests/test_foundation_pr_c_postgres.py tests/test_foundation_pr_c.py tests/test_foundation_pr_b_postgres.py tests/test_foundation_pr_b.py tests/test_foundation_pr_a_postgres.py tests/test_foundation_pr_a.py tests/test_foundation_pr_a_rollback.py tests/test_phase9_patent_foundation.py 2>&1)" || {
+          output="$(python -m pytest -q tests/test_pharmadrone_ai_postgres.py tests/test_pharmadrone_ai.py tests/test_pharmadrone_ai_deployment.py tests/test_foundation_pr_g_postgres.py tests/test_foundation_pr_g.py tests/test_foundation_pr_f.py tests/test_foundation_pr_e_postgres.py tests/test_foundation_pr_e.py tests/test_foundation_pr_d_postgres.py tests/test_foundation_pr_d.py tests/test_foundation_pr_c_postgres.py tests/test_foundation_pr_c.py tests/test_foundation_pr_b_postgres.py tests/test_foundation_pr_b.py tests/test_foundation_pr_a_postgres.py tests/test_foundation_pr_a.py tests/test_foundation_pr_a_rollback.py tests/test_phase9_patent_foundation.py 2>&1)" || {
               printf '%s\n' "$output"
               exit 1
             }
@@ -82,3 +83,33 @@ jobs:
             echo "Real PostgreSQL Foundation migration validation must not skip."
             exit 1
           fi
+
+      - name: Build standalone PharmaDrone AI production image
+        run: >-
+          docker build
+          --file apps/pharmadrone-ai/Dockerfile
+          --tag pharmadrone-ai:ci
+          .
+
+      - name: Verify production container startup and health
+        shell: bash
+        run: |
+          docker run --detach \
+            --name pharmadrone-ai-production-smoke \
+            --network host \
+            --env DATABASE_URL="$TEST_DATABASE_URL" \
+            --env PHARMADRONE_AI_AUTH_SECRET="ci-production-auth-secret-at-least-32-characters" \
+            --env PHARMADRONE_AI_ALLOWED_ORIGINS="http://localhost:8000" \
+            pharmadrone-ai:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --show-error --silent http://127.0.0.1:8000/api/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs pharmadrone-ai-production-smoke
+          exit 1
+
+      - name: Stop standalone production container
+        if: always()
+        run: docker rm --force pharmadrone-ai-production-smoke || true
