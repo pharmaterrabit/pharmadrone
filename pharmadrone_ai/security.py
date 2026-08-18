@@ -16,6 +16,11 @@ PASSWORD_ALGORITHM = "pbkdf2-sha256-v1"
 PASSWORD_ITERATIONS = 310_000
 TOKEN_LIFETIME_HOURS = 12
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_KNOWN_DEVELOPMENT_SECRETS = {
+    "replace-with-a-long-random-production-secret",
+    "development-only-secret-change-before-deploy",
+    "local-compose-secret-change-before-production",
+}
 
 
 class AuthenticationError(ValueError):
@@ -73,10 +78,19 @@ def _auth_secret() -> bytes:
     if configured:
         if len(configured) < 32:
             raise RuntimeError("PHARMADRONE_AI_AUTH_SECRET must contain at least 32 characters.")
+        if environment in {"production", "prod"} and configured in _KNOWN_DEVELOPMENT_SECRETS:
+            raise RuntimeError(
+                "PHARMADRONE_AI_AUTH_SECRET must be replaced with a unique production secret."
+            )
         return configured.encode("utf-8")
     if environment in {"production", "prod"}:
         raise RuntimeError("PHARMADRONE_AI_AUTH_SECRET is required in production.")
     return b"development-only-secret-change-before-deploy"
+
+
+def validate_auth_configuration() -> None:
+    """Fail closed at application startup when production auth is unsafe."""
+    _auth_secret()
 
 
 def _encode_json(payload: dict[str, Any]) -> str:

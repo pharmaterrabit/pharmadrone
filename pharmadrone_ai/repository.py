@@ -197,6 +197,44 @@ def list_messages(conn, user_id: str, workspace_id: str, conversation_id: str, l
     ]
 
 
+def get_conversation(conn, user_id: str, workspace_id: str, conversation_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        """SELECT conversation_id,title,created_at,updated_at
+        FROM saas_conversations
+        WHERE conversation_id=? AND user_id=? AND workspace_id=? LIMIT 1""",
+        (conversation_id, user_id, workspace_id),
+    ).fetchone()
+    if not row:
+        raise PermissionError("Conversation does not belong to the authenticated workspace.")
+    result = dict(row)
+    result["messages"] = list_messages(
+        conn, user_id, workspace_id, conversation_id, limit=100,
+    )
+    return result
+
+
+def delete_conversation(conn, user_id: str, workspace_id: str, conversation_id: str) -> bool:
+    owner = conn.execute(
+        """SELECT conversation_id FROM saas_conversations
+        WHERE conversation_id=? AND user_id=? AND workspace_id=? LIMIT 1""",
+        (conversation_id, user_id, workspace_id),
+    ).fetchone()
+    if not owner:
+        return False
+    with conn.transaction():
+        conn.execute(
+            """DELETE FROM saas_messages
+            WHERE conversation_id=? AND user_id=? AND workspace_id=?""",
+            (conversation_id, user_id, workspace_id),
+        )
+        conn.execute(
+            """DELETE FROM saas_conversations
+            WHERE conversation_id=? AND user_id=? AND workspace_id=?""",
+            (conversation_id, user_id, workspace_id),
+        )
+    return True
+
+
 def _decode_saved(rows, json_column: str) -> list[dict[str, Any]]:
     output = []
     for row in rows:
@@ -243,7 +281,10 @@ def delete_saved(conn, table: str, id_column: str, saved_id: str, user_id: str, 
 
 
 def record_usage(conn, user_id: str, workspace_id: str, event_type: str, metadata: dict[str, Any] | None = None) -> None:
-    if event_type not in {"lead-generation", "pitch-report", "chat-message", "export"}:
+    if event_type not in {
+        "lead-generation", "pitch-report", "chat-message", "save-lead",
+        "save-report", "export",
+    }:
         raise ValueError("Usage event type is invalid.")
     current_user(conn, user_id, workspace_id)
     conn.execute(
@@ -280,6 +321,8 @@ def billing_status(conn, user_id: str, workspace_id: str) -> dict[str, Any]:
             "lead_generation_count": counts.get("lead-generation", 0),
             "pitch_report_count": counts.get("pitch-report", 0),
             "chat_message_count": counts.get("chat-message", 0),
+            "saved_lead_count": counts.get("save-lead", 0),
+            "saved_report_count": counts.get("save-report", 0),
             "export_count": counts.get("export", 0),
         },
         "stripe_configured": False,

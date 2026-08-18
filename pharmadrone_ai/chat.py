@@ -77,9 +77,15 @@ def detect_theme(prompt: str) -> str | None:
 
 def detect_intent(prompt: str) -> str:
     text = _normalized(prompt)
+    if "save lead" in text:
+        return "save-lead"
+    if "save report" in text or "save pitch" in text:
+        return "save-report"
     if any(phrase in text for phrase in ("build a", "build ", "pitch report", "opportunity report")):
         return "build-company-pitch"
-    if any(phrase in text for phrase in ("generate", "which companies", "target for", "bd leads")):
+    if any(phrase in text for phrase in (
+        "generate", "which companies", "target for", "bd leads", "outreach angle",
+    )):
         return "generate-bd-leads"
     if any(phrase in text for phrase in ("show", "evidence", "source links", "find ")):
         return "get-lead-evidence"
@@ -143,6 +149,10 @@ def _deterministic_message(intent: str, result: dict[str, Any], company: str = "
             f"Here is the retained PharmaDrone evidence available for {company} and {theme}. "
             "The source links and limitations should be reviewed before using the opportunity externally."
         )
+    if intent == "save-lead":
+        return "Use Save lead on the evidence-grounded lead card you want to retain in this workspace."
+    if intent == "save-report":
+        return "Use Save report on the generated company pitch you want to retain in this workspace."
     return "I can operate PharmaDrone lead, pitch-report and evidence tools when you provide a supported theme."
 
 
@@ -214,6 +224,15 @@ def handle_chat(prompt: str, *, conn=None, use_llm: bool = False) -> dict[str, A
             }
         else:
             result = ai_bd_service.get_lead_evidence(company, theme or "", conn=conn)
+    elif intent in {"save-lead", "save-report"}:
+        noun = "lead card" if intent == "save-lead" else "company pitch report"
+        result = {
+            "status": "needs-action",
+            "data": {},
+            "limitations": [f"A generated {noun} must be selected before it can be saved."],
+            "source_links": [],
+            "suggested_next_actions": [f"Generate a {noun}, review its evidence, then use its save action."],
+        }
     else:
         result = {
             "status": "needs-input", "data": {},

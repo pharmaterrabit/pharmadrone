@@ -4,7 +4,15 @@
 
 PharmaDrone AI is a standalone SaaS chatbot for pharmaceutical business-development users. It is served by FastAPI with its own static web client. It is not a Streamlit page and is not registered in either `pharmatune_ui` or `pharmatune_admin`.
 
-PharmaTune remains the internal intelligence and administration platform. PharmaDrone AI consumes bounded service functions over the same governed PharmaDrone database.
+PharmaTune remains the internal intelligence and administration platform. PharmaDrone AI consumes bounded service functions over the same governed PharmaDrone database. It is not registered in Streamlit navigation and does not require Streamlit to run.
+
+The production request path is: standalone browser client → PharmaDrone AI
+FastAPI/chat layer → existing PharmaDrone service and data modules → the shared
+PostgreSQL database. The service reuses the PR #46 company-specific case-study
+workflow, opportunity index, canonical product/API and organisation records,
+problem/technology relationships, patent provider status and stored records,
+research grants, regulatory/lifecycle context and human-reviewed canonical
+links. It never creates a parallel intelligence store.
 
 ## Implemented vertical slice
 
@@ -36,7 +44,13 @@ The application does not scrape Google Patents, import external discovery result
 - `PHARMADRONE_AI_ALLOWED_ORIGINS`: comma-separated allowed browser origins.
 - `PHARMADRONE_AI_API_DOCS`: set to `0` to disable API docs.
 - `OPENAI_API_KEY`, `OPENAI_MODEL`: optional tool-grounded drafting.
+- `TAVILY_API_KEY`: existing server-side discovery fallback where an explicitly invoked existing service supports it.
+- `EPO_OPS_CLIENT_ID`, `EPO_OPS_CLIENT_SECRET`: existing server-side EPO connector configuration.
 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`: reserved for later billing integration.
+
+Connector credentials remain server-side. The static browser client calls only
+the PharmaDrone AI backend; no connector key is embedded in JavaScript and no
+external connector runs on initial page load.
 
 ## Deployment
 
@@ -45,6 +59,10 @@ The application does not scrape Google Patents, import external discovery result
 3. Run the image on port 8000.
 4. Confirm `/api/health` reports `healthy`, PostgreSQL, and schema version 21.
 5. Register/login, generate leads, build a pitch, save both artifacts and export Markdown.
+
+SQLite is permitted only when local/test mode is explicitly selected. A
+production process without `DATABASE_URL`, or with an unchanged development
+authentication secret, fails closed rather than creating an empty SQLite app.
 
 For local PostgreSQL, use `docker compose -f apps/pharmadrone-ai/docker-compose.yml up --build`.
 

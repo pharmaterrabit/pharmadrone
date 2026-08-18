@@ -1,8 +1,8 @@
 # PharmaDrone AI
 
-PharmaDrone AI is the standalone customer-facing SaaS application. It is separate from the PharmaTune Streamlit intelligence and administration applications.
+PharmaDrone AI is the standalone customer-facing SaaS application. It is separate from the PharmaTune Streamlit intelligence and administration applications, but it uses the same PharmaDrone services, ordered migrations and PostgreSQL-backed intelligence database in production.
 
-Local SQLite development:
+Local SQLite development only:
 
 ```bash
 cp apps/pharmadrone-ai/.env.example .env
@@ -11,17 +11,6 @@ python -m uvicorn pharmadrone_ai.app:app --reload --port 8000
 ```
 
 Open `http://localhost:8000`, register a workspace, and use a starter prompt. Deterministic lead, pitch and evidence workflows work without an LLM key.
-
-To test the same application inside the PharmaTune Streamlit shell, keep the
-standalone server running and start Streamlit in a second terminal:
-
-```bash
-PHARMADRONE_AI_URL=http://localhost:8000 streamlit run app.py --server.port 8501
-```
-
-Open `http://localhost:8501` and select **PharmaDrone AI** in the sidebar. The
-embedded application keeps its own workspace login; create an account inside
-the panel on first use.
 
 Containerised PostgreSQL development:
 
@@ -36,3 +25,17 @@ curl http://localhost:8000/api/health
 ```
 
 The app applies additive Migration 21 through the existing ordered migration runner. Never point a development instance at production credentials.
+
+Production must set the repository's existing `DATABASE_URL` to the same
+PostgreSQL-backed PharmaDrone intelligence infrastructure used by PharmaTune,
+plus a unique `PHARMADRONE_AI_AUTH_SECRET` of at least 32 characters. Do not set
+`DATABASE_BACKEND=sqlite` in production. Existing connector variables including
+`OPENAI_API_KEY`, `OPENAI_MODEL`, `TAVILY_API_KEY`,
+`EPO_OPS_CLIENT_ID` and `EPO_OPS_CLIENT_SECRET` remain server-side and keep
+their established names.
+
+The normal product test is: register or log in, start a chat, generate bounded
+BD leads, build a company pitch, inspect source links and limitations, save the
+lead/report, export Markdown and log out. PharmaDrone AI does not invent
+evidence and does not provide legal, FTO, patent-validity, regulatory,
+investment or commercial conclusions.

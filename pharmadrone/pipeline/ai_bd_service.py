@@ -72,7 +72,8 @@ def _links(rows: Iterable[dict[str, Any]], *, cap: int = 30) -> list[dict[str, s
     seen: set[str] = set()
     for row in rows:
         link = _safe_link(
-            row.get("source_url")
+            row.get("url")
+            or row.get("source_url")
             or row.get("evidence_url")
             or row.get("external_link")
             or row.get("official_source_url")
@@ -83,11 +84,48 @@ def _links(rows: Iterable[dict[str, Any]], *, cap: int = 30) -> list[dict[str, s
         output.append({
             "title": _text(row.get("title") or row.get("name") or row.get("section") or "Evidence source"),
             "url": link,
-            "status": _text(row.get("source_status") or row.get("evidence_status") or "retained evidence"),
+            "status": _text(
+                row.get("status") or row.get("source_status")
+                or row.get("evidence_status") or "retained evidence"
+            ),
             "source_id": _text(row.get("source_id") or row.get("publication_number") or row.get("application_number")),
         })
         if len(output) >= cap:
             break
+    return output
+
+
+def _bounded_text(value: Any, limit: int = 5_000) -> str:
+    return _text(value)[:limit]
+
+
+def _bounded_strings(values: Any, *, cap: int = 30, limit: int = 2_000) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    return [
+        text
+        for text in (_bounded_text(value, limit) for value in values[:cap])
+        if text
+    ]
+
+
+def _source_table_rows(rows: Any, *, cap: int = 100) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+    for raw in list(rows or [])[:cap]:
+        if not isinstance(raw, dict):
+            continue
+        output.append({
+            "section": _bounded_text(raw.get("section"), 160),
+            "title": _bounded_text(raw.get("title"), 500) or "Evidence source",
+            "source_status": _bounded_text(
+                raw.get("source_status") or raw.get("evidence_status"), 160,
+            ),
+            "source_id": _bounded_text(raw.get("source_id"), 200),
+            "matched_terms": _bounded_text(raw.get("matched_terms"), 500),
+            "source_url": _safe_link(
+                raw.get("source_url") or raw.get("url") or raw.get("evidence_url")
+            ),
+        })
     return output
 
 
@@ -377,7 +415,7 @@ def build_company_pitch(
     report_id = "report-" + hashlib.sha256(
         f"{canonical_company.casefold()}|{selected_theme.casefold()}|{selected_case_type.casefold()}".encode("utf-8")
     ).hexdigest()[:20]
-    source_table = list(retained.get("sources") or [])[:100]
+    source_table = _source_table_rows(retained.get("sources") or [], cap=100)
     result = {
         "report_id": report_id,
         "report_title": title,
@@ -475,12 +513,32 @@ def save_lead(user_id: str, workspace_id: str, lead: dict[str, Any], *, conn=Non
         raise ValueError("Lead payload is incomplete.")
     if lead["readiness_status"] not in READINESS_STATUSES:
         raise ValueError("Lead readiness status is invalid.")
+    if len(json.dumps(lead, ensure_ascii=False)) > 250_000:
+        raise ValueError("Lead payload exceeds the bounded storage limit.")
+    clean_lead = {
+        "lead_id": _bounded_text(lead["lead_id"], 120),
+        "target_company": _bounded_text(lead["target_company"], 300),
+        "theme": _theme(lead["theme"]),
+        "readiness_status": lead["readiness_status"],
+        "opportunity_hypothesis": _bounded_text(lead.get("opportunity_hypothesis"), 5_000),
+        "pitch_angle": _bounded_text(lead["pitch_angle"], 5_000),
+        "evidence_summary": _bounded_text(lead.get("evidence_summary"), 10_000),
+        "evidence_counts": {
+            _bounded_text(key, 80): int(value or 0)
+            for key, value in list((lead.get("evidence_counts") or {}).items())[:30]
+            if _bounded_text(key, 80)
+        },
+        "source_links": _links(lead.get("source_links") or [], cap=30),
+        "limitations": _bounded_strings(lead.get("limitations"), cap=30),
+        "recommended_next_action": _bounded_text(lead.get("recommended_next_action"), 5_000),
+        "created_from": _bounded_text(lead.get("created_from"), 160),
+    }
     with _connection(conn) as active:
         _require_membership(active, user_id, workspace_id)
         existing = active.execute(
             """SELECT saved_lead_id FROM saas_saved_leads
             WHERE workspace_id=? AND user_id=? AND lead_id=? LIMIT 1""",
-            (workspace_id, user_id, lead["lead_id"]),
+            (workspace_id, user_id, clean_lead["lead_id"]),
         ).fetchone()
         saved_id = existing["saved_lead_id"] if existing else f"saved-lead-{uuid4().hex}"
         if not existing:
@@ -491,17 +549,17 @@ def save_lead(user_id: str, workspace_id: str, lead: dict[str, Any], *, conn=Non
                  limitations_json,lead_json,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    saved_id, lead["lead_id"], workspace_id, user_id,
-                    _text(lead["target_company"]), _theme(lead["theme"]),
-                    lead["readiness_status"], _text(lead["pitch_angle"]),
-                    _text(lead.get("evidence_summary")),
-                    json.dumps(lead.get("source_links") or [], ensure_ascii=False),
-                    json.dumps(lead.get("limitations") or [], ensure_ascii=False),
-                    json.dumps(lead, ensure_ascii=False), _now(),
+                    saved_id, clean_lead["lead_id"], workspace_id, user_id,
+                    clean_lead["target_company"], clean_lead["theme"],
+                    clean_lead["readiness_status"], clean_lead["pitch_angle"],
+                    clean_lead["evidence_summary"],
+                    json.dumps(clean_lead["source_links"], ensure_ascii=False),
+                    json.dumps(clean_lead["limitations"], ensure_ascii=False),
+                    json.dumps(clean_lead, ensure_ascii=False), _now(),
                 ),
             )
             active.commit()
-    return _response({"saved_lead_id": saved_id, "lead_id": lead["lead_id"]})
+    return _response({"saved_lead_id": saved_id, "lead_id": clean_lead["lead_id"]})
 
 
 def save_report(user_id: str, workspace_id: str, report: dict[str, Any], *, conn=None) -> dict[str, Any]:
@@ -510,12 +568,41 @@ def save_report(user_id: str, workspace_id: str, report: dict[str, Any], *, conn
         raise ValueError("Report payload is incomplete.")
     if report["readiness_status"] not in READINESS_STATUSES:
         raise ValueError("Report readiness status is invalid.")
+    if len(json.dumps(report, ensure_ascii=False)) > 750_000:
+        raise ValueError("Report payload exceeds the bounded storage limit.")
+    markdown = str(report["markdown_report"])
+    if len(markdown) > 500_000:
+        raise ValueError("Markdown report exceeds the bounded storage limit.")
+    clean_report = {
+        "report_id": _bounded_text(report["report_id"], 120),
+        "report_title": _bounded_text(report["report_title"], 500),
+        "target_company": _bounded_text(report["target_company"], 300),
+        "theme": _theme(report["theme"]),
+        "case_type": _case_type(report["case_type"]),
+        "readiness_status": report["readiness_status"],
+        "executive_summary": _bounded_text(report.get("executive_summary"), 20_000),
+        "strategic_opportunity_hypothesis": _bounded_text(
+            report.get("strategic_opportunity_hypothesis"), 20_000,
+        ),
+        "pitch_angle": _bounded_text(report.get("pitch_angle"), 20_000),
+        "evidence_sections": {
+            _bounded_text(key, 160): _bounded_text(value, 50_000)
+            for key, value in list((report.get("evidence_sections") or {}).items())[:20]
+            if _bounded_text(key, 160)
+        },
+        "source_table": _source_table_rows(report.get("source_table") or [], cap=100),
+        "limitations": _bounded_strings(report.get("limitations"), cap=50, limit=5_000),
+        "recommended_next_actions": _bounded_strings(
+            report.get("recommended_next_actions"), cap=30, limit=5_000,
+        ),
+        "markdown_report": markdown,
+    }
     with _connection(conn) as active:
         _require_membership(active, user_id, workspace_id)
         existing = active.execute(
             """SELECT saved_report_id FROM saas_saved_reports
             WHERE workspace_id=? AND user_id=? AND report_id=? LIMIT 1""",
-            (workspace_id, user_id, report["report_id"]),
+            (workspace_id, user_id, clean_report["report_id"]),
         ).fetchone()
         saved_id = existing["saved_report_id"] if existing else f"saved-report-{uuid4().hex}"
         if not existing:
@@ -526,13 +613,13 @@ def save_report(user_id: str, workspace_id: str, report: dict[str, Any], *, conn
                  source_table_json,report_json,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    saved_id, report["report_id"], workspace_id, user_id,
-                    _text(report["report_title"]), _text(report["target_company"]),
-                    _theme(report["theme"]), _case_type(report["case_type"]),
-                    report["readiness_status"], str(report["markdown_report"]),
-                    json.dumps(report.get("source_table") or [], ensure_ascii=False),
-                    json.dumps(report, ensure_ascii=False), _now(),
+                    saved_id, clean_report["report_id"], workspace_id, user_id,
+                    clean_report["report_title"], clean_report["target_company"],
+                    clean_report["theme"], clean_report["case_type"],
+                    clean_report["readiness_status"], clean_report["markdown_report"],
+                    json.dumps(clean_report["source_table"], ensure_ascii=False),
+                    json.dumps(clean_report, ensure_ascii=False), _now(),
                 ),
             )
             active.commit()
-    return _response({"saved_report_id": saved_id, "report_id": report["report_id"]})
+    return _response({"saved_report_id": saved_id, "report_id": clean_report["report_id"]})

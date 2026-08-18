@@ -3263,7 +3263,10 @@ def _pharmadrone_ai_saas_schema(conn) -> None:
         workspace_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         event_type TEXT NOT NULL CHECK (
-            event_type IN ('lead-generation','pitch-report','chat-message','export')
+            event_type IN (
+                'lead-generation','pitch-report','chat-message',
+                'save-lead','save-report','export'
+            )
         ),
         quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
         event_metadata_json TEXT NOT NULL DEFAULT '{{}}',

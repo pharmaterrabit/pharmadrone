@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,11 @@ from pharmadrone_ai import chat, repository, security
 
 
 WEB_ROOT = Path(__file__).resolve().parents[1] / "apps" / "pharmadrone-ai"
+EXPORT_DISCLAIMER = (
+    "PharmaDrone AI output is evidence-grounded pitch support that requires human validation. "
+    "It is not legal, freedom-to-operate, patent-validity, patent-enforceability, regulatory, "
+    "investment or commercial advice."
+)
 
 
 class RegisterRequest(BaseModel):
@@ -110,7 +116,21 @@ def _session_response(principal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _export_markdown(report: dict[str, Any]) -> str:
+    markdown = str(report.get("markdown_report") or "").strip()
+    if not markdown or len(markdown) > 500_000:
+        raise ValueError("A bounded Markdown report is required.")
+    exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return (
+        markdown
+        + "\n\n---\n\n"
+        + f"**Exported at:** {exported_at}\n\n"
+        + f"**Product disclaimer:** {EXPORT_DISCLAIMER}\n"
+    )
+
+
 def create_app() -> FastAPI:
+    security.validate_auth_configuration()
     app = FastAPI(
         title="PharmaDrone AI",
         description="AI business-development assistant for pharmaceutical opportunity discovery",
@@ -207,6 +227,7 @@ def create_app() -> FastAPI:
     ):
         return _safe_call(ai_bd_service.get_lead_evidence, payload.company, payload.theme, conn=conn)
 
+    @app.post("/api/chat")
     @app.post("/api/ai/chat")
     def chat_message(
         payload: ChatRequest,
@@ -237,6 +258,7 @@ def create_app() -> FastAPI:
         )
         return {"conversation_id": conversation_id, **result}
 
+    @app.get("/api/conversations")
     @app.get("/api/ai/conversations")
     def conversations(
         limit: int = Query(default=30, ge=1, le=50),
@@ -245,6 +267,7 @@ def create_app() -> FastAPI:
     ):
         return {"data": repository.list_conversations(conn, principal["user_id"], principal["workspace_id"], limit)}
 
+    @app.post("/api/conversations", status_code=status.HTTP_201_CREATED)
     @app.post("/api/ai/conversations", status_code=status.HTTP_201_CREATED)
     def new_conversation(
         payload: ConversationRequest,
@@ -253,13 +276,32 @@ def create_app() -> FastAPI:
     ):
         return repository.create_conversation(conn, principal["user_id"], principal["workspace_id"], payload.title)
 
+    @app.get("/api/conversations/{conversation_id}")
     @app.get("/api/ai/conversations/{conversation_id}/messages")
     def messages(
         conversation_id: str,
         principal: dict[str, Any] = Depends(_principal),
         conn=Depends(_connection),
     ):
-        return {"data": _safe_call(repository.list_messages, conn, principal["user_id"], principal["workspace_id"], conversation_id)}
+        conversation = _safe_call(
+            repository.get_conversation,
+            conn, principal["user_id"], principal["workspace_id"], conversation_id,
+        )
+        return {**conversation, "data": conversation["messages"]}
+
+    @app.delete("/api/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @app.delete("/api/ai/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_conversation(
+        conversation_id: str,
+        principal: dict[str, Any] = Depends(_principal),
+        conn=Depends(_connection),
+    ):
+        deleted = repository.delete_conversation(
+            conn, principal["user_id"], principal["workspace_id"], conversation_id,
+        )
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation was not found.")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post("/api/ai/save-lead", status_code=status.HTTP_201_CREATED)
     def save_lead(
@@ -267,7 +309,15 @@ def create_app() -> FastAPI:
         principal: dict[str, Any] = Depends(_principal),
         conn=Depends(_connection),
     ):
-        return _safe_call(ai_bd_service.save_lead, principal["user_id"], principal["workspace_id"], payload.lead, conn=conn)
+        result = _safe_call(
+            ai_bd_service.save_lead,
+            principal["user_id"], principal["workspace_id"], payload.lead, conn=conn,
+        )
+        repository.record_usage(
+            conn, principal["user_id"], principal["workspace_id"], "save-lead",
+            {"lead_id": str(payload.lead.get("lead_id") or "")[:100]},
+        )
+        return result
 
     @app.post("/api/ai/save-report", status_code=status.HTTP_201_CREATED)
     def save_report(
@@ -275,7 +325,15 @@ def create_app() -> FastAPI:
         principal: dict[str, Any] = Depends(_principal),
         conn=Depends(_connection),
     ):
-        return _safe_call(ai_bd_service.save_report, principal["user_id"], principal["workspace_id"], payload.report, conn=conn)
+        result = _safe_call(
+            ai_bd_service.save_report,
+            principal["user_id"], principal["workspace_id"], payload.report, conn=conn,
+        )
+        repository.record_usage(
+            conn, principal["user_id"], principal["workspace_id"], "save-report",
+            {"report_id": str(payload.report.get("report_id") or "")[:100]},
+        )
+        return result
 
     @app.get("/api/ai/saved-leads")
     def saved_leads(
@@ -320,9 +378,10 @@ def create_app() -> FastAPI:
         conn=Depends(_connection),
     ):
         report = payload.report
-        markdown = str(report.get("markdown_report") or "")
-        if not markdown or len(markdown) > 500_000:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A bounded Markdown report is required.")
+        try:
+            markdown = _export_markdown(report)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
         repository.record_usage(conn, principal["user_id"], principal["workspace_id"], "export", {"format": "markdown"})
         name = re.sub(r"[^a-z0-9]+", "-", str(report.get("report_title") or "pharmadrone-report").casefold()).strip("-")[:80]
         return Response(

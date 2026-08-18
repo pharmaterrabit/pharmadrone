@@ -143,7 +143,9 @@ function leadCard(lead, allowSave = true) {
   hypothesis.textContent = lead.opportunity_hypothesis;
   const angle = document.createElement("p");
   angle.textContent = `Pitch angle: ${lead.pitch_angle}`;
-  card.append(header, hypothesis, angle, sourceLinks(lead.source_links), limitations(lead.limitations));
+  const evidence = document.createElement("p");
+  evidence.textContent = `Evidence summary: ${lead.evidence_summary || "Evidence is incomplete and requires validation."}`;
+  card.append(header, hypothesis, angle, evidence, sourceLinks(lead.source_links), limitations(lead.limitations));
   if (allowSave) {
     const actions = document.createElement("div");
     actions.className = "actions";
@@ -151,9 +153,13 @@ function leadCard(lead, allowSave = true) {
     save.type = "button";
     save.textContent = "Save lead";
     save.addEventListener("click", async () => {
-      await api("/api/ai/save-lead", { method: "POST", body: JSON.stringify({ lead }) });
-      save.textContent = "Saved";
-      save.disabled = true;
+      try {
+        await api("/api/ai/save-lead", { method: "POST", body: JSON.stringify({ lead }) });
+        save.textContent = "Saved";
+        save.disabled = true;
+      } catch (error) {
+        save.textContent = `Save failed: ${error.message}`;
+      }
     });
     actions.append(save);
     card.append(actions);
@@ -183,16 +189,26 @@ function reportCard(report, allowSave = true) {
     save.type = "button";
     save.textContent = "Save report";
     save.addEventListener("click", async () => {
-      await api("/api/ai/save-report", { method: "POST", body: JSON.stringify({ report }) });
-      save.textContent = "Saved";
-      save.disabled = true;
+      try {
+        await api("/api/ai/save-report", { method: "POST", body: JSON.stringify({ report }) });
+        save.textContent = "Saved";
+        save.disabled = true;
+      } catch (error) {
+        save.textContent = `Save failed: ${error.message}`;
+      }
     });
     actions.append(save);
   }
   const download = document.createElement("button");
   download.type = "button";
   download.textContent = "Export Markdown";
-  download.addEventListener("click", () => exportReport(report));
+  download.addEventListener("click", async () => {
+    try {
+      await exportReport(report);
+    } catch (error) {
+      download.textContent = `Export failed: ${error.message}`;
+    }
+  });
   actions.append(download);
   card.append(header, summary, sourceLinks(report.source_table?.map((row) => ({
     title: row.title, url: row.source_url,

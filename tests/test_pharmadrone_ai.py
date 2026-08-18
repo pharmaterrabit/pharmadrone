@@ -1,21 +1,18 @@
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-import streamlit as st
 from fastapi.testclient import TestClient
-from streamlit.testing.v1 import AppTest
 
 from pharmadrone import db
 from pharmadrone.pipeline import ai_bd_service, case_study_mvp
-from pharmadrone.storage import configured_database, open_connection
+from pharmadrone.storage import DatabaseConfigurationError, configured_database, open_connection
 from pharmadrone.storage import migrations
 from pharmadrone.storage.database import dispose_engines
 from pharmadrone.storage.migrations import MIGRATIONS, _pharmadrone_ai_saas_schema
 from pharmadrone_ai import chat, repository, security
 from pharmadrone_ai.app import create_app
-from pharmatune_ui import pharmadrone_ai_page
 
 
 SAAS_TABLES = {
@@ -160,6 +157,38 @@ def test_saved_records_are_scoped_to_authenticated_membership(tmp_path):
     conn.close()
 
 
+def test_saved_lead_sanitizes_untrusted_source_links(tmp_path):
+    conn = db.connect(tmp_path / "pharmadrone-ai-sanitized-links.sqlite")
+    principal = _registered(conn)
+    lead = {
+        "lead_id": "bd-safe-links",
+        "target_company": "Safe Links Pharma",
+        "theme": "Poor solubility",
+        "readiness_status": "Partial company evidence",
+        "opportunity_hypothesis": "A possible opportunity requiring validation.",
+        "pitch_angle": "A potential fit requiring analyst validation.",
+        "evidence_summary": "Retained evidence is incomplete.",
+        "evidence_counts": {"company_opportunities": 1},
+        "source_links": [
+            {"title": "Official source", "url": "https://example.org/evidence"},
+            {"title": "Unsafe source", "url": "javascript:alert(1)"},
+        ],
+        "limitations": ["Evidence is incomplete."],
+        "recommended_next_action": "Validate the retained source.",
+        "created_from": "retained-pharmadrone-intelligence",
+    }
+    ai_bd_service.save_lead(
+        principal["user_id"], principal["workspace_id"], lead, conn=conn,
+    )
+    stored = repository.list_saved_leads(
+        conn, principal["user_id"], principal["workspace_id"],
+    )[0]
+    assert [row["url"] for row in stored["source_links"]] == [
+        "https://example.org/evidence"
+    ]
+    conn.close()
+
+
 def test_search_and_generate_leads_are_bounded_structured_and_grounded(tmp_path):
     conn = db.connect(tmp_path / "pharmadrone-ai-leads.sqlite")
     _seed_opportunity(conn)
@@ -243,6 +272,9 @@ def test_deterministic_chat_detects_lead_and_pitch_intents_without_key(tmp_path,
     assert pitch["theme"] == "Poor solubility"
     assert pitch["result"]["data"]["source_table"]
     assert pitch["result"]["limitations"]
+    assert chat.detect_intent("Give me outreach angles for amorphous solid dispersion") == "generate-bd-leads"
+    assert chat.detect_intent("Save lead") == "save-lead"
+    assert chat.detect_intent("Save report") == "save-report"
     conn.close()
 
 
@@ -294,11 +326,17 @@ def test_api_auth_chat_save_report_and_export_end_to_end(api_client):
     assert api_client.get("/api/auth/me", headers=headers).status_code == 200
 
     chat_response = api_client.post(
-        "/api/ai/chat",
+        "/api/chat",
         headers=headers,
         json={"prompt": "Build a Pfizer poor-solubility pitch report"},
     )
     assert chat_response.status_code == 200
+    conversation_id = chat_response.json()["conversation_id"]
+    conversation = api_client.get(
+        f"/api/conversations/{conversation_id}", headers=headers,
+    )
+    assert conversation.status_code == 200
+    assert [item["role"] for item in conversation.json()["messages"]] == ["user", "assistant"]
     report = chat_response.json()["result"]["data"]
     assert report["report_title"].startswith("Pfizer — Poor solubility")
     saved_report = api_client.post(
@@ -312,6 +350,9 @@ def test_api_auth_chat_save_report_and_export_end_to_end(api_client):
     assert exported.status_code == 200
     assert exported.headers["content-type"].startswith("text/markdown")
     assert "Pfizer" in exported.text
+    assert "## Source table" in exported.text
+    assert "Exported at:" in exported.text
+    assert "Product disclaimer:" in exported.text
 
     leads_response = api_client.post(
         "/api/ai/generate-bd-leads",
@@ -319,17 +360,34 @@ def test_api_auth_chat_save_report_and_export_end_to_end(api_client):
         json={"theme": "Poor solubility", "limit": 10},
     )
     lead = leads_response.json()["data"][0]
-    assert api_client.post(
+    saved_lead = api_client.post(
         "/api/ai/save-lead", headers=headers, json={"lead": lead},
-    ).status_code == 201
+    )
+    assert saved_lead.status_code == 201
     assert len(api_client.get("/api/ai/saved-leads", headers=headers).json()["data"]) == 1
     usage = api_client.get("/api/billing/status", headers=headers).json()["usage"]
     assert usage["chat_message_count"] == 1
     assert usage["lead_generation_count"] == 1
+    assert usage["saved_lead_count"] == 1
+    assert usage["saved_report_count"] == 1
     assert usage["export_count"] == 1
 
+    saved_lead_id = saved_lead.json()["data"]["saved_lead_id"]
+    saved_report_id = saved_report.json()["data"]["saved_report_id"]
+    assert api_client.delete(
+        f"/api/ai/saved-leads/{saved_lead_id}", headers=headers,
+    ).status_code == 204
+    assert api_client.delete(
+        f"/api/ai/saved-reports/{saved_report_id}", headers=headers,
+    ).status_code == 204
+    assert api_client.delete(
+        f"/api/conversations/{conversation_id}", headers=headers,
+    ).status_code == 204
+    assert api_client.get("/api/conversations", headers=headers).json()["data"] == []
+    assert api_client.post("/api/auth/logout", headers=headers).status_code == 204
 
-def test_standalone_client_exists_and_streamlit_navigation_hosts_it():
+
+def test_standalone_client_exists_and_streamlit_remains_separate():
     index = Path("apps/pharmadrone-ai/index.html").read_text()
     javascript = Path("apps/pharmadrone-ai/assets/app.js").read_text()
     streamlit_app = Path("pharmatune_ui/app.py").read_text()
@@ -340,64 +398,55 @@ def test_standalone_client_exists_and_streamlit_navigation_hosts_it():
     assert "Saved leads" in index
     assert "Saved reports" in index
     assert "Export Markdown" in javascript
-    assert '"PharmaDrone AI":pharmadrone_ai_page.render_page' in streamlit_app
+    assert "Evidence summary:" in javascript
+    assert "PharmaDrone AI" not in streamlit_app
     assert "AI Analyst" not in streamlit_app
-
-
-def test_streamlit_navigation_opens_pharmadrone_ai_page():
+    assert not Path("pharmatune_ui/pharmadrone_ai_page.py").exists()
     from pharmatune_ui import app as customer_app
+    assert "PharmaDrone AI" not in customer_app.NAV_OPTIONS
+    assert callable(customer_app.run)
+    assert "localhost:8501" not in Path("apps/pharmadrone-ai/README.md").read_text()
+    assert "PHARMADRONE_AI_URL" not in Path("apps/pharmadrone-ai/.env.example").read_text()
 
-    assert "PharmaDrone AI" in customer_app.NAV["DISCOVER"]
 
-    def render_customer_app():
-        from pharmatune_ui.app import run
+def test_existing_database_and_intelligence_infrastructure_is_reused(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example:secret@db.example/pharmadrone")
+    monkeypatch.delenv("DATABASE_BACKEND", raising=False)
+    config = configured_database()
+    assert config.backend == "postgresql"
+    assert config.url.startswith("postgresql+psycopg://")
 
-        run({"role": "analyst_reviewer", "display_name": "Test Analyst"})
-
-    def marker():
-        st.write("PAGE:PharmaDrone AI")
-
-    with (
-        patch.object(customer_app, "_database_status", return_value={"schema_version": 21}),
-        patch.object(customer_app.pharmadrone_ai_page, "render_page", marker),
+    service = Path("pharmadrone/pipeline/ai_bd_service.py").read_text()
+    case_study = Path("pharmadrone/pipeline/case_study_mvp.py").read_text()
+    assert "case_study_mvp.build(" in service
+    for retained_source in (
+        "opportunity_index", "product_profiles", "api_profiles",
+        "technology_problem_relationships", "funding_awards", "lifecycle_products",
+        "canonical_record_links", "patent_discovery.stored_records",
     ):
-        app = AppTest.from_function(render_customer_app).run()
-        app.radio[0].set_value("PharmaDrone AI").run()
-    assert not app.exception
-    assert app.session_state["page"] == "PharmaDrone AI"
-    assert any(item.value == "PAGE:PharmaDrone AI" for item in app.markdown)
+        assert retained_source in case_study
+
+    monkeypatch.delenv("DATABASE_URL")
+    with pytest.raises(DatabaseConfigurationError):
+        configured_database()
 
 
-def test_streamlit_page_embeds_only_configured_http_app_url():
-    fake_st = MagicMock()
-    with (
-        patch.object(pharmadrone_ai_page, "st", fake_st),
-        patch.object(pharmadrone_ai_page.theme, "page_header"),
-        patch.object(
-            pharmadrone_ai_page.settings,
-            "env",
-            return_value="http://localhost:8000/",
-        ),
-        patch.object(pharmadrone_ai_page.components, "iframe") as iframe,
-    ):
-        pharmadrone_ai_page.render_page()
-    iframe.assert_called_once_with(
-        "http://localhost:8000",
-        height=pharmadrone_ai_page.EMBED_HEIGHT,
-        scrolling=True,
+def test_production_rejects_documented_development_auth_secret(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "PHARMADRONE_AI_AUTH_SECRET",
+        "replace-with-a-long-random-production-secret",
     )
-    fake_st.link_button.assert_called_once_with(
-        "Open PharmaDrone AI in a new tab", "http://localhost:8000"
-    )
+    with pytest.raises(RuntimeError, match="unique production secret"):
+        security.validate_auth_configuration()
 
-    with (
-        patch.object(pharmadrone_ai_page, "st", fake_st),
-        patch.object(pharmadrone_ai_page.theme, "page_header"),
-        patch.object(pharmadrone_ai_page.settings, "env", return_value="javascript:alert(1)"),
-        patch.object(pharmadrone_ai_page.components, "iframe") as unsafe_iframe,
-    ):
-        pharmadrone_ai_page.render_page()
-    unsafe_iframe.assert_not_called()
+
+def test_initial_page_load_does_not_call_external_services(api_client):
+    with patch.object(chat.httpx, "post") as external_post:
+        assert api_client.get("/").status_code == 200
+        assert api_client.get("/assets/app.js").status_code == 200
+    external_post.assert_not_called()
 
 
 def test_safety_boundaries_have_no_automatic_external_or_canonical_writes():
@@ -411,7 +460,11 @@ def test_safety_boundaries_have_no_automatic_external_or_canonical_writes():
     assert "patent_source_discovery(" not in combined
     assert "tavily" not in combined.casefold()
     assert "SELECT *" not in combined
-    assert "OPENAI_API_KEY" not in client_source
+    for secret_name in (
+        "DATABASE_URL", "OPENAI_API_KEY", "TAVILY_API_KEY",
+        "EPO_OPS_CLIENT_ID", "EPO_OPS_CLIENT_SECRET",
+    ):
+        assert secret_name not in client_source
     assert "fetch(" not in Path("apps/pharmadrone-ai/index.html").read_text()
 
 

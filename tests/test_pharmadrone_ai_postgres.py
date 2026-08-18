@@ -79,5 +79,15 @@ def test_real_postgresql_migration_21_auth_scope_and_rerun():
     assert repository.list_saved_leads(
         conn, principal["user_id"], principal["workspace_id"],
     )[0]["lead_id"] == lead["lead_id"]
+    repository.record_usage(
+        conn, principal["user_id"], principal["workspace_id"], "save-lead",
+    )
+    repository.record_usage(
+        conn, principal["user_id"], principal["workspace_id"], "save-report",
+    )
+    usage = repository.billing_status(
+        conn, principal["user_id"], principal["workspace_id"],
+    )["usage"]
+    assert usage["saved_lead_count"] == 1
+    assert usage["saved_report_count"] == 1
     conn.close()
-

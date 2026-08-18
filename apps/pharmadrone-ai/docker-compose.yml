@@ -18,7 +18,7 @@ services:
       context: ../..
       dockerfile: apps/pharmadrone-ai/Dockerfile
     environment:
-      APP_ENV: production
+      APP_ENV: development
       DATABASE_URL: postgresql://pharmadrone:pharmadrone-local@postgres:5432/pharmadrone
       PHARMADRONE_AI_AUTH_SECRET: local-compose-secret-change-before-production
       PHARMADRONE_AI_ALLOWED_ORIGINS: http://localhost:8000
@@ -30,4 +30,3 @@ services:
 
 volumes:
   pharmadrone_ai_postgres:
-
