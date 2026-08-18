@@ -291,13 +291,13 @@ def test_migration_20_is_fresh_additive_and_rerunnable(tmp_path):
         ).fetchall()
     }
     assert PR_G_TABLES.issubset(tables)
-    assert [migration.version for migration in MIGRATIONS] == list(range(1, 21))
+    assert [migration.version for migration in MIGRATIONS] == list(range(1, 22))
     assert conn.execute(
         "SELECT COUNT(*) AS n FROM schema_migrations WHERE version=20"
     ).fetchone()["n"] == 1
     assert conn.execute(
         "SELECT MAX(version) AS version FROM schema_migrations"
-    ).fetchone()["version"] == 20
+    ).fetchone()["version"] == 21
     assert all(
         conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0
         for table in PR_G_TABLES
@@ -313,7 +313,7 @@ def test_migration_20_is_fresh_additive_and_rerunnable(tmp_path):
 def test_upgrade_from_19_preserves_existing_production_records(tmp_path, monkeypatch):
     conn = open_connection(configured_database(tmp_path / "foundation-pr-g-upgrade.sqlite"))
     all_migrations = migrations.MIGRATIONS
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-1])
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-2])
     assert conn.ensure_migrations()["schema_version"] == 19
     with conn.transaction():
         conn.execute(
@@ -340,7 +340,7 @@ def test_upgrade_from_19_preserves_existing_production_records(tmp_path, monkeyp
                 NOW,
             ),
         )
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:-1])
     result = conn.ensure_migrations()
     assert result["schema_version"] == 20
     assert result["newly_applied"] == [20]

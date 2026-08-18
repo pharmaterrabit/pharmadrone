@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: pharmadrone
+      POSTGRES_PASSWORD: pharmadrone-local
+      POSTGRES_DB: pharmadrone
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pharmadrone -d pharmadrone"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - pharmadrone_ai_postgres:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: ../..
+      dockerfile: apps/pharmadrone-ai/Dockerfile
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://pharmadrone:pharmadrone-local@postgres:5432/pharmadrone
+      PHARMADRONE_AI_AUTH_SECRET: local-compose-secret-change-before-production
+      PHARMADRONE_AI_ALLOWED_ORIGINS: http://localhost:8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pharmadrone_ai_postgres:
+
