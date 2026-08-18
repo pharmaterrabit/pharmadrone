@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+import streamlit as st
 from fastapi.testclient import TestClient
+from streamlit.testing.v1 import AppTest
 
 from pharmadrone import db
 from pharmadrone.pipeline import ai_bd_service, case_study_mvp
@@ -13,6 +15,7 @@ from pharmadrone.storage.database import dispose_engines
 from pharmadrone.storage.migrations import MIGRATIONS, _pharmadrone_ai_saas_schema
 from pharmadrone_ai import chat, repository, security
 from pharmadrone_ai.app import create_app
+from pharmatune_ui import pharmadrone_ai_page
 
 
 SAAS_TABLES = {
@@ -326,7 +329,7 @@ def test_api_auth_chat_save_report_and_export_end_to_end(api_client):
     assert usage["export_count"] == 1
 
 
-def test_standalone_client_exists_and_streamlit_navigation_is_unchanged():
+def test_standalone_client_exists_and_streamlit_navigation_hosts_it():
     index = Path("apps/pharmadrone-ai/index.html").read_text()
     javascript = Path("apps/pharmadrone-ai/assets/app.js").read_text()
     streamlit_app = Path("pharmatune_ui/app.py").read_text()
@@ -337,8 +340,64 @@ def test_standalone_client_exists_and_streamlit_navigation_is_unchanged():
     assert "Saved leads" in index
     assert "Saved reports" in index
     assert "Export Markdown" in javascript
-    assert "PharmaDrone AI" not in streamlit_app
+    assert '"PharmaDrone AI":pharmadrone_ai_page.render_page' in streamlit_app
     assert "AI Analyst" not in streamlit_app
+
+
+def test_streamlit_navigation_opens_pharmadrone_ai_page():
+    from pharmatune_ui import app as customer_app
+
+    assert "PharmaDrone AI" in customer_app.NAV["DISCOVER"]
+
+    def render_customer_app():
+        from pharmatune_ui.app import run
+
+        run({"role": "analyst_reviewer", "display_name": "Test Analyst"})
+
+    def marker():
+        st.write("PAGE:PharmaDrone AI")
+
+    with (
+        patch.object(customer_app, "_database_status", return_value={"schema_version": 21}),
+        patch.object(customer_app.pharmadrone_ai_page, "render_page", marker),
+    ):
+        app = AppTest.from_function(render_customer_app).run()
+        app.radio[0].set_value("PharmaDrone AI").run()
+    assert not app.exception
+    assert app.session_state["page"] == "PharmaDrone AI"
+    assert any(item.value == "PAGE:PharmaDrone AI" for item in app.markdown)
+
+
+def test_streamlit_page_embeds_only_configured_http_app_url():
+    fake_st = MagicMock()
+    with (
+        patch.object(pharmadrone_ai_page, "st", fake_st),
+        patch.object(pharmadrone_ai_page.theme, "page_header"),
+        patch.object(
+            pharmadrone_ai_page.settings,
+            "env",
+            return_value="http://localhost:8000/",
+        ),
+        patch.object(pharmadrone_ai_page.components, "iframe") as iframe,
+    ):
+        pharmadrone_ai_page.render_page()
+    iframe.assert_called_once_with(
+        "http://localhost:8000",
+        height=pharmadrone_ai_page.EMBED_HEIGHT,
+        scrolling=True,
+    )
+    fake_st.link_button.assert_called_once_with(
+        "Open PharmaDrone AI in a new tab", "http://localhost:8000"
+    )
+
+    with (
+        patch.object(pharmadrone_ai_page, "st", fake_st),
+        patch.object(pharmadrone_ai_page.theme, "page_header"),
+        patch.object(pharmadrone_ai_page.settings, "env", return_value="javascript:alert(1)"),
+        patch.object(pharmadrone_ai_page.components, "iframe") as unsafe_iframe,
+    ):
+        pharmadrone_ai_page.render_page()
+    unsafe_iframe.assert_not_called()
 
 
 def test_safety_boundaries_have_no_automatic_external_or_canonical_writes():
