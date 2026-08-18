@@ -3152,6 +3152,162 @@ def _foundation_pr_g_canonicalisation_review_schema(conn) -> None:
             conn.execute(statement)
 
 
+def _pharmadrone_ai_saas_schema(conn) -> None:
+    """Add standalone PharmaDrone AI authentication and workspace persistence."""
+    ts = _timestamp_default(conn)
+    conn.executescript(f"""
+    CREATE TABLE IF NOT EXISTS saas_users (
+        user_id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        normalized_email TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        password_algorithm TEXT NOT NULL CHECK (password_algorithm='pbkdf2-sha256-v1'),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        created_at TEXT NOT NULL DEFAULT {ts},
+        last_login_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS saas_workspaces (
+        workspace_id TEXT PRIMARY KEY,
+        workspace_name TEXT NOT NULL,
+        workspace_slug TEXT NOT NULL UNIQUE,
+        plan_code TEXT NOT NULL DEFAULT 'free-trial' CHECK (
+            plan_code IN ('free-trial','pro','team')
+        ),
+        lead_generation_limit INTEGER NOT NULL DEFAULT 25 CHECK (lead_generation_limit > 0),
+        pitch_report_limit INTEGER NOT NULL DEFAULT 10 CHECK (pitch_report_limit > 0),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        created_at TEXT NOT NULL DEFAULT {ts}
+    );
+    CREATE TABLE IF NOT EXISTS saas_workspace_memberships (
+        membership_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        membership_role TEXT NOT NULL CHECK (membership_role IN ('owner','member')),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+        created_at TEXT NOT NULL DEFAULT {ts},
+        UNIQUE(workspace_id,user_id),
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id),
+        FOREIGN KEY (user_id) REFERENCES saas_users(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS saas_conversations (
+        conversation_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        updated_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id),
+        FOREIGN KEY (user_id) REFERENCES saas_users(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS saas_messages (
+        message_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        message_role TEXT NOT NULL CHECK (message_role IN ('user','assistant')),
+        content_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (conversation_id) REFERENCES saas_conversations(conversation_id),
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id),
+        FOREIGN KEY (user_id) REFERENCES saas_users(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS saas_saved_leads (
+        saved_lead_id TEXT PRIMARY KEY,
+        lead_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        target_company TEXT NOT NULL,
+        theme TEXT NOT NULL,
+        readiness_status TEXT NOT NULL CHECK (
+            readiness_status IN (
+                'Pitch-ready draft','Partial company evidence',
+                'Prospecting shell only','Not enough evidence'
+            )
+        ),
+        pitch_angle TEXT NOT NULL,
+        evidence_summary TEXT NOT NULL,
+        source_links_json TEXT NOT NULL DEFAULT '[]',
+        limitations_json TEXT NOT NULL DEFAULT '[]',
+        lead_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        UNIQUE(workspace_id,user_id,lead_id),
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id),
+        FOREIGN KEY (user_id) REFERENCES saas_users(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS saas_saved_reports (
+        saved_report_id TEXT PRIMARY KEY,
+        report_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        report_title TEXT NOT NULL,
+        target_company TEXT NOT NULL,
+        theme TEXT NOT NULL,
+        case_type TEXT NOT NULL,
+        readiness_status TEXT NOT NULL CHECK (
+            readiness_status IN (
+                'Pitch-ready draft','Partial company evidence',
+                'Prospecting shell only','Not enough evidence'
+            )
+        ),
+        markdown_report TEXT NOT NULL,
+        source_table_json TEXT NOT NULL DEFAULT '[]',
+        report_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        UNIQUE(workspace_id,user_id,report_id),
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id),
+        FOREIGN KEY (user_id) REFERENCES saas_users(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS saas_usage_events (
+        usage_event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK (
+            event_type IN (
+                'lead-generation','pitch-report','chat-message',
+                'save-lead','save-report','export'
+            )
+        ),
+        quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+        event_metadata_json TEXT NOT NULL DEFAULT '{{}}',
+        created_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id),
+        FOREIGN KEY (user_id) REFERENCES saas_users(user_id)
+    );
+    CREATE TABLE IF NOT EXISTS saas_subscriptions (
+        subscription_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL UNIQUE,
+        provider TEXT NOT NULL DEFAULT 'not-configured',
+        provider_customer_id TEXT,
+        provider_subscription_id TEXT,
+        plan_code TEXT NOT NULL DEFAULT 'free-trial' CHECK (
+            plan_code IN ('free-trial','pro','team')
+        ),
+        subscription_status TEXT NOT NULL DEFAULT 'development' CHECK (
+            subscription_status IN (
+                'development','trialing','active','past-due','cancelled','inactive'
+            )
+        ),
+        current_period_end TEXT,
+        created_at TEXT NOT NULL DEFAULT {ts},
+        updated_at TEXT NOT NULL DEFAULT {ts},
+        FOREIGN KEY (workspace_id) REFERENCES saas_workspaces(workspace_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_saas_membership_user
+        ON saas_workspace_memberships(user_id,active);
+    CREATE INDEX IF NOT EXISTS idx_saas_conversation_owner
+        ON saas_conversations(workspace_id,user_id,updated_at);
+    CREATE INDEX IF NOT EXISTS idx_saas_message_conversation
+        ON saas_messages(conversation_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_saas_saved_lead_owner
+        ON saas_saved_leads(workspace_id,user_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_saas_saved_report_owner
+        ON saas_saved_reports(workspace_id,user_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_saas_usage_owner
+        ON saas_usage_events(workspace_id,user_id,event_type,created_at);
+    """)
+
+
 MIGRATIONS = (
     Migration(1, "checkpoint_6a_core_schema", _core_schema),
     Migration(2, "checkpoint_6b_audit_schema", _audit_schema),
@@ -3173,6 +3329,7 @@ MIGRATIONS = (
     Migration(18, "foundation_pr_c_organisation_provider_identity_schema", _foundation_pr_c_organisation_provider_schema),
     Migration(19, "foundation_pr_d_opportunity_commercial_identity_schema", _foundation_pr_d_opportunity_commercial_schema),
     Migration(20, "foundation_pr_g_governed_canonicalisation_review_schema", _foundation_pr_g_canonicalisation_review_schema),
+    Migration(21, "pharmadrone_ai_saas_schema", _pharmadrone_ai_saas_schema),
 )
 
 

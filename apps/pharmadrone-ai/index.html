@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Evidence-grounded pharmaceutical business-development opportunity discovery.">
+  <title>PharmaDrone AI</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div id="auth-screen" class="auth-screen">
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="brand-mark">PD</div>
+      <h1 id="auth-title">PharmaDrone AI</h1>
+      <p>AI business-development assistant for pharmaceutical opportunity discovery</p>
+      <div class="auth-tabs" role="tablist">
+        <button id="login-tab" class="active" type="button">Log in</button>
+        <button id="register-tab" type="button">Create account</button>
+      </div>
+      <form id="auth-form">
+        <label>Email<input id="auth-email" type="email" autocomplete="email" required maxlength="254"></label>
+        <label>Password<input id="auth-password" type="password" autocomplete="current-password" required minlength="10" maxlength="256"></label>
+        <div id="register-fields" hidden>
+          <label>Your name<input id="display-name" type="text" maxlength="120"></label>
+          <label>Workspace name<input id="workspace-name" type="text" maxlength="160"></label>
+        </div>
+        <button id="auth-submit" class="primary wide" type="submit">Log in</button>
+        <p id="auth-error" class="error" role="alert"></p>
+      </form>
+    </section>
+  </div>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <aside class="sidebar">
+      <header class="sidebar-brand">
+        <div class="brand-mark small">PD</div>
+        <div><strong>PharmaDrone AI</strong><span>BD intelligence assistant</span></div>
+      </header>
+      <button id="new-chat" class="new-chat" type="button">＋ New chat</button>
+      <nav aria-label="Workspace">
+        <button class="nav-button active" data-view="chat" type="button">Chat</button>
+        <button class="nav-button" data-view="saved-leads" type="button">Saved leads</button>
+        <button class="nav-button" data-view="saved-reports" type="button">Saved reports</button>
+        <button class="nav-button" data-view="account" type="button">Settings &amp; account</button>
+      </nav>
+      <section class="history">
+        <h2>Recent conversations</h2>
+        <div id="conversation-list"></div>
+      </section>
+      <footer>
+        <span id="workspace-label"></span>
+        <button id="logout" class="text-button" type="button">Log out</button>
+      </footer>
+    </aside>
+
+    <main class="main-panel">
+      <section id="chat-view" class="view active-view">
+        <header class="topbar">
+          <div>
+            <h1>PharmaDrone AI</h1>
+            <p>AI business-development assistant for pharmaceutical opportunity discovery</p>
+          </div>
+          <span class="evidence-badge">Tool-grounded</span>
+        </header>
+        <div id="chat-stream" class="chat-stream" aria-live="polite">
+          <section id="welcome" class="welcome">
+            <div class="brand-mark hero">PD</div>
+            <h2>What opportunity should we investigate?</h2>
+            <p>Answers use retained PharmaDrone intelligence, source links and explicit limitations.</p>
+            <div id="starter-prompts" class="starter-grid">
+              <button type="button">Generate 10 BD leads for particle properties</button>
+              <button type="button">Build a Pfizer poor-solubility pitch report</button>
+              <button type="button">Find Novartis particle-properties opportunities</button>
+              <button type="button">Show AstraZeneca dissolution innovation evidence</button>
+              <button type="button">Give me outreach angles for amorphous solid dispersion</button>
+              <button type="button">Which companies should I target for bioavailability enhancement?</button>
+            </div>
+          </section>
+        </div>
+        <form id="prompt-form" class="composer">
+          <textarea id="prompt-input" rows="1" maxlength="2000" placeholder="Ask PharmaDrone AI to generate leads, build a pitch, or show evidence…" required></textarea>
+          <button id="send-button" class="primary" type="submit" aria-label="Send prompt">Send</button>
+          <p>PharmaDrone AI may identify possible opportunities. Validate evidence before outreach; no legal, FTO, regulatory, investment or commercial conclusions.</p>
+        </form>
+      </section>
+
+      <section id="saved-leads-view" class="view">
+        <header class="page-header"><h1>Saved leads</h1><p>Your workspace-scoped BD targets.</p></header>
+        <div id="saved-leads-list" class="card-grid"></div>
+      </section>
+
+      <section id="saved-reports-view" class="view">
+        <header class="page-header"><h1>Saved reports</h1><p>Company pitch reports retained in your workspace.</p></header>
+        <div id="saved-reports-list" class="card-grid"></div>
+      </section>
+
+      <section id="account-view" class="view">
+        <header class="page-header"><h1>Settings &amp; account</h1><p>Authentication, workspace and usage status.</p></header>
+        <div id="account-details" class="account-card"></div>
+      </section>
+    </main>
+  </div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
+
